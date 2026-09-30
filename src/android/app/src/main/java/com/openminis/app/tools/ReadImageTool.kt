@@ -14,11 +14,11 @@ object ReadImageTool {
 
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
-        description = "Read an image file from the Linux filesystem and return it for visual analysis. Supports PNG, JPEG, GIF, WEBP, and other common image formats. Use this to inspect generated charts, downloaded images, screenshots, or any visual output. If you natively support vision the image is returned directly for your analysis; if you do not, it is routed through a configured Vision Group that returns a text description — in that case pass a `prompt` to focus the description on what you actually need (you cannot see the pixels yourself, so this is how you 'ask' about the image). Metadata (dimensions, file size) is always included.",
+        description = "Inspect an image (PNG/JPEG/GIF/WEBP etc.) with dimensions/file size. Native vision returns pixels; otherwise a configured Vision Group returns a text description, focused by prompt.",
         parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'View generated bar chart', 'Inspect downloaded screenshot'). Use the same language as the user."),
-            "path" to AgentToolParam("string", "Linux path (e.g. /var/minis/attachments/chart.png) or minis:// URL (e.g. minis://attachments/chart.png)"),
-            "prompt" to AgentToolParam("string", "Optional. A custom instruction describing what you want to understand from the image (e.g. 'transcribe the table text', 'describe the people and their expressions', 'what error message is in this screenshot'). Most useful when you lack native vision and the image is described by a Vision Group — it steers that description toward your question. If omitted, a generic 'describe this image in detail' instruction is used."),
+            "tool_title" to AgentToolParam("string", "User-visible 5-10 word summary, in the user's language."),
+            "path" to AgentToolParam("string", "Linux path or minis:// resource URL"),
+            "prompt" to AgentToolParam("string", "Optional image question/instruction for the Vision Group; default describes the image in detail."),
         ),
         required = listOf("tool_title", "path"),
         propertyOrdering = listOf("tool_title", "path", "prompt"),

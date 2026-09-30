@@ -100,10 +100,14 @@ class ScheduledPrefillWiringTest {
     }
 
     @Test
-    fun `the system prompt teaches the prefilled command flags`() {
-        assertTrue(prompt.contains("--command \"<shell command>\" [--command-timeout 2m]"))
-        assertTrue(prompt.contains("--tool shell_execute --tool-args '{\"command\":\"…\"}'"))
-        assertTrue(prompt.contains("you receive its real output as an already-completed tool call"))
+    fun `prefilled command syntax is discoverable without repeating its manual`() {
+        assertTrue(prompt.contains("--help for triggers/prefilled commands"))
+        assertTrue(prompt.contains("--command or --tool/--tool-args"))
+        assertTrue(prompt.contains("already-completed tool call: do not rerun it"))
+        val help = ProductionSources.read("sandbox/offload/ScheduledTaskOffloadHandler.kt")
+            .substringAfter("private val HELP = \"\"\"")
+        assertTrue(help.contains("--command \"<shell command>\" [--command-timeout 2m]"))
+        assertTrue(help.contains("--tool shell_execute --tool-args '{\"command\":\"...\"}'"))
     }
 
     @Test

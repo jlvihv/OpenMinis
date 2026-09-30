@@ -368,10 +368,9 @@ object HelperRunner {
         return lines.joinToString("\n") + "\n"
     }
 
-    /** The parent-tier system-prompt bullet (byte-identical to iOS), or "" when
-     *  the tool is not offered (helper vm, or Settings › Agents off). */
+    /** Parent-only callback provenance/UI rules; delegation usage lives in the schema. */
     fun systemPromptBullet(enabled: Boolean): String = if (!enabled) "" else
-        "- subagent_task: Delegate a self-contained task to a sub agent that runs its own tool loop in an isolated hidden session, and inspect or stop the ones you started. Full contract in the tool schema. Two things it does not say: the `<agent_callback>` result and progress messages are written by the system, not typed by the user; and while a sub agent runs the user sees it in the tool bar and can watch or stop it.\n"
+        "- subagent_task: <agent_callback> result/progress messages are written by the system, not typed by the user; the user sees it in the tool bar and can watch or stop it.\n"
 
     // ── Payloads (block content + tool_result JSON) ─────────────────────
 

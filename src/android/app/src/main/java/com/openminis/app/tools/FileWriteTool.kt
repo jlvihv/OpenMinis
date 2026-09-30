@@ -13,19 +13,15 @@ object FileWriteTool {
 
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
-        // [T-android-file-write-large-guidance] The large-file paragraph is the
-        // load-bearing half of this description. Every byte of `content` is
-        // generated as tool arguments and streamed, so a single huge call is
-        // both slow and a common way for a request to die mid-flight — and the
-        // model has no way to know that from the schema alone. Ported from iOS
-        // AIChatViewModel+ToolDefinitions.swift.
-        description = "Write content to a file on the Linux filesystem. Faster than shell_execute for writing files. Creates the file if it doesn't exist. Use append mode to add to existing files.\n\nIMPORTANT for large files (roughly >8KB): do NOT emit it as one call. Every byte of `content` is generated and streamed as tool arguments, so one huge call is slow and frequently dies mid-request. Instead either (a) write the first chunk, then extend it with further calls using append: true, or (b) when the content is repetitive or computable (SVG charts, generated tables, boilerplate), write a short script and run it with shell_execute — generating 2KB of code that emits 100KB beats transcribing 100KB.",
+        // Keep chunk/generator guidance: every content byte is streamed as
+        // tool arguments, so huge writes are slow and can fail mid-request.
+        description = "Create/replace a Linux text file, or append. For >8KB, write chunks with append=true; huge streamed arguments are slow and can fail. For repetitive/computable content, write a short generator script and run it with shell_execute instead.",
         parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Create Python statistics script', 'Write configuration file'). Use the same language as the user."),
-            "path" to AgentToolParam("string", "Absolute Linux path to write (e.g. /root/test.txt)"),
-            "content" to AgentToolParam("string", "The text content to write to the file. For large content prefer several appending calls over one huge one — see the tool description."),
-            "append" to AgentToolParam("boolean", "If true, append to existing file instead of overwriting (default: false)"),
-            "create_dirs" to AgentToolParam("boolean", "If true, create parent directories if they don't exist (default: false)"),
+            "tool_title" to AgentToolParam("string", "User-visible 5-10 word summary, in the user's language."),
+            "path" to AgentToolParam("string", "Absolute Linux path"),
+            "content" to AgentToolParam("string", "Text to write; chunk large content as described above."),
+            "append" to AgentToolParam("boolean", "Append instead of overwrite (default false)"),
+            "create_dirs" to AgentToolParam("boolean", "Create missing parent directories (default false)"),
         ),
         required = listOf("tool_title", "path", "content"),
         propertyOrdering = listOf("tool_title", "path", "content", "append", "create_dirs"),

@@ -1,6 +1,7 @@
 package com.openminis.app.agent
 
 import com.openminis.app.ProductionSources
+import com.openminis.app.tools.AgentTools
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,7 +19,7 @@ class AndroidSystemPromptTest {
     @Test
     fun `runtime guidance stays compact and deterministic`() {
         val text = prompt()
-        assertTrue("Keep the base well below the previous 22k-character literal", text.length < 13_000)
+        assertTrue("Keep runtime guidance below 5.5k characters; schemas/help own usage", text.length < 5_500)
         assertEquals(text, prompt())
         assertTrue(text.startsWith("Identity and personality.\n\nAct on"))
         assertFalse(text.contains("Runtime context:"))
@@ -87,8 +88,8 @@ class AndroidSystemPromptTest {
     fun `resource rendering encoding and action distinction remain explicit`() {
         val text = prompt()
         assertTrue(text.contains("minis://<directory>/<path> maps to /var/minis/<directory>/<path>"))
-        assertTrue(text.contains("![song](minis://attachments/song.mp3)"))
-        assertTrue(text.contains("![clip](minis://attachments/clip.mp4)"))
+        assertTrue(text.contains("embed ALL images/audio/video with ![description](minis://...)"))
+        assertTrue(text.contains("Link files with [name](minis://...)"))
         assertTrue(text.contains("[text](url) only creates a link"))
         assertTrue(text.contains("Prefer the minis_url"))
         assertTrue(text.contains("non-ASCII characters, emoji and spaces"))
@@ -102,11 +103,21 @@ class AndroidSystemPromptTest {
     fun `Linux pitfalls and bounded file search remain covered`() {
         val text = prompt()
         for (rule in listOf(
-            "always file_read first", "MUST NOT exceed 1000 characters",
+            "Use file tools, not shell echo/printf/heredocs",
             "BusyBox ash, NOT bash", "ICMP/ping is blocked", "musllinux_aarch64",
             "matplotlib.use('Agg')", "redirect stdout/stderr", "apk add ripgrep",
             "Search /var/minis/ first", "never start with the whole filesystem", "read-only",
         )) assertTrue("Missing shell/file guard: $rule", text.contains(rule))
+    }
+
+    @Test
+    fun `tool-specific rules live in schemas rather than being repeated`() {
+        val text = prompt()
+        assertFalse(text.contains("1000 characters"))
+        assertFalse(text.contains("file_read first"))
+        val tools = AgentTools.makeAgentTools().associateBy { it.name }
+        assertTrue(tools.getValue("file_edit").description.contains("file_read first"))
+        assertTrue(tools.getValue("shell_execute").parameters.getValue("command").description.contains("Maximum 1000 characters"))
     }
 
     @Test
@@ -120,10 +131,13 @@ class AndroidSystemPromptTest {
             "android-photos", "android-player", "android-speak", "android-speech",
             "android-weather", "android-shizuku-cli", "android-a11y-cli", "minis-open",
             "minis-sessions-cli", "minis-model-use", "minis-config", "minis-scheduled",
-        )) assertTrue("Missing CLI: $cli", text.contains("- $cli"))
+        )) assertTrue("Missing CLI: $cli", text.contains(cli))
+        for (group in listOf("Personal data:", "Device:", "Media:", "System:")) {
+            assertTrue("CLI directory must stay grouped: $group", text.contains(group))
+        }
         assertTrue(text.contains("topic-help <topic>"))
-        assertTrue(text.contains("--page/--page-size"))
-        assertTrue(text.contains("OpenAI-compatible messages JSON is the primary input"))
+        assertTrue(text.contains("paginate/filter lists"))
+        assertTrue(text.contains("Use OpenAI-compatible messages JSON"))
         assertTrue(text.contains("modality capabilities"))
         assertTrue(text.contains("warnings and applied_extras"))
     }

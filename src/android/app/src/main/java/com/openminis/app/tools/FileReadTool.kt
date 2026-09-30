@@ -12,14 +12,14 @@ object FileReadTool {
 
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
-        description = "Read a file from the Linux filesystem. Faster than shell_execute for reading files — no shell overhead. Returns file content with metadata. Rejects binary files.",
+        description = "Read a Linux text file with metadata. Binary files rejected. Paginate truncated output with next_offset.",
         parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Read Python script contents', 'Check system configuration file'). Use the same language as the user."),
-            "path" to AgentToolParam("string", "Absolute Linux path to read (e.g. /var/minis/workspace/data.csv)"),
-            "offset" to AgentToolParam("integer", "1-based line number to start reading from (default: 1). Ignored when direction is 'tail'. If a previous read was truncated, its header ends with next_offset=N — pass that as offset to continue from where it stopped."),
-            "lines" to AgentToolParam("integer", "Maximum number of lines to return (default: all lines up to max_length)"),
-            "max_length" to AgentToolParam("integer", "Maximum character length of returned content (default: 15000)"),
-            "direction" to AgentToolParam("string", "Read direction: 'head' (from start, default) or 'tail' (from end of file)"),
+            "tool_title" to AgentToolParam("string", "User-visible 5-10 word summary, in the user's language."),
+            "path" to AgentToolParam("string", "Absolute Linux path"),
+            "offset" to AgentToolParam("integer", "1-based start line (default 1), ignored for tail. Continue truncated reads with returned next_offset."),
+            "lines" to AgentToolParam("integer", "Maximum lines, default all within max_length"),
+            "max_length" to AgentToolParam("integer", "Character limit (default 15000, capped at 80000)"),
+            "direction" to AgentToolParam("string", "head (default): from offset; tail: from end"),
         ),
         required = listOf("tool_title", "path"),
         propertyOrdering = listOf("tool_title", "path", "offset", "lines", "direction", "max_length"),
