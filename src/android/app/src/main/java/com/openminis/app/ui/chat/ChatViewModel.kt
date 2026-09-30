@@ -3170,7 +3170,7 @@ class ChatViewModel(
         // request can't persist a level the model can't reach.
         val ceiling = currentModelMaxThinkingLevel
         val clamped = if (level.rank > ceiling.rank) ceiling else level
-        if (_thinkingLevel.value == clamped) return
+        // Even reselecting the current level is an explicit choice for future chats.
         _thinkingLevel.value = clamped
         persistThinkingOverride(clamped)
     }
@@ -3182,11 +3182,12 @@ class ChatViewModel(
      * value here — including OFF — because the user's explicit "turn it
      * off for this session" must persist as distinct from "never set".
      *
-     * Uses [ensureSession] so toggling on a draft (no DB row yet) first
-     * materialises the row, mirroring how toggleMemoryEnabled lands its
-     * preference on the persisted id rather than the `__new__…` draft key.
+     * Also remembers the choice globally for new chats, including on drafts.
+     * The session override is written only if a row already exists; otherwise
+     * [ensureSession] flushes the in-memory level on first send.
      */
     private fun persistThinkingOverride(level: ThinkingLevel) {
+        providerRepository.lastUsedThinkingLevel = level
         // [T-android-draft-no-row-on-open] Same rule as
         // `applyGroupSessionDefaults`: write only when a row exists, never
         // create one. Merely opening the thinking picker on a fresh chat and
@@ -5961,7 +5962,11 @@ class ChatViewModel(
                 _sessionTitle.value = UNTITLED_SESSION_TITLE
                 _sessionCategory.value = null
                 sessionContextLimitTokens = config.defaultContextLimitTokens
-                _thinkingLevel.value = config.defaultThinkingLevel ?: ThinkingLevel.OFF
+                // Explicit defaults win; otherwise reuse the user's last choice.
+                // Only new chats inherit this — existing sessions keep their override.
+                _thinkingLevel.value = config.defaultThinkingLevel
+                    ?: providerRepository.lastUsedThinkingLevel
+                    ?: ThinkingLevel.OFF
                 applyNewChatDefaultModel()
                 return@launch
             }

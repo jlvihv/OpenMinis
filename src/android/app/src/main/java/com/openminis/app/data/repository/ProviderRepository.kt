@@ -161,6 +161,7 @@ class ProviderRepository(private val context: Context) {
 
         /** [T-newchat-default-model-fallback-android] Global last-used model entry id. */
         private const val KEY_LAST_USED_ENTRY = "lastUsedModelEntryId"
+        private const val KEY_LAST_USED_THINKING_LEVEL = "lastUsedThinkingLevel"
 
         /**
          * [T-android-provider-voice] Normalize a base URL for shadow-voice
@@ -1016,6 +1017,16 @@ class ProviderRepository(private val context: Context) {
         set(value) {
             prefs.edit().apply {
                 if (value == null) remove(KEY_LAST_USED_ENTRY) else putString(KEY_LAST_USED_ENTRY, value)
+            }.apply()
+        }
+
+    /** Last explicit thinking choice, including OFF. Per-device, like [lastUsedEntryId]. */
+    var lastUsedThinkingLevel: ThinkingLevel?
+        get() = prefs.getString(KEY_LAST_USED_THINKING_LEVEL, null)?.let { ThinkingLevel.parseOrNull(it) }
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_LAST_USED_THINKING_LEVEL)
+                else putString(KEY_LAST_USED_THINKING_LEVEL, value.name)
             }.apply()
         }
 
