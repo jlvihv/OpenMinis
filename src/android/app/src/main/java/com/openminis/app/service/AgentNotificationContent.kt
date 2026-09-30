@@ -23,6 +23,13 @@ import kotlinx.serialization.json.Json
  */
 internal enum class AgentPhase { COMPLETED, TOOL, THINKING, GENERATING, IDLE }
 
+/** Visible work does not need a duplicate notification; other sessions still do. */
+internal fun shouldShowAgentStatus(
+    activeSessions: Set<String>,
+    presentSessions: Set<String>,
+    isAppForeground: Boolean,
+): Boolean = activeSessions.any { !isAppForeground || it !in presentSessions }
+
 internal fun resolveAgentPhase(
     isCompleted: Boolean,
     toolName: String?,

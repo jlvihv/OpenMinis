@@ -31,14 +31,28 @@ class StatusNotificationLayoutTest {
         val cleanup = source.substringAfter("private fun removeIdleStatusNotification()")
             .substringBefore("private fun refreshOngoingNotification()")
         assertTrue(cleanup.contains("if (SessionActivityTracker.activeSessions.value.isNotEmpty()) return"))
-        assertTrue(cleanup.contains("stopForeground(STOP_FOREGROUND_REMOVE)"))
+        assertTrue(cleanup.contains("hideStatusNotification()"))
+        assertTrue(source.contains("stopForeground(STOP_FOREGROUND_REMOVE)"))
         assertTrue(cleanup.contains("releaseWakeLock()"))
         assertFalse(cleanup.contains("cancelAllActiveStreams"))
         val start = source.substringAfter("override fun onStartCommand(").substringBefore("override fun onBind(")
         assertTrue(start.contains("removeIdleStatusNotification()"))
         assertTrue(start.contains("acquireWakeLock()"))
         val observer = source.substringAfter("private fun applyOverlayState(").substringBefore("MUTUAL EXCLUSION")
-        assertTrue(observer.contains("removeIdleStatusNotification()"))
+        assertTrue(observer.contains("refreshOngoingNotification()"))
+    }
+
+    @Test fun `viewing active chat hides status but background work still shows it`() {
+        assertFalse(shouldShowAgentStatus(setOf("a"), setOf("a"), true))
+        assertTrue(shouldShowAgentStatus(setOf("a"), setOf("a"), false))
+        assertTrue(shouldShowAgentStatus(setOf("a"), emptySet(), true))
+        assertTrue(shouldShowAgentStatus(setOf("a", "b"), setOf("a"), true))
+        assertFalse(shouldShowAgentStatus(emptySet(), setOf("a"), false))
+        val refresh = source.substringAfter("private fun refreshOngoingNotification()")
+            .substringBefore("private fun acquireWakeLock()")
+        assertTrue(refresh.contains("if (!shouldDisplayStatusNotification())"))
+        assertTrue(refresh.contains("if (!statusForegroundAttached)"))
+        assertTrue(refresh.contains("startForeground("))
     }
 
     @Test fun `completion notifications remain dismissible and suppressed in foreground`() {

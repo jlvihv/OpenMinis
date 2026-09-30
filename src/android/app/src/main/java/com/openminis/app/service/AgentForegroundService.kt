@@ -169,6 +169,7 @@ class AgentForegroundService : Service() {
 
     // [T-android-live-update-chip] See ensureChipTicker().
     private var chipTickerJob: Job? = null
+    private var statusForegroundAttached = false
     private var lingerJob: Job? = null
 
     // [T-android-overlay-completion-pending] X9: linger a completed-state
@@ -335,9 +336,10 @@ class AgentForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        statusForegroundAttached = true
         if (SessionActivityTracker.activeSessions.value.isNotEmpty()) {
             acquireWakeLock()
-            ensureChipTicker()
+            if (shouldDisplayStatusNotification()) ensureChipTicker() else hideStatusNotification()
             return START_STICKY
         }
         removeIdleStatusNotification()
@@ -553,11 +555,9 @@ class AgentForegroundService : Service() {
     )
 
     private fun applyOverlayState(state: OverlayState) {
-        // Presence keeps this observer alive, but is not background work.
-        // Completed tasks use BackgroundTaskNotifier's dismissible message.
-        if (SessionActivityTracker.activeSessions.value.isEmpty()) {
-            removeIdleStatusNotification()
-        }
+        // Re-evaluate on foreground/background transitions too, not only on
+        // tokens. Leaving the chat must restore foreground protection promptly.
+        refreshOngoingNotification()
         val controller = overlayController ?: return
         val hasPerm = controller.hasOverlayPermission()
 
@@ -895,11 +895,25 @@ class AgentForegroundService : Service() {
         return DynamicIslandSupport.isDynamicIslandActive(this, userEnabled)
     }
 
-    private fun removeIdleStatusNotification() {
-        if (SessionActivityTracker.activeSessions.value.isNotEmpty()) return
+    private fun shouldDisplayStatusNotification(): Boolean {
+        val app = applicationContext as? MinisApp
+        return shouldShowAgentStatus(
+            SessionActivityTracker.activeSessions.value,
+            SessionActivityTracker.presentSessions.value,
+            app?.isAppForeground() == true,
+        )
+    }
+
+    private fun hideStatusNotification() {
         chipTickerJob?.cancel()
         chipTickerJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
+        statusForegroundAttached = false
+    }
+
+    private fun removeIdleStatusNotification() {
+        if (SessionActivityTracker.activeSessions.value.isNotEmpty()) return
+        hideStatusNotification()
         releaseWakeLock()
     }
 
@@ -908,13 +922,27 @@ class AgentForegroundService : Service() {
             removeIdleStatusNotification()
             return
         }
+        if (!shouldDisplayStatusNotification()) {
+            hideStatusNotification()
+            return
+        }
         try {
             val notification = buildNotification(
                 SessionActivityTracker.activeSessions.value.size,
                 SessionActivityTracker.currentToolStatus.value,
             )
-            getSystemService(NotificationManager::class.java)
-                ?.notify(NOTIFICATION_ID, notification)
+            if (!statusForegroundAttached) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+                statusForegroundAttached = true
+                acquireWakeLock()
+                ensureChipTicker()
+            } else {
+                getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "refreshOngoingNotification failed: ${t.message}")
         }
