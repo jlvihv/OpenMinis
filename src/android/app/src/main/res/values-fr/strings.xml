@@ -1097,13 +1097,13 @@
     <string name="notif_task_completed_channel_name">Fin de tâche</string>
     <string name="notif_task_completed_channel_description">Notifie lorsqu\'une session d\'Agent se termine pendant que l\'app est en arrière-plan.</string>
     <string name="notif_task_completed_default_title">Tâche terminée</string>
-    <string name="notif_task_completed_body">Appuyez pour ouvrir le chat et lire la réponse.</string>
+    <string name="notif_task_completed_body">Tâche terminée.</string>
     <string name="notif_config_confirm_channel_name">Approbations de configuration</string>
     <string name="notif_config_confirm_channel_description">Avertit lorsqu\'une modification de configuration attend votre approbation pendant que l\'application est en arrière-plan.</string>
     <string name="notif_config_confirm_title">⚙️ Modification de configuration en attente d\'approbation</string>
     <string name="notif_config_confirm_body_single">Une modification nécessite votre examen — ouvrez Minis pour approuver ou refuser.</string>
     <string name="notif_config_confirm_body_multi">%d modifications nécessitent votre examen — ouvrez Minis pour approuver ou refuser.</string>
-    <string name="notif_task_failed_body">La tâche s\'est terminée par une erreur. Appuyez pour ouvrir le chat.</string>
+    <string name="notif_task_failed_body">La tâche s\'est terminée par une erreur.</string>
     <string name="selection_add_to_chat_input">Ajouter au champ de saisie</string>
     <string name="selection_read_aloud">Lire la sélection</string>
     <string name="selection_read_from_start">Lire depuis le début</string>

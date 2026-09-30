@@ -10800,6 +10800,7 @@ class ChatViewModel(
                             // for the assistant message body. These are O(n) calls
                             // but happen at throttled cadence, not per delta.
                             // (activeSb === currentTextBlockSb by construction.)
+                            SessionActivityTracker.publishLiveReply(activeSessionId, activeSb)
                             materializeActiveTextBlock()
                             val turnSnap = turnTextSb.toString()
                             withContext(Dispatchers.Main) {
@@ -10906,6 +10907,8 @@ class ChatViewModel(
                             //     can pick up fields as they appear.
                             //   - leave content empty during streaming (real output arrives
                             //     after ToolCallComplete).
+                            val completeTitle = com.openminis.app.service.completedToolTitle(chunk.accumulated)
+                            SessionActivityTracker.publishToolTitle(activeSessionId, prev.toolName, completeTitle)
                             val partialTitle = extractPartialStringValue("tool_title", chunk.accumulated)
                             val liveTitle = when {
                                 !partialTitle.isNullOrEmpty() -> partialTitle
@@ -10947,6 +10950,11 @@ class ChatViewModel(
                         val toolCompleteId = dedupeToolCompleteId(chunk.id)
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
                         toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
+                        SessionActivityTracker.publishToolTitle(
+                            activeSessionId, chunk.name,
+                            chunk.args.optString("tool_title", "").takeIf { it.isNotBlank() }
+                                ?: friendlyToolTitle(chunk.name),
+                        )
                         // [T-android-gemini3-thoughtsig / #179] Stash the Gemini
                         // 3.x thought signature keyed by the (deduped) tool call id.
                         chunk.thoughtSignature?.let { toolCallSignatures[toolCompleteId] = it }

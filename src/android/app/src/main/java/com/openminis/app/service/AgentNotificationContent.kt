@@ -4,6 +4,7 @@ import androidx.annotation.DrawableRes
 import com.openminis.app.R
 import com.openminis.app.ui.chat.friendlyToolTitleFor
 import com.openminis.app.ui.chat.toolIconResFor
+import kotlinx.serialization.json.Json
 
 /**
  * [T-android-live-update-content] Pure content model for the ongoing agent
@@ -54,9 +55,7 @@ internal fun notificationSmallIconFor(phase: AgentPhase, toolName: String?): Int
 /**
  * Title for the [AgentPhase.TOOL] row: the model-supplied `tool_title`
  * ("Open Baidu home page") when there is one, otherwise the per-tool label
- * the overlay uses ("Execute Shell"). Both are far shorter than the old
- * "Minis is using Shell" sentence, which matters on OEM chips that fall
- * back to the content title (see [chipTimerText]).
+ * the overlay uses ("Execute Shell").
  */
 internal fun toolRowTitle(toolName: String, toolTitle: String?): String =
     toolTitle?.takeIf { it.isNotBlank() } ?: friendlyToolTitleFor(toolName)
@@ -72,8 +71,59 @@ internal fun humanizeToolStatus(status: String, toolName: String?): String {
     return friendlyToolTitleFor(toolName)
 }
 
+internal data class LiveToolContent(val name: String, val title: String)
+
+/** Wait for the closing JSON quote, rather than publishing half a title. */
+internal fun completedToolTitle(input: String): String? {
+    val value = Regex("\"tool_title\"\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\")")
+        .find(input)?.groupValues?.get(1) ?: return null
+    return runCatching { Json.decodeFromString<String>(value) }.getOrNull()
+        ?.takeIf { it.isNotBlank() }
+}
+
+/** Latest visible reply heading, or the latest nonempty line; never reasoning. */
+internal fun replyStatusText(text: CharSequence?): String? {
+    if (text == null || text.isEmpty()) return null
+    // Bound work and allocation even when the reply is a long generated file.
+    val tail = text.subSequence((text.length - 2048).coerceAtLeast(0), text.length).toString()
+    val lines = tail.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+    val heading = lines.lastOrNull { it.matches(Regex("#{1,6}\\s+.+")) }
+    val selected = heading ?: lines.lastOrNull() ?: return null
+    return selected.replace(Regex("^#{1,6}\\s+"), "")
+        .replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+        .replace(Regex("[*`_]+"), "")
+        .replace(Regex("\\s+"), " ").trim().take(120).takeIf { it.isNotBlank() }
+}
+
+/** Leave room for the icon: CJK/emoji glyphs are wider than Latin letters. */
+internal fun chipContentText(content: String): String {
+    val clean = content.replace(Regex("\\s+"), " ").trim()
+    val points = clean.codePoints().toArray()
+    fun width(point: Int) = if (point >= 0x1100) 2 else 1
+    if (points.size <= 7 && points.sumOf { width(it) } <= 10) return clean
+    var count = 0
+    var units = 0
+    for (point in points) {
+        if (count == 6 || units + width(point) > 9) break
+        units += width(point)
+        count++
+    }
+    return clean.substring(0, clean.offsetByCodePoints(0, count)) + "…"
+}
+
+internal fun liveUpdateContent(
+    phase: AgentPhase,
+    toolTitle: String?,
+    replyPreview: String?,
+    fallback: String,
+): String = when (phase) {
+    AgentPhase.TOOL -> toolTitle?.takeIf { it.isNotBlank() } ?: fallback
+    AgentPhase.GENERATING, AgentPhase.COMPLETED -> replyPreview?.takeIf { it.isNotBlank() } ?: fallback
+    AgentPhase.THINKING, AgentPhase.IDLE -> fallback
+}
+
 /**
- * Compact elapsed text for the status-bar chip: `m:ss`, growing to `h:mm:ss`
+ * Compact elapsed text for the notification details: `m:ss`, growing to `h:mm:ss`
  * past an hour. Kept ≤ 7 characters — the length `setShortCriticalText` is
  * documented to display without truncation.
  */

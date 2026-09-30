@@ -118,6 +118,8 @@ class BackgroundTaskNotifier(
     }
 
     private fun postNotification(sessionId: String, title: String, body: String) {
+        // The user may have returned while the database lookup was in flight.
+        if (isAppForeground()) return
         // Pre-Tiramisu: we don't need the runtime permission, just post.
         // Tiramisu+: NotificationManagerCompat.areNotificationsEnabled
         // is the right gate — POST_NOTIFICATIONS is requested at toggle-on

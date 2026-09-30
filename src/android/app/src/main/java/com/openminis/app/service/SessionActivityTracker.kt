@@ -168,6 +168,38 @@ object SessionActivityTracker {
     private val _lastReplyExcerpt = MutableStateFlow<String?>(null)
     val lastReplyExcerpt: StateFlow<String?> = _lastReplyExcerpt.asStateFlow()
 
+    /** Visible reply only, separate from the completion overlay's excerpt. */
+    private val _liveReplyPreview = MutableStateFlow<String?>(null)
+    val liveReplyPreview: StateFlow<String?> = _liveReplyPreview.asStateFlow()
+    private var lastReplyNotificationAtMs = 0L
+
+    private val _pendingToolContent = MutableStateFlow<LiveToolContent?>(null)
+    internal val pendingToolContent: StateFlow<LiveToolContent?> = _pendingToolContent.asStateFlow()
+
+    fun publishToolTitle(sessionId: String, name: String, title: String?) {
+        if (_currentSessionId.value != sessionId || title.isNullOrBlank()) return
+        val content = LiveToolContent(name, title)
+        if (_pendingToolContent.value == content) return
+        _pendingToolContent.value = content
+        updateService()
+    }
+
+    fun publishLiveReply(sessionId: String, text: CharSequence?) {
+        if (_currentSessionId.value != sessionId) return
+        val preview = replyStatusText(text) ?: return
+        val replacesTool = _pendingToolContent.value != null
+        if (_liveReplyPreview.value == preview && !replacesTool) return
+        _pendingToolContent.value = null
+        _liveReplyPreview.value = preview
+        val now = SystemClock.elapsedRealtime()
+        // Streaming can emit dozens of deltas per second. The chip ticker
+        // picks up the latest value; limit immediate service updates to 1 Hz.
+        if (replacesTool || now - lastReplyNotificationAtMs >= 1000L) {
+            lastReplyNotificationAtMs = now
+            updateService()
+        }
+    }
+
     /**
      * [T-android-overlay-reply-status-34599] Session ID associated with
      * [lastReplyExcerpt] and the current activity. Drives the
@@ -496,6 +528,8 @@ object SessionActivityTracker {
             collapsed
         }
         _currentSessionId.value = sessionId
+        _pendingToolContent.value = null
+        _liveReplyPreview.value = replyStatusText(fullText)
         _lastReplyExcerpt.value = excerpt
     }
 
@@ -556,6 +590,9 @@ object SessionActivityTracker {
         // doesn't briefly see a stale reply attached to a fresh run.
         _currentSessionId.value = sessionId
         _lastReplyExcerpt.value = null
+        _liveReplyPreview.value = null
+        _pendingToolContent.value = null
+        lastReplyNotificationAtMs = 0L
         _isThinking.value = false
         _lastToolName.value = null
         _lastToolTitle.value = null

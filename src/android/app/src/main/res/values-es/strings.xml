@@ -1097,13 +1097,13 @@
     <string name="notif_task_completed_channel_name">Tarea completada</string>
     <string name="notif_task_completed_channel_description">Avisa cuando una sesión de Minis Agent termina mientras la app está en segundo plano.</string>
     <string name="notif_task_completed_default_title">Tarea completada</string>
-    <string name="notif_task_completed_body">Toca para abrir el chat y leer la respuesta.</string>
+    <string name="notif_task_completed_body">Tarea completada.</string>
     <string name="notif_config_confirm_channel_name">Aprobaciones de configuración</string>
     <string name="notif_config_confirm_channel_description">Avisa cuando un cambio de configuración espera tu aprobación mientras la app está en segundo plano.</string>
     <string name="notif_config_confirm_title">⚙️ Cambio de configuración pendiente de aprobación</string>
     <string name="notif_config_confirm_body_single">Un cambio necesita tu revisión: abre Minis para aprobarlo o rechazarlo.</string>
     <string name="notif_config_confirm_body_multi">%d cambios necesitan tu revisión: abre Minis para aprobarlos o rechazarlos.</string>
-    <string name="notif_task_failed_body">La tarea terminó con un error. Toca para abrir la conversación.</string>
+    <string name="notif_task_failed_body">La tarea terminó con un error.</string>
     <string name="selection_add_to_chat_input">Agregar a la entrada del chat</string>
     <string name="selection_read_aloud">Leer la selección</string>
     <string name="selection_read_from_start">Leer desde el inicio</string>

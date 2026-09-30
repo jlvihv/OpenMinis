@@ -1097,13 +1097,13 @@
     <string name="notif_task_completed_channel_name">Conclusão de tarefas</string>
     <string name="notif_task_completed_channel_description">Avisa quando uma sessão do Agente termina com o app em segundo plano.</string>
     <string name="notif_task_completed_default_title">Tarefa concluída</string>
-    <string name="notif_task_completed_body">Toque para abrir a conversa e ler a resposta.</string>
+    <string name="notif_task_completed_body">Tarefa concluída.</string>
     <string name="notif_config_confirm_channel_name">Aprovações de configuração</string>
     <string name="notif_config_confirm_channel_description">Avisa quando uma mudança de configuração aguarda sua aprovação e o app está em segundo plano.</string>
     <string name="notif_config_confirm_title">⚙️ Mudança de configuração aguardando aprovação</string>
     <string name="notif_config_confirm_body_single">Uma mudança precisa da sua análise — abra o Minis para aprovar ou recusar.</string>
     <string name="notif_config_confirm_body_multi">%d mudanças precisam da sua análise — abra o Minis para aprovar ou recusar.</string>
-    <string name="notif_task_failed_body">A tarefa terminou com erro. Toque para abrir a conversa.</string>
+    <string name="notif_task_failed_body">A tarefa terminou com erro.</string>
     <string name="selection_add_to_chat_input">Adicionar ao campo de conversa</string>
     <string name="selection_read_aloud">Ler a seleção</string>
     <string name="selection_read_from_start">Ler desde o início</string>

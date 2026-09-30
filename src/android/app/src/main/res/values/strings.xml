@@ -1262,13 +1262,13 @@
     <string name="notif_task_completed_channel_name">Task Completion</string>
     <string name="notif_task_completed_channel_description">Notifies when an Agent session finishes while the app is backgrounded.</string>
     <string name="notif_task_completed_default_title">Task completed</string>
-    <string name="notif_task_completed_body">Tap to open the chat and read the response.</string>
+    <string name="notif_task_completed_body">Task completed.</string>
     <string name="notif_config_confirm_channel_name">Config Approvals</string>
     <string name="notif_config_confirm_channel_description">Notifies when a configuration change is waiting for your approval while the app is backgrounded.</string>
     <string name="notif_config_confirm_title">⚙️ Config change awaiting approval</string>
     <string name="notif_config_confirm_body_single">A change needs your review — open Minis to approve or reject.</string>
     <string name="notif_config_confirm_body_multi">%d changes need your review — open Minis to approve or reject.</string>
-    <string name="notif_task_failed_body">Task ended with an error. Tap to open the chat.</string>
+    <string name="notif_task_failed_body">Task ended with an error.</string>
 
     <!-- T-selection-add-to-input — long-press text selection menu action -->
     <string name="selection_add_to_chat_input">Add to Chat Input</string>

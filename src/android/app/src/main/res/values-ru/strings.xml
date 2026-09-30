@@ -1099,13 +1099,13 @@
     <string name="notif_task_completed_channel_name">Завершение задач</string>
     <string name="notif_task_completed_channel_description">Уведомляет, когда сессия Minis Agent завершается, пока приложение в фоне.</string>
     <string name="notif_task_completed_default_title">Задача завершена</string>
-    <string name="notif_task_completed_body">Нажмите, чтобы открыть чат и прочитать ответ.</string>
+    <string name="notif_task_completed_body">Задача завершена.</string>
     <string name="notif_config_confirm_channel_name">Подтверждение настроек</string>
     <string name="notif_config_confirm_channel_description">Уведомляет, когда изменение конфигурации ожидает вашего подтверждения, пока приложение в фоне.</string>
     <string name="notif_config_confirm_title">⚙️ Изменение конфигурации ждёт подтверждения</string>
     <string name="notif_config_confirm_body_single">Изменение требует вашего рассмотрения — откройте Minis, чтобы принять или отклонить.</string>
     <string name="notif_config_confirm_body_multi">%d изменений требуют вашего рассмотрения — откройте Minis, чтобы принять или отклонить.</string>
-    <string name="notif_task_failed_body">Задача завершилась с ошибкой. Нажмите, чтобы открыть чат.</string>
+    <string name="notif_task_failed_body">Задача завершилась с ошибкой.</string>
     <string name="selection_add_to_chat_input">Добавить в поле ввода чата</string>
     <string name="selection_read_aloud">Прочитать выделенное</string>
     <string name="selection_read_from_start">Читать сначала</string>

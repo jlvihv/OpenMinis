@@ -1102,13 +1102,13 @@
     <string name="notif_task_completed_channel_name">タスク完了</string>
     <string name="notif_task_completed_channel_description">アプリがバックグラウンドにあるとき Agent セッションの完了を通知します。</string>
     <string name="notif_task_completed_default_title">タスクが完了しました</string>
-    <string name="notif_task_completed_body">タップしてチャットを開き、返信を表示します。</string>
+    <string name="notif_task_completed_body">タスクが完了しました。</string>
     <string name="notif_config_confirm_channel_name">設定の承認</string>
     <string name="notif_config_confirm_channel_description">アプリがバックグラウンドの間、設定変更が承認待ちのときに通知します。</string>
     <string name="notif_config_confirm_title">⚙️ 設定変更が承認待ちです</string>
     <string name="notif_config_confirm_body_single">確認が必要な変更があります —— Minis を開いて承認または拒否してください。</string>
     <string name="notif_config_confirm_body_multi">確認が必要な変更が %d 件あります —— Minis を開いて承認または拒否してください。</string>
-    <string name="notif_task_failed_body">タスクがエラーで終了しました。タップしてチャットを開きます。</string>
+    <string name="notif_task_failed_body">タスクがエラーで終了しました。</string>
     <string name="selection_add_to_chat_input">入力欄に追加</string>
     <string name="selection_read_aloud">選択部分を読み上げ</string>
     <string name="selection_read_from_start">最初から読み上げ</string>

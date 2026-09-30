@@ -1102,13 +1102,13 @@
     <string name="notif_task_completed_channel_name">Penyelesaian Tugas</string>
     <string name="notif_task_completed_channel_description">Memberi tahu saat sesi Agen selesai ketika aplikasi berada di latar belakang.</string>
     <string name="notif_task_completed_default_title">Tugas selesai</string>
-    <string name="notif_task_completed_body">Ketuk untuk membuka obrolan dan membaca balasannya.</string>
+    <string name="notif_task_completed_body">Tugas selesai.</string>
     <string name="notif_config_confirm_channel_name">Persetujuan Konfigurasi</string>
     <string name="notif_config_confirm_channel_description">Memberi tahu saat ada perubahan konfigurasi yang menunggu persetujuan Anda ketika aplikasi berada di latar belakang.</string>
     <string name="notif_config_confirm_title">⚙️ Perubahan konfigurasi menunggu persetujuan</string>
     <string name="notif_config_confirm_body_single">Ada perubahan yang perlu Anda tinjau — buka Minis untuk menyetujui atau menolak.</string>
     <string name="notif_config_confirm_body_multi">%d perubahan perlu Anda tinjau — buka Minis untuk menyetujui atau menolak.</string>
-    <string name="notif_task_failed_body">Tugas berakhir dengan galat. Ketuk untuk membuka obrolan.</string>
+    <string name="notif_task_failed_body">Tugas berakhir dengan galat.</string>
     <string name="selection_add_to_chat_input">Tambahkan ke Kolom Obrolan</string>
     <string name="selection_read_aloud">Bacakan Pilihan</string>
     <string name="selection_read_from_start">Baca dari Awal</string>

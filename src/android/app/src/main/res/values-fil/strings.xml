@@ -1097,13 +1097,13 @@
     <string name="notif_task_completed_channel_name">Pagkatapos ng Gawain</string>
     <string name="notif_task_completed_channel_description">Nagpapaalam kapag natapos ang session ng Agent habang nasa background ang app.</string>
     <string name="notif_task_completed_default_title">Tapos na ang gawain</string>
-    <string name="notif_task_completed_body">I-tap para buksan ang chat at basahin ang sagot.</string>
+    <string name="notif_task_completed_body">Tapos na ang gawain.</string>
     <string name="notif_config_confirm_channel_name">Mga Pag-apruba sa Config</string>
     <string name="notif_config_confirm_channel_description">Nagpapaalam kapag may pagbabago sa configuration na naghihintay ng pag-apruba mo habang nasa background ang app.</string>
     <string name="notif_config_confirm_title">⚙️ May pagbabago sa config na naghihintay ng pag-apruba</string>
     <string name="notif_config_confirm_body_single">May pagbabagong kailangan mong suriin — buksan ang Minis para aprubahan o tanggihan.</string>
     <string name="notif_config_confirm_body_multi">May %d pagbabagong kailangan mong suriin — buksan ang Minis para aprubahan o tanggihan.</string>
-    <string name="notif_task_failed_body">Nagtapos ang gawain nang may error. I-tap para buksan ang chat.</string>
+    <string name="notif_task_failed_body">Nagtapos ang gawain nang may error.</string>
     <string name="selection_add_to_chat_input">Idagdag sa Chat Input</string>
     <string name="selection_read_aloud">Basahin ang Napili</string>
     <string name="selection_read_from_start">Basahin Mula sa Simula</string>

@@ -1098,13 +1098,13 @@
     <string name="notif_task_completed_channel_name">작업 완료</string>
     <string name="notif_task_completed_channel_description">앱이 백그라운드에 있을 때 Agent 세션 완료를 알립니다.</string>
     <string name="notif_task_completed_default_title">작업이 완료되었습니다</string>
-    <string name="notif_task_completed_body">탭하여 채팅을 열고 응답을 확인하세요.</string>
+    <string name="notif_task_completed_body">작업이 완료되었습니다.</string>
     <string name="notif_config_confirm_channel_name">구성 승인</string>
     <string name="notif_config_confirm_channel_description">앱이 백그라운드에 있는 동안 구성 변경이 승인을 기다릴 때 알립니다.</string>
     <string name="notif_config_confirm_title">⚙️ 구성 변경이 승인을 기다리는 중</string>
     <string name="notif_config_confirm_body_single">검토가 필요한 변경이 있습니다 —— Minis를 열어 승인 또는 거부하세요.</string>
     <string name="notif_config_confirm_body_multi">검토가 필요한 변경이 %d건 있습니다 —— Minis를 열어 승인 또는 거부하세요.</string>
-    <string name="notif_task_failed_body">작업이 오류로 종료되었습니다. 탭하여 채팅을 엽니다.</string>
+    <string name="notif_task_failed_body">작업이 오류로 종료되었습니다.</string>
     <string name="selection_add_to_chat_input">입력란에 추가</string>
     <string name="selection_read_aloud">선택 영역 읽기</string>
     <string name="selection_read_from_start">처음부터 읽기</string>

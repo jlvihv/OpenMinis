@@ -1197,13 +1197,13 @@
     <string name="notif_task_completed_channel_name">Završetak zadatka</string>
     <string name="notif_task_completed_channel_description">Obavještava kad Agent sesija završi dok je aplikacija u pozadini.</string>
     <string name="notif_task_completed_default_title">Zadatak dovršen</string>
-    <string name="notif_task_completed_body">Dodirnite za otvaranje razgovora i čitanje odgovora.</string>
+    <string name="notif_task_completed_body">Zadatak je dovršen.</string>
     <string name="notif_config_confirm_channel_name">Odobrenja konfiguracije</string>
     <string name="notif_config_confirm_channel_description">Obavještava kad promjena konfiguracije čeka vaše odobrenje dok je aplikacija u pozadini.</string>
     <string name="notif_config_confirm_title">⚙️ Promjena konfiguracije čeka odobrenje</string>
     <string name="notif_config_confirm_body_single">Promjena traži vaš pregled — otvorite Minis za odobrenje ili odbijanje.</string>
     <string name="notif_config_confirm_body_multi">%d promjena traži vaš pregled — otvorite Minis za odobrenje ili odbijanje.</string>
-    <string name="notif_task_failed_body">Zadatak je završio greškom. Dodirnite za otvaranje razgovora.</string>
+    <string name="notif_task_failed_body">Zadatak je završio greškom.</string>
 
     <!-- T-selection-add-to-input — long-press text selection menu action -->
     <string name="selection_add_to_chat_input">Dodaj u unos razgovora</string>

@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -336,9 +335,13 @@ class AgentForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-        ensureChipTicker()
-
-        return START_STICKY
+        if (SessionActivityTracker.activeSessions.value.isNotEmpty()) {
+            acquireWakeLock()
+            ensureChipTicker()
+            return START_STICKY
+        }
+        removeIdleStatusNotification()
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -550,6 +553,11 @@ class AgentForegroundService : Service() {
     )
 
     private fun applyOverlayState(state: OverlayState) {
+        // Presence keeps this observer alive, but is not background work.
+        // Completed tasks use BackgroundTaskNotifier's dismissible message.
+        if (SessionActivityTracker.activeSessions.value.isEmpty()) {
+            removeIdleStatusNotification()
+        }
         val controller = overlayController ?: return
         val hasPerm = controller.hasOverlayPermission()
 
@@ -594,7 +602,7 @@ class AgentForegroundService : Service() {
             }
             wasBusy = stillWorking
             // [T-android-dynamic-island] The overlay hid reactively above; make
-            // the notification switch to the promoted ProgressStyle promptly too
+            // the notification switch to the promoted text style promptly too
             // (rather than waiting for the next tool/status tick that rebuilds
             // it). Only when we're actually foregrounded as a service — a bare
             // notify() here would post a non-FGS notification. Guard on active
@@ -849,26 +857,20 @@ class AgentForegroundService : Service() {
     /**
      * [T-android-dynamic-island] Re-post the ongoing status notification with
      * the current session/status so a dynamic-island toggle flip switches the
-     * notification style (promoted ProgressStyle ↔ plain) without waiting for
+     * notification style (promoted text ↔ plain) without waiting for
      * the next tool tick. Uses NotificationManager.notify on the same id — the
      * service is already in the foreground for this id, so this updates it in
      * place rather than posting a duplicate.
      */
     /**
      * [T-android-live-update-chip] Once-a-second re-post of the promoted
-     * notification while a run is in flight, so the status-bar chip's
-     * `shortCriticalText` carries a live elapsed timer.
+     * notification while a run is in flight, so the status-bar chip picks up
+     * the latest visible reply excerpt without per-token notify traffic.
      *
-     * Why not the chronometer: AOSP's chip shows the chronometer when there
-     * is no short text, but at least one OEM skin (ColorOS 16 "fluid cloud")
-     * ignores it and falls back to the content title — producing the
-     * stretched "Minis is usin…" pill in the user's recording. A short text
-     * is honoured everywhere, and the only way to keep it live is to
-     * re-post. One LOW-importance, only-alert-once notify per second is
-     * well under the platform's per-package enqueue rate limit and matches
-     * what system recorder / timer chips do. Not used on the compat branch
-     * (API < 36 or island off): there the system Chronometer view already
-     * ticks locally with no notify() traffic.
+     * Keep streaming updates bounded to once a second. Tool transitions also
+     * refresh immediately through the normal tracker/service path. The full
+     * title lives in the notification and only its compact excerpt goes into
+     * shortCriticalText. Neither branch displays a run-duration counter.
      */
     private fun ensureChipTicker() {
         if (chipTickerJob?.isActive == true) return
@@ -893,7 +895,19 @@ class AgentForegroundService : Service() {
         return DynamicIslandSupport.isDynamicIslandActive(this, userEnabled)
     }
 
+    private fun removeIdleStatusNotification() {
+        if (SessionActivityTracker.activeSessions.value.isNotEmpty()) return
+        chipTickerJob?.cancel()
+        chipTickerJob = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        releaseWakeLock()
+    }
+
     private fun refreshOngoingNotification() {
+        if (SessionActivityTracker.activeSessions.value.isEmpty()) {
+            removeIdleStatusNotification()
+            return
+        }
         try {
             val notification = buildNotification(
                 SessionActivityTracker.activeSessions.value.size,
@@ -1050,8 +1064,6 @@ class AgentForegroundService : Service() {
         // first. Fall back to startTimeMs for the presence-only case (user in a
         // chat having never run anything), where no run anchor exists.
         val anchorMs = SessionActivityTracker.currentRunStartedAtMs.value ?: startTimeMs
-        val elapsedMs = (endMs - anchorMs).coerceAtLeast(0L)
-        val timeString = chipTimerText(elapsedMs)
 
         // [T-android-notification-chronometer] Wall-clock instant this run
         // began, for setWhen()/setUsesChronometer().
@@ -1073,6 +1085,10 @@ class AgentForegroundService : Service() {
 
         val mainIntent = Intent(this, Class.forName("com.openminis.app.MainActivity")).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            SessionActivityTracker.currentSessionId.value?.let { sessionId ->
+                action = Intent.ACTION_VIEW
+                data = android.net.Uri.parse("minis://session/$sessionId")
+            }
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -1081,29 +1097,23 @@ class AgentForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, AgentForegroundService::class.java).apply {
-            action = ACTION_STOP
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this,
-            1,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val sessionLabel = SessionActivityTracker.overlayTasks.value
+            .firstOrNull { it.sessionId == SessionActivityTracker.currentSessionId.value }
+            ?.title?.takeIf { it.isNotBlank() }?.take(60)
+            ?: resources.getQuantityString(R.plurals.bg_service_sessions, sessionCount, sessionCount)
 
-        val sessionLabel = resources.getQuantityString(
-            R.plurals.bg_service_sessions, sessionCount, sessionCount,
-        )
-
-        // T-bg-overlay phase 1: enrich the ongoing notification.
-        // Title:   "Minis is using <Tool>"  (or session-count summary when idle/between turns)
-        // Text:    one-line "<sessionLabel> · <elapsed>" so the always-visible row stays compact
-        // BigText: full status string from SessionActivityTracker.currentToolStatus when expanded
-        // Progress: indeterminate while a tool is in flight (isToolRunning), hidden otherwise
-        // The system Doze-friendly setOnlyAlertOnce keeps repeated rebuilds silent.
-        val toolName = SessionActivityTracker.currentToolName.value
-        val toolTitle = SessionActivityTracker.currentToolTitle.value
-        val isToolRunning = SessionActivityTracker.isToolRunning.value
+        // Two lines: conversation title, then current tool/reply content.
+        // No duration, fake progress or external stop action.
+        // A model can spend seconds streaming arguments after its title is
+        // already complete. Keep that title visible even before dispatch and
+        // after a fast tool finishes, until new visible text replaces it.
+        val pendingTool = SessionActivityTracker.pendingToolContent.value
+        val executingToolName = SessionActivityTracker.currentToolName.value
+        val toolName = executingToolName ?: pendingTool?.name
+        val toolTitle = if (executingToolName != null) {
+            SessionActivityTracker.currentToolTitle.value
+                ?: pendingTool?.takeIf { it.name == executingToolName }?.title
+        } else pendingTool?.title
         val hasActiveSessions = SessionActivityTracker.activeSessions.value.isNotEmpty()
 
         // [T-android-live-update-content] One phase drives icon, title and
@@ -1123,58 +1133,30 @@ class AgentForegroundService : Service() {
         )
         val smallIcon = notificationSmallIconFor(phase, toolName)
         val soulName = SoulStore.cachedMetadata.value.name.ifBlank { SoulMetadata.DEFAULT.name }
-        val titleText = when (phase) {
+        val replyPreview = SessionActivityTracker.liveReplyPreview.value
+        val fallbackTitle = when (phase) {
             AgentPhase.COMPLETED -> getString(R.string.bg_service_notification_title_completed)
             AgentPhase.TOOL -> toolRowTitle(toolName!!, toolTitle)
-            AgentPhase.THINKING, AgentPhase.GENERATING -> soulName
-            AgentPhase.IDLE -> getString(R.string.bg_service_notification_title)
+            AgentPhase.THINKING -> getString(R.string.overlay_thinking)
+            AgentPhase.GENERATING -> getString(R.string.overlay_streaming)
+            AgentPhase.IDLE -> soulName
         }
-        val collapsedText = when (phase) {
-            // Completed is a RESTING state: the chronometer is off, so the
-            // total run time has to stay in the text or it would vanish.
-            AgentPhase.COMPLETED ->
-                getString(R.string.bg_service_notification_text_completed, sessionLabel, timeString)
-            // [T-android-notification-chronometer] No baked-in time while
-            // running — the system Chronometer (compat branch) or the ticked
-            // shortCriticalText (promoted branch) renders the clock.
-            AgentPhase.TOOL -> getString(
-                R.string.bg_service_notification_text_running,
-                sessionLabel,
-                humanizeToolStatus(toolStatus, toolName),
-            )
-            AgentPhase.THINKING -> getString(
-                R.string.bg_service_notification_text_running,
-                sessionLabel,
-                getString(R.string.overlay_thinking),
-            )
-            AgentPhase.GENERATING -> getString(
-                R.string.bg_service_notification_text_running,
-                sessionLabel,
-                getString(R.string.overlay_streaming),
-            )
-            AgentPhase.IDLE -> getString(R.string.bg_service_notification_text_running, sessionLabel, toolStatus)
-        }
+        val statusText = liveUpdateContent(phase, toolTitle, replyPreview, fallbackTitle)
+        val titleText = sessionLabel
+        val collapsedText = statusText
 
-        // [T-android-live-update-chip] Short critical text — the ≤7-char
-        // string the Android 16 status-bar chip shows next to the small icon.
-        // Always the elapsed timer: while running it is refreshed once a
-        // second by ensureChipTicker(), when completed it freezes at the run
-        // duration. It used to be null while running so the chronometer
-        // could own the clock; ColorOS 16 then fell back to rendering the
-        // full content title in the chip, which is the stretched pill the
-        // user recorded. With the timer always present the chip is
-        // [tool glyph][m:ss] on every skin — the same compact shape as the
-        // iOS Dynamic Island and the system screen-recorder chip.
-        val shortCritical = chipTimerText(elapsedMs)
+        // Show what the agent is doing/saying, not a timer. Keep the full
+        // title in the notification; the status-bar chip gets a compact excerpt.
+        val shortCritical = chipContentText(statusText)
 
         // [T-android-dynamic-island] Tier 3: Android 16 (Baklava) Live Updates.
         // When the device is capable AND the user enabled the toggle, build the
-        // ongoing notification with Notification.ProgressStyle and request
+        // ongoing text notification with BigTextStyle and request
         // promotion (FLAG_PROMOTED_ONGOING) so it surfaces on the status chip /
         // "dynamic island". androidx.core 1.15 has none of these APIs, so this
         // branch drops to the native Notification.Builder. Everything the
         // promoted-notification contract requires is satisfied here: ongoing,
-        // a contentTitle, a supported style (ProgressStyle), NOT a group
+        // a contentTitle, a supported style (BigTextStyle), NOT a group
         // summary, NOT colorized, and the channel importance is LOW (not MIN).
         // [T-android-safemode-lateinit-crash-147] `?.` protects against a null
         // Application, NOT against an uninitialized lateinit — the safe call
@@ -1191,18 +1173,16 @@ class AgentForegroundService : Service() {
             this,
             dynamicIslandUserEnabled,
         )
-        if (dynamicIslandOn && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        if (dynamicIslandOn && !isCompleted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             return buildPromotedNotification(
                 titleText = titleText,
                 collapsedText = collapsedText,
                 shortCritical = shortCritical,
                 smallIcon = smallIcon,
-                isToolRunning = isToolRunning,
                 isCompleted = isCompleted,
                 runStartWallMs = runStartWallMs,
                 finishedWallMs = finishedWallMs,
                 contentIntent = pendingIntent,
-                stopIntent = stopPendingIntent,
             )
         }
 
@@ -1211,38 +1191,15 @@ class AgentForegroundService : Service() {
             .setContentTitle(titleText)
             .setContentText(collapsedText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(collapsedText))
-            .setOngoing(true)
-            // [T-android-notification-chronometer] Let the system render the
-            // clock. SystemUI binds a real Chronometer view for this, so it
-            // ticks once a second locally — no notify() per second, which would
-            // be rate-limited as a notification flood and cost wakeups.
-            // Completed freezes at the finish instant (chronometer off, `when`
-            // pinned there); running counts up from the run's start.
+            .setOngoing(!isCompleted)
+            // Keep only the system timestamp; no running-duration counter.
             .setShowWhen(true)
             .setWhen(if (isCompleted) finishedWallMs else runStartWallMs)
-            .setUsesChronometer(!isCompleted)
+            .setUsesChronometer(false)
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-
-        // [T-android-live-update-completed] Same rule as the promoted branch:
-        // no Stop once there is nothing left to stop.
-        if (!isCompleted) {
-            builder.addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.bg_service_stop_action),
-                stopPendingIntent,
-            )
-        }
-
-        if (isToolRunning) {
-            // Tools rarely report determinate progress (shell/browser/a11y
-            // are open-ended). Always indeterminate while a tool is in
-            // flight; explicitly drop progress when not, so the bar
-            // disappears at idle/between-turn moments.
-            builder.setProgress(0, 0, true)
-        }
 
         return builder.build()
     }
@@ -1253,9 +1210,8 @@ class AgentForegroundService : Service() {
      * Notification.Builder (androidx.core 1.15 lacks these APIs). Requires
      * API >= 36 — callers gate on Build.VERSION.SDK_INT before invoking.
      *
-     * Uses Notification.ProgressStyle with an indeterminate segment while a
-     * tool is running (tools are open-ended: shell/browser/a11y rarely report
-     * determinate progress), and requests promotion via FLAG_PROMOTED_ONGOING.
+     * Uses a text-only BigTextStyle and requests Live Update promotion.
+     * No synthetic progress or external Stop action.
      */
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.BAKLAVA)
     private fun buildPromotedNotification(
@@ -1263,76 +1219,33 @@ class AgentForegroundService : Service() {
         collapsedText: String,
         shortCritical: String,
         smallIcon: Int,
-        isToolRunning: Boolean,
         isCompleted: Boolean,
         runStartWallMs: Long,
         finishedWallMs: Long,
         contentIntent: PendingIntent,
-        stopIntent: PendingIntent,
     ): Notification {
-        // [T-android-dynamic-island] A ProgressStyle only counts as a valid
-        // *promotable* style when it carries at least one progress segment with
-        // positive length — an empty ProgressStyle (even an indeterminate one)
-        // fails Notification.hasPromotableCharacteristics() and the notification
-        // silently drops to a plain ongoing row (confirmed on-device: every
-        // other precondition passed, only the ProgressStyle validity failed).
-        // So the segment is NOT optional: it is what keeps the chip promoted,
-        // and it is why this style survives even though we show no percentage.
-        //
-        // [T-android-live-update-progressbar] An agent run has exactly two
-        // states the user cares about — running and done — and no meaningful
-        // fraction in between (tools are open-ended; there is no Nth-of-M to
-        // report). Rendered as a tracker, that produced a bar parked at 0 %
-        // with a paper-plane sitting on the left for the entire run: it looked
-        // like a stalled download rather than "working".
-        //
-        // setStyledByProgress(false) keeps the style (so promotion holds) but
-        // stops it drawing as a position tracker, and clearing the tracker icon
-        // removes the plane. The two states are carried by the title, the icon
-        // and the elapsed timer, which is where a user actually reads them.
-        val progressStyle = Notification.ProgressStyle()
-            .addProgressSegment(Notification.ProgressStyle.Segment(100))
-            .setStyledByProgress(false)
-            .setProgressTrackerIcon(null)
-            .setProgressIndeterminate(isToolRunning && !isCompleted)
-            .setProgress(if (isCompleted) 100 else 0)
+        // Standard text styles support promotion too. An agent has no honest
+        // percentage to report, so never draw a decorative progress bar.
+        val textStyle = Notification.BigTextStyle().bigText(collapsedText)
 
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(smallIcon)
             .setContentTitle(titleText)
             .setContentText(collapsedText)
-            .setStyle(progressStyle)
+            .setStyle(textStyle)
             .setOngoing(true)
-            // [T-android-notification-chronometer] Same rule as the compat
-            // branch — the promoted chip is precisely where a frozen clock was
-            // most visible, since it stays on screen for the whole run.
+            // Keep only the system timestamp; the chip shows current content.
             .setShowWhen(true)
             .setWhen(if (isCompleted) finishedWallMs else runStartWallMs)
-            .setUsesChronometer(!isCompleted)
+            .setUsesChronometer(false)
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
             // Explicitly NOT colorized and NOT a group summary — both would
             // disqualify the notification from promotion.
             .setColorized(false)
 
-        // [T-android-notification-chronometer] Only when non-null: while
-        // running the chronometer owns the clock, and a second stale copy of
-        // the same number would contradict it.
+        // The compact status-bar excerpt is independent of the first-line title.
         builder.setShortCriticalText(shortCritical)
-
-        // [T-android-live-update-completed] "Stop" is meaningless once the task
-        // has finished — there is nothing left to stop, and offering it invites
-        // a tap that does nothing visible. Reported from a device screenshot
-        // showing "任务已完成 ✓" above a live Stop button.
-        if (!isCompleted) {
-            builder.addAction(
-                Notification.Action.Builder(
-                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
-                    getString(R.string.bg_service_stop_action),
-                    stopIntent,
-                ).build(),
-            )
-        }
 
         // [T-android-dynamic-island] Request the always-visible "dynamic island"
         // promotion. The public builder method `setRequestPromotedOngoing(true)`

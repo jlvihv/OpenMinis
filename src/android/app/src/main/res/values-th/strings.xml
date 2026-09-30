@@ -1098,13 +1098,13 @@
     <string name="notif_task_completed_channel_name">งานเสร็จสิ้น</string>
     <string name="notif_task_completed_channel_description">แจ้งเตือนเมื่อเซสชันของ Agent เสร็จสิ้นขณะที่แอปอยู่เบื้องหลัง</string>
     <string name="notif_task_completed_default_title">งานเสร็จสิ้น</string>
-    <string name="notif_task_completed_body">แตะเพื่อเปิดแชทและอ่านคำตอบ</string>
+    <string name="notif_task_completed_body">งานเสร็จแล้ว</string>
     <string name="notif_config_confirm_channel_name">การอนุมัติการตั้งค่า</string>
     <string name="notif_config_confirm_channel_description">แจ้งเตือนเมื่อมีการเปลี่ยนแปลงการตั้งค่ารอการอนุมัติจากคุณขณะที่แอปอยู่เบื้องหลัง</string>
     <string name="notif_config_confirm_title">⚙️ มีการเปลี่ยนแปลงการตั้งค่ารอการอนุมัติ</string>
     <string name="notif_config_confirm_body_single">มีการเปลี่ยนแปลงที่ต้องให้คุณตรวจสอบ — เปิด Minis เพื่ออนุมัติหรือปฏิเสธ</string>
     <string name="notif_config_confirm_body_multi">มีการเปลี่ยนแปลง %d รายการที่ต้องให้คุณตรวจสอบ — เปิด Minis เพื่ออนุมัติหรือปฏิเสธ</string>
-    <string name="notif_task_failed_body">งานจบลงด้วยข้อผิดพลาด แตะเพื่อเปิดแชท</string>
+    <string name="notif_task_failed_body">งานจบลงด้วยข้อผิดพลาด</string>
     <string name="selection_add_to_chat_input">เพิ่มลงในช่องแชท</string>
     <string name="selection_read_aloud">อ่านส่วนที่เลือก</string>
     <string name="selection_read_from_start">อ่านตั้งแต่ต้น</string>

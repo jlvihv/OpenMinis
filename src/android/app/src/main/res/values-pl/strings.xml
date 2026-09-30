@@ -1099,13 +1099,13 @@
     <string name="notif_task_completed_channel_name">Zakończenie zadania</string>
     <string name="notif_task_completed_channel_description">Powiadamia o zakończeniu sesji Agenta, gdy aplikacja działa w tle.</string>
     <string name="notif_task_completed_default_title">Zadanie ukończone</string>
-    <string name="notif_task_completed_body">Dotknij, aby otworzyć czat i przeczytać odpowiedź.</string>
+    <string name="notif_task_completed_body">Zadanie zostało ukończone.</string>
     <string name="notif_config_confirm_channel_name">Zatwierdzanie konfiguracji</string>
     <string name="notif_config_confirm_channel_description">Powiadamia, gdy zmiana konfiguracji czeka na Twoje zatwierdzenie, a aplikacja działa w tle.</string>
     <string name="notif_config_confirm_title">⚙️ Zmiana konfiguracji czeka na zatwierdzenie</string>
     <string name="notif_config_confirm_body_single">Zmiana wymaga Twojej weryfikacji — otwórz Minis, aby zatwierdzić lub odrzucić.</string>
     <string name="notif_config_confirm_body_multi">Weryfikacji wymagają zmiany: %d — otwórz Minis, aby zatwierdzić lub odrzucić.</string>
-    <string name="notif_task_failed_body">Zadanie zakończyło się błędem. Dotknij, aby otworzyć czat.</string>
+    <string name="notif_task_failed_body">Zadanie zakończyło się błędem.</string>
     <string name="selection_add_to_chat_input">Dodaj do pola czatu</string>
     <string name="selection_read_aloud">Przeczytaj zaznaczenie</string>
     <string name="selection_read_from_start">Przeczytaj od początku</string>

@@ -1097,13 +1097,13 @@
     <string name="notif_task_completed_channel_name">Aufgabenabschluss</string>
     <string name="notif_task_completed_channel_description">Benachrichtigt, wenn eine Agent-Sitzung abgeschlossen ist, während die App im Hintergrund läuft.</string>
     <string name="notif_task_completed_default_title">Aufgabe abgeschlossen</string>
-    <string name="notif_task_completed_body">Tippen, um den Chat zu öffnen und die Antwort zu lesen.</string>
+    <string name="notif_task_completed_body">Aufgabe abgeschlossen.</string>
     <string name="notif_config_confirm_channel_name">Konfigurationsfreigaben</string>
     <string name="notif_config_confirm_channel_description">Benachrichtigt, wenn eine Konfigurationsänderung auf Ihre Freigabe wartet, während die App im Hintergrund läuft.</string>
     <string name="notif_config_confirm_title">⚙️ Konfigurationsänderung wartet auf Freigabe</string>
     <string name="notif_config_confirm_body_single">Eine Änderung erfordert Ihre Prüfung — öffnen Sie Minis zum Bestätigen oder Ablehnen.</string>
     <string name="notif_config_confirm_body_multi">%d Änderungen erfordern Ihre Prüfung — öffnen Sie Minis zum Bestätigen oder Ablehnen.</string>
-    <string name="notif_task_failed_body">Aufgabe mit Fehler beendet. Tippen, um den Chat zu öffnen.</string>
+    <string name="notif_task_failed_body">Aufgabe mit Fehler beendet.</string>
     <string name="selection_add_to_chat_input">Zum Eingabefeld hinzufügen</string>
     <string name="selection_read_aloud">Auswahl vorlesen</string>
     <string name="selection_read_from_start">Von Anfang an vorlesen</string>

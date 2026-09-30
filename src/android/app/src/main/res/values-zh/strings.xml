@@ -1153,13 +1153,13 @@
     <string name="notif_task_completed_channel_name">任务完成</string>
     <string name="notif_task_completed_channel_description">在应用处于后台且 Agent 会话完成时弹出通知。</string>
     <string name="notif_task_completed_default_title">任务已完成</string>
-    <string name="notif_task_completed_body">点击打开聊天查看回复。</string>
+    <string name="notif_task_completed_body">任务已完成。</string>
     <string name="notif_config_confirm_channel_name">配置审批</string>
     <string name="notif_config_confirm_channel_description">当有配置变更在应用后台运行时等待你确认，会发出通知。</string>
     <string name="notif_config_confirm_title">⚙️ 配置变更等待确认</string>
     <string name="notif_config_confirm_body_single">有一项变更需要你确认 —— 打开 Minis 批准或拒绝。</string>
     <string name="notif_config_confirm_body_multi">有 %d 项变更需要你确认 —— 打开 Minis 批准或拒绝。</string>
-    <string name="notif_task_failed_body">任务执行失败。点击打开聊天。</string>
+    <string name="notif_task_failed_body">任务执行失败。</string>
     <string name="selection_add_to_chat_input">添加到输入框</string>
     <string name="selection_read_aloud">朗读选中内容</string>
     <string name="selection_read_from_start">从头朗读</string>

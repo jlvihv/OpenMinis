@@ -1098,13 +1098,13 @@
     <string name="notif_task_completed_channel_name">Finalizarea sarcinilor</string>
     <string name="notif_task_completed_channel_description">Anunță când o sesiune a Agentului se termină în timp ce aplicația este în fundal.</string>
     <string name="notif_task_completed_default_title">Sarcină finalizată</string>
-    <string name="notif_task_completed_body">Atinge pentru a deschide conversația și a citi răspunsul.</string>
+    <string name="notif_task_completed_body">Sarcina s-a încheiat.</string>
     <string name="notif_config_confirm_channel_name">Aprobări de configurare</string>
     <string name="notif_config_confirm_channel_description">Anunță când o modificare de configurare îți așteaptă aprobarea, iar aplicația este în fundal.</string>
     <string name="notif_config_confirm_title">⚙️ O modificare de configurare așteaptă aprobarea</string>
     <string name="notif_config_confirm_body_single">O modificare are nevoie de verificarea ta — deschide Minis pentru a o aproba sau respinge.</string>
     <string name="notif_config_confirm_body_multi">%d modificări au nevoie de verificarea ta — deschide Minis pentru a le aproba sau respinge.</string>
-    <string name="notif_task_failed_body">Sarcina s-a încheiat cu o eroare. Atinge pentru a deschide conversația.</string>
+    <string name="notif_task_failed_body">Sarcina s-a încheiat cu o eroare.</string>
     <string name="selection_add_to_chat_input">Adaugă în câmpul de conversație</string>
     <string name="selection_read_aloud">Citește selecția</string>
     <string name="selection_read_from_start">Citește de la început</string>

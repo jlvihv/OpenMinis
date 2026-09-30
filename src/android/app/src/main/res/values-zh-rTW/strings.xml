@@ -1151,13 +1151,13 @@
     <string name="notif_task_completed_channel_name">工作完成</string>
     <string name="notif_task_completed_channel_description">當應用程式在背景時，Agent 工作階段結束後發出通知。</string>
     <string name="notif_task_completed_default_title">工作已完成</string>
-    <string name="notif_task_completed_body">點擊以開啟對話並閱讀回覆。</string>
+    <string name="notif_task_completed_body">工作已完成。</string>
     <string name="notif_config_confirm_channel_name">設定核准</string>
     <string name="notif_config_confirm_channel_description">當應用程式在背景時，若有設定變更等待您核准，就發出通知。</string>
     <string name="notif_config_confirm_title">⚙️ 設定變更待核准</string>
     <string name="notif_config_confirm_body_single">有一項變更需要您審核——請開啟 Minis 核准或拒絕。</string>
     <string name="notif_config_confirm_body_multi">有 %d 項變更需要您審核——請開啟 Minis 核准或拒絕。</string>
-    <string name="notif_task_failed_body">工作因錯誤而結束。點擊以開啟對話。</string>
+    <string name="notif_task_failed_body">工作因錯誤而結束。</string>
     <string name="selection_add_to_chat_input">加入到輸入框</string>
     <string name="selection_read_aloud">朗讀選取內容</string>
     <string name="selection_read_from_start">從頭朗讀</string>
