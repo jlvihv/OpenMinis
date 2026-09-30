@@ -1,5 +1,7 @@
 package com.openminis.app.sandbox.offload
 
+import com.openminis.app.sandbox.NativeOffloadResult
+
 /**
  * Tiny long-option parser shared by android-* offload handlers.
  *
@@ -24,7 +26,8 @@ internal class OffloadArgs(argv: List<String>, booleanFlags: Set<String> = empty
         // so handlers that haven't been wired through OffloadOutput.formatBody
         // yet still reject the flag's value as a no-op rather than as a
         // missing-positional error.
-        val effectiveBooleanFlags = booleanFlags + OffloadOutput.OUTPUT_FLAGS
+        // Help never takes a value: `--help set` must not consume the command.
+        val effectiveBooleanFlags = booleanFlags + OffloadOutput.OUTPUT_FLAGS + setOf("h", "help")
         val pos = mutableListOf<String>()
         val fs = mutableSetOf<String>()
         val vs = mutableMapOf<String, String>()
@@ -59,6 +62,13 @@ internal class OffloadArgs(argv: List<String>, booleanFlags: Set<String> = empty
         positional = pos
         flags = fs
         values = vs
+    }
+
+    /** Explicit help is successful; a bare invocation still lacks a required command. */
+    fun helpOrMissingCommand(help: String): NativeOffloadResult? = when {
+        hasFlag("h", "help") -> NativeOffloadResult(0, help)
+        positional.isEmpty() -> NativeOffloadResult(2, help)
+        else -> null
     }
 
     fun hasFlag(vararg names: String): Boolean = names.any { it in flags }

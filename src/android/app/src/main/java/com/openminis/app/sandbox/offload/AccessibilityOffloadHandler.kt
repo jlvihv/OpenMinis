@@ -118,9 +118,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
                 "confirm", "deny", "children", "ancestors",
             ),
         )
-        if (args.hasFlag("h", "help") || args.positional.isEmpty()) {
-            return NativeOffloadResult(if (args.positional.isEmpty()) 2 else 0, TOP_HELP)
-        }
+        args.helpOrMissingCommand(TOP_HELP)?.let { return it }
         val sub = args.positional[0]
         // T330: tri-state agent gate via OffloadPermissionManager. `service`
         // and `--version` are diagnostic and pass through so the agent (or

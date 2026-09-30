@@ -43,9 +43,7 @@ class AlarmOffloadHandler(private val context: Context) : NativeOffloadHandler {
 
     override fun handle(request: NativeOffloadRequest): NativeOffloadResult {
         val args = OffloadArgs(request.argv.drop(1))
-        if (args.hasFlag("h", "help") || args.positional.isEmpty()) {
-            return NativeOffloadResult(if (args.positional.isEmpty()) 2 else 0, HELP)
-        }
+        args.helpOrMissingCommand(HELP)?.let { return it }
 
         return try {
             when (val sub = args.positional[0]) {

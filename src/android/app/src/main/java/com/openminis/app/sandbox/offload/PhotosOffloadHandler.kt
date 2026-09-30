@@ -58,9 +58,7 @@ class PhotosOffloadHandler(private val context: Context) : NativeOffloadHandler 
 
     override fun handle(request: NativeOffloadRequest): NativeOffloadResult {
         val args = OffloadArgs(request.argv.drop(1), booleanFlags = setOf("confirm"))
-        if (args.hasFlag("h", "help") || args.positional.isEmpty()) {
-            return NativeOffloadResult(if (args.positional.isEmpty()) 2 else 0, HELP)
-        }
+        args.helpOrMissingCommand(HELP)?.let { return it }
         // T330: tri-state agent gate before requesting media permissions.
         OffloadGate.enforce("photos", "android-photos", args, request)?.let { return it }
 
