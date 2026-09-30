@@ -565,6 +565,17 @@
              only client-side requirement is the API_V23 uses-permission
              above; no separate provider or AIDL surface is needed. -->
 
+        <provider
+            android:name=".providers.MinisDocumentsProvider"
+            android:authorities="com.openminis.minis.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
         <!-- FileProvider for sharing exported JSON (provider config, etc.)
              to other apps. Paths exposed are under app-scoped cache. -->
         <provider
