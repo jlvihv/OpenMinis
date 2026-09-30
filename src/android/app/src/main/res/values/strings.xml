@@ -9,6 +9,7 @@
     <string name="no_sessions">No conversations yet</string>
     <string name="no_providers">Add a provider to get started</string>
     <string name="send">Send</string>
+    <string name="voice_panel_exit_voice">Switch to keyboard</string>
     <string name="type_message">Type a message…</string>
     <string name="delete">Delete</string>
     <string name="cancel">Cancel</string>
@@ -407,7 +408,7 @@
     <string name="onboarding_save_api_key">Save API Key</string>
     <string name="onboarding_saved">Saved</string>
     <string name="onboarding_select_models_title">Select Models</string>
-    <string name="onboarding_select_models_subtitle">Choose up to 3 models for your default group.</string>
+    <string name="onboarding_select_models_subtitle">Choose a default chat model.</string>
     <string name="onboarding_search_models">Search models</string>
     <string name="onboarding_filter_models">Filter models</string>
     <string name="onboarding_done_count">Done (%1$d/3)</string>
@@ -1938,4 +1939,17 @@
     <!-- [T-android-compact-progress] Live status while a compaction runs. -->
     <string name="compact_progress">Compacting… %1$d s elapsed</string>
     <string name="compact_progress_split">Compacting… %1$d s · summarizing in segments (%2$d/%3$d)</string>
+    <string name="model_selection_title">Models</string>
+    <string name="model_selection_description">Choose a model directly for each use.</string>
+    <string name="model_selection_default">Default chat model</string>
+    <string name="model_selection_last_used">Use last selected model</string>
+    <string name="model_selection_system">System engine</string>
+    <string name="model_selection_disabled">Disabled</string>
+    <string name="model_selection_vision">Image understanding model</string>
+    <string name="model_selection_vision_hint">Used when the chat model cannot read images.</string>
+    <string name="model_selection_agent">Models available to the assistant</string>
+    <string name="model_selection_add_models">Add models</string>
+    <string name="model_selection_disable_vision">Disable image helper</string>
+    <string name="model_selection_title_model">Title generation model</string>
+    <string name="model_selection_chat_model">Use chat model</string>
 </resources>

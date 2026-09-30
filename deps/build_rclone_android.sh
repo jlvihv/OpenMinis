@@ -36,7 +36,7 @@ gomobile bind -v \
   -target=android/arm64 \
   -androidapi 24 \
   -javapkg=com.openminis.rclone \
-  -ldflags="-s -w" \
+  -ldflags="-s -w -linkmode external -extldflags=-Wl,-z,max-page-size=16384,-z,common-page-size=16384" \
   -o "$BUILD/rclone.aar" \
   ./gomobile
 

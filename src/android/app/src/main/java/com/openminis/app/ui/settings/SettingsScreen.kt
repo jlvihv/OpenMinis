@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,7 +51,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +75,7 @@ import com.openminis.app.i18n.uppercaseForDisplay
 fun SettingsScreen(
     onBack: () -> Unit,
     onProvidersClick: () -> Unit,
-    onModelGroupsClick: () -> Unit,
+    onModelSelectionClick: () -> Unit,
     onRootfsClick: () -> Unit = {},
     onBackupClick: () -> Unit = {},
     onEnvVarsClick: () -> Unit = {},
@@ -112,7 +112,7 @@ fun SettingsScreen(
     var showFeedbackSheet by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(stringResource(R.string.settings_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -146,9 +146,9 @@ fun SettingsScreen(
                 SettingsItem(
                     icon = Icons.Outlined.Settings,
                     iconColor = Color(0xFF007AFF),
-                    title = stringResource(R.string.settings_model_groups),
-                    subtitle = stringResource(R.string.settings_model_groups_subtitle),
-                    onClick = onModelGroupsClick,
+                    title = stringResource(R.string.model_selection_title),
+                    subtitle = stringResource(R.string.model_selection_description),
+                    onClick = onModelSelectionClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.BarChart,

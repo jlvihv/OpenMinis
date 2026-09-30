@@ -1,5 +1,6 @@
 package com.openminis.app.ui.sandbox
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import com.openminis.app.R
 import androidx.compose.ui.res.stringResource
 import androidx.activity.compose.BackHandler
@@ -57,7 +58,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -100,7 +100,7 @@ fun FileBrowserScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(stringResource(R.string.filebrowser_title)) },
                 navigationIcon = {
                     IconButton(onClick = handleBack) {

@@ -107,7 +107,7 @@ enum class SessionLimit {
  *
  * The library's README suggests `(0.7, 0.7, 0.5, 0.95, 10, 57)`. Two of those
  * are wrong for us:
- *  - end frames `57` ≈ 1.8 s, where iOS waits ~5 s ([END_FRAMES]); and
+ *  - end frames `57` ≈ 1.8 s, where regular dictation waits ~5 s;
  *  - start/end probability `0.7`, which iOS tried and reverted — its comment
  *    records that at 0.7 the VAD "logged speechDetected=false across hundreds
  *    of frames while the user was actually speaking, so no segment was ever
@@ -117,9 +117,12 @@ enum class SessionLimit {
 class VoiceActivityDetector(
     private val context: Context,
     private val listener: VoiceActivityListener,
+    private val endSilenceFrames: Int = DEFAULT_END_FRAMES,
 ) {
 
     companion object {
+        const val DEFAULT_END_FRAMES = 156
+        const val QUICK_TURN_END_FRAMES = 31
         private const val TAG = "VAD"
 
         /** Capture rate. 48 kHz matches iOS and the APM resamples to 16 kHz for Silero. */
@@ -135,13 +138,6 @@ class VoiceActivityDetector(
 
         /** 10 frames ≈ 0.32 s to confirm speech onset. */
         private const val START_FRAMES = 10
-
-        /**
-         * 156 frames ≈ 5.0 s of trailing silence before a segment closes.
-         * The single most user-visible knob: on silence the mic STOPS (see
-         * [SegmentEndReason.SILENCE_DETECTED]), matching iOS.
-         */
-        private const val END_FRAMES = 156
 
         // ── Noise-aware AGC (iOS :62-71, :617-655) ──
         private const val GATE_RATIO = 2.5f
@@ -345,7 +341,7 @@ class VoiceActivityDetector(
             START_TRUE_RATIO,
             END_FALSE_RATIO,
             START_FRAMES,
-            END_FRAMES,
+            endSilenceFrames,
         )
     }
 

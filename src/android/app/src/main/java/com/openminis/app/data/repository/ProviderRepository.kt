@@ -253,7 +253,10 @@ class ProviderRepository(private val context: Context) {
      */
     private val configLock = Any()
 
-    private fun loadConfig(): ProviderConfig = runBlocking { loadConfigSuspending() }
+    private fun loadConfig(): ProviderConfig = runBlocking {
+        val loaded = loadConfigSuspending()
+        if (migrateToDirectModels(context, loaded, ::hasAnyCredential)) persistToDbAndMirror(loaded) else loaded
+    }
 
     /**
      * [T-android-provider-room-store] DB-first load with three-way
@@ -568,6 +571,7 @@ class ProviderRepository(private val context: Context) {
             // emit the in-memory state so the UI reflects the user's
             // intent even when the disk write didn't land; the next
             // successful save resyncs everything.
+            migrateToDirectModels(context, config, ::hasAnyCredential)
             val canonical = try {
                 runBlocking { persistToDbAndMirror(config) }
             } catch (e: Exception) {
@@ -977,18 +981,9 @@ class ProviderRepository(private val context: Context) {
      * instance are also filtered — orphaned ids would otherwise pin the
      * group to a model that can't be instantiated.
      */
-    fun enabledMemberEntries(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
-        val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
-        return group.memberEntryIds.mapNotNull { entryId ->
-            val entry = config.modelEntries.find { it.id == entryId }
-            if (entry != null && entry.providerInstanceId in enabledIds) entry else null
-        }
-    }
+
 
     /** Convenience: first enabled member of [group] in declaration order. */
-    fun firstEnabledMemberEntry(group: ModelGroup): ModelEntry? =
-        enabledMemberEntries(group).firstOrNull()
 
     /**
      * [T-android-group-resolve-skip-uncredentialed] Whether [instance] has ANY
@@ -1034,18 +1029,7 @@ class ProviderRepository(private val context: Context) {
      * Order is preserved from [ModelGroup.memberEntryIds] so "primary = first
      * member" still holds — the filter removes candidates, it never reorders.
      */
-    fun availableMemberEntries(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
-        return group.memberEntryIds.mapNotNull { entryId ->
-            val entry = config.modelEntries.find { it.id == entryId } ?: return@mapNotNull null
-            if (entry.isHidden) return@mapNotNull null
-            val instance = config.instances.find { it.id == entry.providerInstanceId }
-                ?: return@mapNotNull null
-            if (!instance.isEnabled) return@mapNotNull null
-            if (!hasAnyCredential(instance)) return@mapNotNull null
-            entry
-        }
-    }
+
 
     /**
      * [T-android-regenerate-title-submodel] The dedicated title-generation
@@ -1057,13 +1041,11 @@ class ProviderRepository(private val context: Context) {
      * (SessionListViewModel.regenerateTitle), mirroring iOS resolveSubEntry.
      */
     fun resolveTitleSubEntry(): ModelEntry? {
-        val subGroupId = defaultSubGroupId ?: return null
-        val group = group(subGroupId) ?: return null
-        // [T-android-group-resolve-skip-uncredentialed] Routing decision, so it
-        // needs the credential-aware filter: firstEnabledMemberEntry would hand
-        // back a member whose provider has no credential and title generation
-        // would fail on it instead of using the next usable member.
-        return availableMemberEntries(group).firstOrNull()
+        ensureConfigLoaded()
+        return _config.value.modelEntries.firstOrNull { entry ->
+            entry.id == _config.value.titleModelEntryId && !entry.isHidden &&
+                instance(entry.providerInstanceId)?.let { it.isEnabled && hasAnyCredential(it) } == true
+        }
     }
 
     /**
@@ -1248,51 +1230,11 @@ class ProviderRepository(private val context: Context) {
 
     // --- Model Group management ---
 
-    fun addGroup(group: ModelGroup): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.modelGroups.add(group)
-        saveConfig(config)
-    }
 
-    fun updateGroup(group: ModelGroup): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        val idx = config.modelGroups.indexOfFirst { it.id == group.id }
-        if (idx >= 0) {
-            // Defensive re-wrap: callers routinely pass `published.copy(...)`,
-            // and data-class copy() shares memberEntryIds BY REFERENCE with the
-            // published group. Storing that object would put published inner
-            // state back inside a working copy, quietly undoing the invariant.
-            config.modelGroups[idx] = group.copy(
-                memberEntryIds = group.memberEntryIds.toMutableList(),
-            )
-            saveConfig(config)
-        }
-    }
 
-    fun removeGroup(groupId: String): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.modelGroups.removeAll { it.id == groupId }
-        if (config.defaultPrimaryGroupId == groupId) {
-            config.defaultPrimaryGroupId = null
-        }
-        if (config.defaultSubGroupId == groupId) {
-            config.defaultSubGroupId = null
-        }
-        if (config.voiceInputGroupId == groupId) {
-            config.voiceInputGroupId = null
-        }
-        if (config.voiceOutputGroupId == groupId) {
-            config.voiceOutputGroupId = null
-        }
-        if (config.visionGroupId == groupId) {
-            config.visionGroupId = null
-        }
-        config.agentLoopGroupIds.removeAll { it == groupId }
-        saveConfig(config)
-    }
+
+
+
 
     /** Set the agent-loop-visible entry ID list (individual model entries). */
     fun setAgentLoopEntryIds(ids: List<String>): Unit = synchronized(configLock) {
@@ -1310,16 +1252,7 @@ class ProviderRepository(private val context: Context) {
     }
 
     /** Set the agent-loop-visible group ID list. */
-    fun setAgentLoopGroupIds(ids: List<String>): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.agentLoopGroupIds.clear()
-        // [T-android-agentloop-dup-key-crash] Dedup at the sink (see above) so
-        // no write path can persist duplicate group ids → duplicate LazyColumn
-        // key on the agent-loop groups list.
-        config.agentLoopGroupIds.addAll(ids.distinct())
-        saveConfig(config)
-    }
+
 
     // T182: thin add/remove helpers used by AgentLoopModelsSection +
     // AddAgentLoopModelsSheet / AddAgentLoopGroupsSheet. These wrap the
@@ -1343,18 +1276,10 @@ class ProviderRepository(private val context: Context) {
     }
 
     /** Append [groupId] to the agent-loop group-pin list if not already there. */
-    fun addAgentLoopGroup(groupId: String) {
-        val cur = _config.value.agentLoopGroupIds.toList()
-        if (groupId in cur) return
-        setAgentLoopGroupIds(cur + groupId)
-    }
+
 
     /** Remove [groupId] from the agent-loop group-pin list. No-op if absent. */
-    fun removeAgentLoopGroup(groupId: String) {
-        val cur = _config.value.agentLoopGroupIds.toList()
-        if (groupId !in cur) return
-        setAgentLoopGroupIds(cur.filterNot { it == groupId })
-    }
+
 
     // T186: reorder helpers — UI keeps a local mutable copy during
     // drag and pushes the final order through here on drop. Validates
@@ -1367,11 +1292,7 @@ class ProviderRepository(private val context: Context) {
         setAgentLoopEntryIds(newOrder)
     }
 
-    fun reorderAgentLoopGroups(newOrder: List<String>) {
-        val cur = _config.value.agentLoopGroupIds.toSet()
-        if (newOrder.toSet() != cur) return
-        setAgentLoopGroupIds(newOrder)
-    }
+
 
     /**
      * [T-android-provider-reorder] Reorder provider instances (drag-to-sort in
@@ -1456,34 +1377,7 @@ class ProviderRepository(private val context: Context) {
      * group's `sort_order` from its list index at save time and the DAO reads
      * `ORDER BY sort_order ASC`, so list position IS the stored order.
      */
-    fun reorderModelGroups(newOrder: List<String>): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        val current = config.modelGroups.toList()
-        if (current.isEmpty()) return
 
-        val byId = current.associateBy { it.id }
-        val seen = LinkedHashSet<String>()
-        val reordered = ArrayList<ModelGroup>(current.size)
-        for (id in newOrder) {
-            val group = byId[id] ?: continue     // drop unknown ids
-            if (!seen.add(id)) continue          // drop duplicates
-            reordered.add(group)
-        }
-        // Anything the caller didn't mention keeps its existing relative order.
-        for (group in current) {
-            if (seen.add(group.id)) reordered.add(group)
-        }
-
-        // No-op guard: skip the DB write + StateFlow churn when nothing moved.
-        if (reordered.map { it.id } == current.map { it.id }) return
-
-        synchronized(configLock) {
-            config.modelGroups.clear()
-            config.modelGroups.addAll(reordered)
-            saveConfig(config)
-        }
-    }
 
     /**
      * Resolve the effective model entries visible to the agent loop (minis-model-use).
@@ -1507,111 +1401,49 @@ class ProviderRepository(private val context: Context) {
         for (id in config.agentLoopModelEntryIds) {
             config.modelEntries.find { it.id == id }?.let(::consider)
         }
-        // Then group members, in group order
-        for (gid in config.agentLoopGroupIds) {
-            val group = config.modelGroups.find { it.id == gid } ?: continue
-            for (memberId in group.memberEntryIds) {
-                config.modelEntries.find { it.id == memberId }?.let(::consider)
-            }
-        }
         return out
     }
 
-    fun group(id: String): ModelGroup? =
-        _config.value.modelGroups.find { it.id == id }
 
-    var defaultPrimaryGroupId: String?
-        get() = _config.value.defaultPrimaryGroupId
-        set(value) = synchronized(configLock) {
-            val config = workingCopy()
-            config.defaultPrimaryGroupId = value
-            saveConfig(config)
-        }
-
-    var defaultSubGroupId: String?
-        get() = _config.value.defaultSubGroupId
-        set(value) = synchronized(configLock) {
-            val config = workingCopy()
-            config.defaultSubGroupId = value
-            saveConfig(config)
-        }
-
-    // --- Voice groups [T-android-provider-voice] ---
-
-    var voiceInputGroupId: String?
-        get() = _config.value.voiceInputGroupId
+    var titleModelEntryId: String?
+        get() = _config.value.titleModelEntryId
         set(value) = synchronized(configLock) {
             ensureConfigLoaded()
             val config = workingCopy()
-            config.voiceInputGroupId = value
+            config.titleModelEntryId = value
             saveConfig(config)
         }
 
-    var voiceOutputGroupId: String?
-        get() = _config.value.voiceOutputGroupId
+    var defaultModelEntryId: String?
+        get() = _config.value.defaultModelEntryId
         set(value) = synchronized(configLock) {
             ensureConfigLoaded()
             val config = workingCopy()
-            config.voiceOutputGroupId = value
+            config.defaultModelEntryId = value
             saveConfig(config)
         }
 
-    // --- Vision group [T-android-vision-group / GH#182] ---
-
-    var visionGroupId: String?
-        get() = _config.value.visionGroupId
+    var visionModelEntryId: String?
+        get() = _config.value.visionModelEntryId
         set(value) = synchronized(configLock) {
             ensureConfigLoaded()
             val config = workingCopy()
-            config.visionGroupId = value
+            config.visionModelEntryId = value
             saveConfig(config)
         }
 
-    /** True when a Vision Group is bound AND still exists. Gates read_image
-     *  tool exposure for main models that cannot natively see images. */
-    fun hasVisionGroupConfigured(): Boolean {
-        val gid = _config.value.visionGroupId ?: return false
-        return _config.value.modelGroups.any { it.id == gid }
-    }
+    fun hasVisionModelConfigured(): Boolean = resolveVisionCandidates().isNotEmpty()
 
-    /** Bound Vision group's display name, or null. */
-    fun visionGroupName(): String? {
-        val gid = _config.value.visionGroupId ?: return null
-        return _config.value.modelGroups.find { it.id == gid }?.name
-    }
+    fun visionModelName(): String? = _config.value.modelEntries
+        .firstOrNull { it.id == _config.value.visionModelEntryId }?.model?.displayName
 
-    /**
-     * [T-android-vision-group] Ordered vision-capable fail-over candidates from
-     * the bound Vision Group. Mirrors resolveVoiceInputCandidates: filters
-     * members to enabled instances whose model declares image input, honours
-     * the group's routing strategy (`fallback` keeps order; `loadBalance`
-     * rotates the start by [loadBalanceSeed] so separate reads spread across
-     * members). Returns [] when no group is bound or no member is usable — the
-     * caller (ReadImageTool) then returns a clear failure text.
-     */
     fun resolveVisionCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
         ensureConfigLoaded()
         val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.hasImageInput) return null
-            return inst to entry
-        }
-
-        val gid = config.visionGroupId ?: return emptyList()
-        val group = config.modelGroups.find { it.id == gid } ?: return emptyList()
-        var members = group.memberEntryIds.mapNotNull { providerEntry(it) }
-        if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-            val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-            members = members.drop(offset) + members.take(offset)
-        }
-        val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
-        for (m in members) {
-            if (out.none { it.second.id == m.second.id }) out.add(m)
-        }
-        return out
+        val entry = config.modelEntries.firstOrNull { it.id == config.visionModelEntryId } ?: return emptyList()
+        val instance = config.instances.firstOrNull { it.id == entry.providerInstanceId } ?: return emptyList()
+        return if (instance.isEnabled && !entry.isHidden && entry.model.hasImageInput && hasAnyCredential(instance))
+            listOf(instance to entry) else emptyList()
     }
 
     // --- Thinking rules (custom) [T-android-thinking-rules-phase2] ---
@@ -1740,49 +1572,12 @@ class ProviderRepository(private val context: Context) {
      * when a valid binding already exists. Mirrors iOS
      * ProviderConfigStore.ensureDefaultVoiceInputGroup.
      */
-    fun ensureDefaultVoiceInputGroup(): String? = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.voiceInputGroupId?.let { gid ->
-            if (config.modelGroups.any { it.id == gid }) return gid
-        }
-        val sentinel = SystemVoiceIds.BUILTIN_PROVIDER_ID
-        val group = ModelGroup(
-            name = "Voice Input",
-            memberEntryIds = mutableListOf(
-                "$sentinel/${SystemVoiceIds.SYSTEM_ASR_ONLINE}",
-                "$sentinel/${SystemVoiceIds.SYSTEM_ASR_OFFLINE}",
-            ),
-        )
-        config.modelGroups.add(group)
-        config.voiceInputGroupId = group.id
-        saveConfig(config)
-        android.util.Log.i("ProviderRepo", "[Voice] auto-created default Voice Input group ${group.id.take(8)} [System ASR online+offline]")
-        return group.id
-    }
 
     /**
      * Ensure a default Voice OUTPUT group exists and is bound. Seeds
      * "Voice Output" with the System TTS auto sentinel (device TextToSpeech,
      * best voice per reply language). Mirrors iOS ensureDefaultVoiceOutputGroup.
      */
-    fun ensureDefaultVoiceOutputGroup(): String? = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.voiceOutputGroupId?.let { gid ->
-            if (config.modelGroups.any { it.id == gid }) return gid
-        }
-        val sentinel = SystemVoiceIds.BUILTIN_PROVIDER_ID
-        val group = ModelGroup(
-            name = "Voice Output",
-            memberEntryIds = mutableListOf("$sentinel/${SystemVoiceIds.SYSTEM_TTS}"),
-        )
-        config.modelGroups.add(group)
-        config.voiceOutputGroupId = group.id
-        saveConfig(config)
-        android.util.Log.i("ProviderRepo", "[Voice] auto-created default Voice Output group ${group.id.take(8)} [System Voice (Auto)]")
-        return group.id
-    }
 
     /**
      * [T-android-voice-panel] Explicit voice-input engine override picked in
@@ -1837,22 +1632,11 @@ class ProviderRepository(private val context: Context) {
             providerEntry(override)?.let { return VoiceInputChoice(null, it) }
             // Stale override (entry removed) — fall through to the group.
         }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            for (memberId in group.memberEntryIds) {
-                if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return systemChoice(memberId)
-                providerEntry(memberId)?.let { return VoiceInputChoice(null, it) }
-            }
-        }
         return VoiceInputChoice(systemPreferOffline = null, entry = null)
     }
 
     /** Bound Voice Input group's display name, or null (chip's "Group · Model"). */
-    fun voiceInputGroupName(): String? {
-        val gid = _config.value.voiceInputGroupId ?: return null
-        return _config.value.modelGroups.find { it.id == gid }?.name
-    }
+
 
     /**
      * [T-android-provider-voice] Resolve the current provider-backed voice
@@ -1892,20 +1676,6 @@ class ProviderRepository(private val context: Context) {
             if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return emptyList()
             providerEntry(override)?.let { out.add(it) }
             // Stale override (entry removed) — fall through to the group.
-        }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            var members = group.memberEntryIds
-                .filter { !it.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID) }
-                .mapNotNull { providerEntry(it) }
-            if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-                val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-                members = members.drop(offset) + members.take(offset)
-            }
-            for (m in members) {
-                if (out.none { it.second.id == m.second.id }) out.add(m)
-            }
         }
         return out
     }
@@ -1977,16 +1747,7 @@ class ProviderRepository(private val context: Context) {
             providerEntry(override)?.let { return VoiceOutputChoice(false, it) }
             // Stale override (entry removed) — fall through to the group.
         }
-        val gid = config.voiceOutputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            for (memberId in group.memberEntryIds) {
-                if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) {
-                    return VoiceOutputChoice(isSystemEngine = true, entry = null)
-                }
-                providerEntry(memberId)?.let { return VoiceOutputChoice(false, it) }
-            }
-        }
+
         return VoiceOutputChoice(isSystemEngine = true, entry = null)
     }
 
@@ -2007,29 +1768,10 @@ class ProviderRepository(private val context: Context) {
      * member; the badge answers "which one leads", which is what the row's
      * fallback-strategy chip already promises.
      */
-    fun activeVoiceGroupMemberId(output: Boolean): String? {
-        ensureConfigLoaded()
-        val config = _config.value
-        val gid = if (output) config.voiceOutputGroupId else config.voiceInputGroupId
-        val group = config.modelGroups.find { it.id == gid } ?: return null
-        for (memberId in group.memberEntryIds) {
-            // System sentinels are always usable — the on-device engine needs
-            // no instance and is never disabled.
-            if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return memberId
-            val entry = config.modelEntries.find { it.id == memberId } ?: continue
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!inst.isEnabled) continue
-            val usable = if (output) entry.model.hasAudioOutput else entry.model.hasAudioInput
-            if (usable) return memberId
-        }
-        return null
-    }
+
 
     /** Bound Voice Output group's display name, or null. */
-    fun voiceOutputGroupName(): String? {
-        val gid = _config.value.voiceOutputGroupId ?: return null
-        return _config.value.modelGroups.find { it.id == gid }?.name
-    }
+
 
     /**
      * Resolve the current provider-backed voice OUTPUT selection, or null when
@@ -2168,7 +1910,7 @@ class ProviderRepository(private val context: Context) {
         // types that genuinely require a key" case is unchanged.
         //
         // This also makes refresh agree with the send path: ChatViewModel and
-        // VisionGroupResolver already resolve credentials through
+        // VisionModelResolver already resolve credentials through
         // `usableApiKey`, so a keyless local server could be chatted with but
         // not refreshed. That inconsistency was the bug.
         var apiKey = usableApiKey(instance)

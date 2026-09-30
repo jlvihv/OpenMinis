@@ -1,5 +1,6 @@
 package com.openminis.app.ui.sandbox
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import com.openminis.app.R
 import androidx.compose.ui.res.stringResource
 import android.content.ContentValues
@@ -57,7 +58,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -166,7 +166,7 @@ fun FilePreviewScreen(
     // (FileBrowserScreen) renders correctly with zero overrides; do the same.
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = {
                     Text(
                         text = if (showFullPath) item.file.absolutePath else item.name,

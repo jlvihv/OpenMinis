@@ -1,5 +1,6 @@
 package com.openminis.app.ui.onboarding
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import com.openminis.app.R
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.ui.components.MinisButton
@@ -33,7 +34,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -91,7 +91,7 @@ fun OnboardingModelSelectionScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(stringResource(R.string.onboarding_select_models_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -165,14 +165,14 @@ fun OnboardingModelSelectionScreen(
                         items(entries, key = { it.id }) { entry ->
                             val isSelected = entry.id in selected
                             val selectionIndex = selected.indexOf(entry.id)
-                            val canSelect = selected.size < 3 || isSelected
+                            val canSelect = true
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable(enabled = canSelect) {
                                         if (isSelected) selected.remove(entry.id)
-                                        else if (selected.size < 3) selected.add(entry.id)
+                                        else { selected.clear(); selected.add(entry.id) }
                                     }
                                     .padding(vertical = 10.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -220,13 +220,8 @@ fun OnboardingModelSelectionScreen(
             MinisButton(
                 onClick = {
                     if (selected.isNotEmpty()) {
-                        val group = ModelGroup(name = "Default Models")
-                        group.memberEntryIds.addAll(selected)
-                        providerRepository.addGroup(group)
-                        if (config.defaultPrimaryGroupId == null) {
-                            providerRepository.defaultPrimaryGroupId = group.id
+                            providerRepository.defaultModelEntryId = selected.first()
                         }
-                    }
                     onBack()
                 },
                 enabled = selected.isNotEmpty(),

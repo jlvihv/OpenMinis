@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import com.openminis.app.R
 import com.openminis.app.ui.components.MinisButton
 import com.openminis.app.ui.components.MinisTextButton
@@ -65,7 +66,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -648,7 +648,7 @@ fun SkillDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(skill.name) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -1155,7 +1155,7 @@ fun SkillFileViewerScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(fileName) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

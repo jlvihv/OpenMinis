@@ -279,14 +279,14 @@ private fun ModelSelectionStep(
                     items(entries, key = { it.id }) { entry ->
                         val isSelected = entry.id in selected
                         val selectionIndex = selected.indexOf(entry.id)
-                        val canSelect = selected.size < 3 || isSelected
+                        val canSelect = true
 
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(enabled = canSelect) {
                                     if (isSelected) selected.remove(entry.id)
-                                    else if (selected.size < 3) selected.add(entry.id)
+                                    else { selected.clear(); selected.add(entry.id) }
                                 }
                                 .padding(vertical = 8.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -342,12 +342,7 @@ private fun ModelSelectionStep(
                     onClick = {
                         // Create default model group from selections
                         if (selected.isNotEmpty()) {
-                            val group = ModelGroup(name = "Default Models")
-                            group.memberEntryIds.addAll(selected)
-                            providerRepository.addGroup(group)
-                            if (config.defaultPrimaryGroupId == null) {
-                                providerRepository.defaultPrimaryGroupId = group.id
-                            }
+                            providerRepository.defaultModelEntryId = selected.first()
                         }
                         onComplete()
                     },

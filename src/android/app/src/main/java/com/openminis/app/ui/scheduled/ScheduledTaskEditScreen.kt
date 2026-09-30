@@ -1,5 +1,6 @@
 package com.openminis.app.ui.scheduled
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,7 +40,6 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TimeInput
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
@@ -204,7 +204,7 @@ fun ScheduledTaskEditScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = {
                     Text(
                         stringResource(
@@ -583,53 +583,13 @@ private fun EditFormBody(
         val entryById: (String) -> com.openminis.app.data.model.ModelEntry? = { id ->
             cfg.modelEntries.firstOrNull { it.id == id }
         }
-        val groupById: (String) -> com.openminis.app.data.model.ModelGroup? = { id ->
-            cfg.modelGroups.firstOrNull { it.id == id }
-        }
-        // Pre-highlight the user's prior pick when re-opening the sheet:
-        //   - binding pinned to a group → highlight that group
-        //   - binding pinned to an entry → highlight that entry (no group)
-        //   - binding == null ("use default") → fall through to the app's
-        //     default primary group so the user sees it as the implicit
-        //     current selection (instead of an empty radio everywhere).
-        val preselectGroupId: String?
-        val preselectEntryId: String?
-        run {
-            val b = modelBindingForPreselect
-            val parsed = b?.let { json ->
-                runCatching { org.json.JSONObject(json) }.getOrNull()
-            }
-            val ptype = parsed?.optString("type")
-            preselectGroupId = when {
-                ptype == "group" -> parsed.optString("groupId").takeIf { it.isNotEmpty() }
-                b == null -> cfg.defaultPrimaryGroupId
-                else -> null
-            }
-            preselectEntryId = if (ptype == "entry") {
-                parsed.optString("entryId").takeIf { it.isNotEmpty() }
-            } else null
-        }
+        val preselectEntryId = modelBindingForPreselect?.let { binding ->
+            runCatching { org.json.JSONObject(binding).optString("entryId").takeIf { it.isNotEmpty() } }.getOrNull()
+        } ?: cfg.defaultModelEntryId
         com.openminis.app.ui.chat.ModelPickerSheet(
-            groups = cfg.modelGroups,
-            selectedGroupId = preselectGroupId,
             activeEntryId = preselectEntryId,
-            defaultPrimaryGroupId = cfg.defaultPrimaryGroupId,
             config = cfg,
             providerRepository = providerRepo,
-            onSelectGroup = { groupId ->
-                val name = groupById(groupId)?.name ?: "Group"
-                val json = """{"type":"group","groupId":"$groupId"}"""
-                onPickModel(json, name); showModelPicker = false
-            },
-            onSelectGroupEntry = { _, entryId ->
-                // User explicitly picked a single entry inside a group → pin
-                // to that entry; matches the chat screen's per-group entry
-                // override semantics.
-                val entry = entryById(entryId)
-                val name = entry?.model?.displayName ?: "Model"
-                val json = """{"type":"entry","entryId":"$entryId"}"""
-                onPickModel(json, name); showModelPicker = false
-            },
             onSelectEntry = { entryId ->
                 val entry = entryById(entryId)
                 val name = entry?.model?.displayName ?: "Model"

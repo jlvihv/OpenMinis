@@ -3,6 +3,7 @@ package com.openminis.app.sandbox
 import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.util.Log
+import com.openminis.app.BuildConfig
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -52,7 +53,9 @@ fun interface NativeOffloadHandler {
 
 object NativeOffloadServer {
     private const val TAG = "NativeOffloadServer"
-    private const val SOCKET_NAME = "native-offload"
+    // Abstract Unix socket names are global across apps. Include the app ID so
+    // an independently installed debug build cannot block the user's Minis.
+    private val SOCKET_NAME = "native-offload.${BuildConfig.APPLICATION_ID}"
     private const val MAGIC_REQ = 0x46464F4E  // 'N' 'O' 'F' 'F' little-endian
     private const val MAGIC_RSP = 0x52464F4E  // 'N' 'O' 'F' 'R'
     private const val VERSION = 1
@@ -72,7 +75,7 @@ object NativeOffloadServer {
     /** Run the opportunistic sweep every N replies, not on every single one. */
     private const val SWEEP_EVERY_N_REPLIES = 50L
 
-    const val socketName: String = SOCKET_NAME
+    val socketName: String = SOCKET_NAME
 
     private val handlers = ConcurrentHashMap<String, NativeOffloadHandler>()
     private val counter = AtomicLong(0)

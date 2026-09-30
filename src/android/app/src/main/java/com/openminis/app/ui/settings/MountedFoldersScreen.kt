@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -43,7 +44,6 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import com.openminis.app.ui.components.MinisTextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -159,7 +159,7 @@ fun MountedFoldersScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(stringResource(R.string.settings_mount_external_folders)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

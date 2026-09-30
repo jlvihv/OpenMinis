@@ -18,6 +18,15 @@ target_include_directories(jieba_jni PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/cppjieba/include
 )
 
+# NDK r27 does not use 16 KB ELF LOAD alignment by default. Android devices
+# with 16 KB pages require every JNI library to use it.
+foreach(target pty_bridge minis_crash_handler jieba_jni)
+    target_link_options(${target} PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
+endforeach()
+
 find_library(log-lib log)
 target_link_libraries(pty_bridge ${log-lib})
 target_link_libraries(minis_crash_handler ${log-lib})

@@ -104,44 +104,17 @@ internal object HeadlessChatRunner {
         }
         val app = app(context)
         val cfg = app.providerRepository.config.value
-        // No explicit model → bind to the user's default primary group (the
-        // `isDefault: true` group in provider.groups.list), matching the in-app
-        // "new chat, no model picked" path (ChatViewModel priority-3 fallback on
-        // providerRepository.defaultPrimaryGroupId). Without this the session
-        // kept whatever model ensureSession seeded — the first visible provider
-        // entry (e.g. OpenRouter's aion-labs/aion-3.0-mini) — not the default group.
-        val resolvedGroupId = modelGroupId ?: run {
-            if (modelEntryId != null) return@run null
-            cfg.defaultPrimaryGroupId?.takeIf { gid -> cfg.modelGroups.any { it.id == gid } }
-        }
-        if (modelEntryId == null && resolvedGroupId == null) return@withContext null
-        if (modelEntryId != null) {
-            val entry = cfg.modelEntries.firstOrNull { it.id == modelEntryId }
-                ?: throw RPCException(-32602, "Entry not found: $modelEntryId")
-            val instance = cfg.instances.firstOrNull { it.id == entry.providerInstanceId }
-                ?: throw RPCException(-32602, "Provider instance for entry not found")
-            if (!instance.isEnabled) throw RPCException(-32602, "Provider instance is disabled")
-            // The binding column stores a JSON object the VM parses in
-            // restoreFromBinding (ChatViewModel: {"type":"entry","entryId":…}).
-            // Writing the bare literal "entry" left restoreFromBinding unable to
-            // resolve the entry, so activeEntryId never flipped non-null, the
-            // headless provider-resolve wait timed out, and sendMessage
-            // early-returned with no LLM request — RPC-driven sessions produced
-            // a lone user message and no assistant turn.
-            val binding = """{"type":"entry","entryId":"${entry.id}"}"""
-            app.chatRepository.updateSessionBinding(sessionId, binding, entry.baseModel.id)
-            return@withContext entry.model.displayName
-        }
-        // modelGroupId (explicit) or the default primary group (implicit fallback)
-        val group = cfg.modelGroups.firstOrNull { it.id == resolvedGroupId }
-            ?: throw RPCException(-32602, "Group not found: $resolvedGroupId")
-        val firstMemberId = group.memberEntryIds.firstOrNull()
-        val firstMember = firstMemberId?.let { mid -> cfg.modelEntries.firstOrNull { it.id == mid } }
-        val resolvedModelId = firstMember?.baseModel?.id ?: ""
-        // Same JSON-object shape the VM expects for a group binding.
-        val groupBinding = """{"type":"group","groupId":"${group.id}"}"""
-        app.chatRepository.updateSessionBinding(sessionId, groupBinding, resolvedModelId)
-        return@withContext group.name
+        if (modelGroupId != null) throw RPCException(-32602, "Model groups were removed; use modelEntryId")
+        val id = modelEntryId ?: cfg.defaultModelEntryId ?: app.providerRepository.lastUsedVisibleEntry()?.id
+            ?: return@withContext null
+        val entry = cfg.modelEntries.firstOrNull { it.id == id }
+            ?: throw RPCException(-32602, "Entry not found: $id")
+        val instance = cfg.instances.firstOrNull { it.id == entry.providerInstanceId }
+            ?: throw RPCException(-32602, "Provider instance not found")
+        if (!instance.isEnabled) throw RPCException(-32602, "Provider instance is disabled")
+        val binding = org.json.JSONObject().put("type", "entry").put("entryId", entry.id).toString()
+        app.chatRepository.updateSessionBinding(sessionId, binding, entry.model.id)
+        entry.model.displayName
     }
 
     /**

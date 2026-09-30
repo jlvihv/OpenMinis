@@ -1,5 +1,6 @@
 package com.openminis.app.ui.sessions
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -119,7 +120,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -541,7 +541,7 @@ fun SessionListScreen(
     val regeneratingIds by viewModel.regeneratingIds.collectAsState()
     val providerConfig by providerRepository.config.collectAsState()
     val hasProviders = providerConfig.instances.isNotEmpty()
-    val hasGroups = providerConfig.modelGroups.isNotEmpty()
+    val hasGroups = providerConfig.modelEntries.isNotEmpty()
     // [T-android-startup-config-stall] Provider config now loads off-thread, so
     // for a brief startup window `providerConfig` is the empty placeholder.
     // Gate the onboarding/list render on this too (alongside the sessions
@@ -762,7 +762,7 @@ fun SessionListScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MinisTopAppBar(
                 title = {
                     if (isSelecting) {
                         Text(
@@ -803,6 +803,20 @@ fun SessionListScreen(
                             )
                         }
                     } else {
+                        IconButton(onClick = {
+                            if (isSearchActive) {
+                                viewModel.searchQuery.value = ""
+                                viewModel.isSearchActive.value = false
+                            } else viewModel.isSearchActive.value = true
+                        }) {
+                            Icon(
+                                Icons.Outlined.Search,
+                                contentDescription = stringResource(R.string.sessionlist_search_action),
+                                tint = if (isSearchActive) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
                         // [T-android-scheduled-tasks-design] Scheduled-tasks entry,
                         // sits to the left of the Shell button on the home toolbar.
                         // [T-android-scheduled-tasks-full] Badge shows the count of
@@ -1246,36 +1260,19 @@ fun SessionListScreen(
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             } else if (hasProviders && (sessions.isNotEmpty() || isSearchActive)) {
-                // Dual FAB row (matching iOS: New Chat left + Search right, or vice versa).
+                // Primary new-chat action at the bottom-right.
                 // Hidden while the onboarding landing is showing — Step 3 provides the CTA.
                 // T46: stay visible while search is active even when the result
                 // set is empty, so the user can edit / clear the query without
                 // having to rediscover the search FAB after a 0-hit query.
-                DualFabRow(
-                    isDark = isDark,
+                SessionListBottomActions(
                     isSearchActive = isSearchActive,
                     searchQuery = searchQuery,
                     isSearching = isSearching,
-                    hasSessions = sessions.isNotEmpty() || isSearchActive,
                     onNewChat = {
                         scope.launch {
                             val sessionId = viewModel.createNewSession()
                             if (sessionId != null) onNewChatGuarded(sessionId)
-                        }
-                    },
-                    onNewChatWithGroup = { groupId ->
-                        scope.launch {
-                            val sessionId = viewModel.createNewSession(groupId = groupId)
-                            if (sessionId != null) onNewChatGuarded(sessionId)
-                        }
-                    },
-                    modelGroups = providerConfig.modelGroups,
-                    onSearchToggle = {
-                        if (isSearchActive) {
-                            viewModel.searchQuery.value = ""
-                            viewModel.isSearchActive.value = false
-                        } else {
-                            viewModel.isSearchActive.value = true
                         }
                     },
                     onSearchQueryChange = { viewModel.searchQuery.value = it },
@@ -1468,30 +1465,18 @@ fun SessionListScreen(
     }
 }
 
-// ─── Dual FAB Row (matching iOS fabRow) ─────────────────────────────────────
-
-/** Persisted preference key for FAB order swap. */
-private const val PREF_FAB_SWAPPED = "fab_swapped"
+// Bottom search field and primary new-chat action.
 
 @Composable
-private fun DualFabRow(
-    isDark: Boolean,
+private fun SessionListBottomActions(
     isSearchActive: Boolean,
     searchQuery: String,
     isSearching: Boolean,
-    hasSessions: Boolean,
     onNewChat: () -> Unit,
-    onNewChatWithGroup: (String) -> Unit,
-    modelGroups: List<com.openminis.app.data.model.ModelGroup>,
-    onSearchToggle: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onSearchDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("ui_prefs", Context.MODE_PRIVATE) }
-    var isSwapped by remember { mutableStateOf(prefs.getBoolean(PREF_FAB_SWAPPED, false)) }
-
     // T120: focus + IME control for the inline search field. The field appears
     // inside an AnimatedVisibility, so we drive focus from the parent and
     // request it when isSearchActive flips true. Showing the keyboard
@@ -1512,35 +1497,9 @@ private fun DualFabRow(
         }
     }
 
-    // Drag offset for the currently-dragged FAB
-    var chatDragX by remember { mutableFloatStateOf(0f) }
-    var searchDragX by remember { mutableFloatStateOf(0f) }
-
-    // Threshold to trigger swap (half screen width roughly)
-    val density = LocalDensity.current
-    val swapThreshold = with(density) { 100.dp.toPx() }
-
-    var showGroupMenu by remember { mutableStateOf(false) }
-    val topGroups = remember(modelGroups) { modelGroups.take(10) }
 
     val chatFab: @Composable () -> Unit = {
-        Box(
-            modifier = Modifier
-                .offset { IntOffset(chatDragX.roundToInt(), 0) }
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (kotlin.math.abs(chatDragX) > swapThreshold) {
-                                isSwapped = !isSwapped
-                                prefs.edit().putBoolean(PREF_FAB_SWAPPED, isSwapped).apply()
-                            }
-                            chatDragX = 0f
-                        },
-                        onDragCancel = { chatDragX = 0f },
-                        onHorizontalDrag = { _, dragAmount -> chatDragX += dragAmount },
-                    )
-                },
-        ) {
+        Box {
             FloatingActionButton(
                 onClick = onNewChat,
                 shape = CircleShape,
@@ -1556,70 +1515,12 @@ private fun DualFabRow(
                     // as a grey box behind the round button. Same ordering as the
                     // circular voice button in ChatComposerWidgets.
                     .clip(CircleShape)
-                    .combinedClickable(
-                        onClick = onNewChat,
-                        onLongClick = {
-                            if (topGroups.isNotEmpty()) showGroupMenu = true
-                        },
-                    )
                     .shadow(8.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.2f)),
                 elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
             ) {
                 Icon(Icons.Outlined.Forum, contentDescription = "New Chat", tint = Color.White, modifier = Modifier.size(24.dp))
             }
-            DropdownMenu(
-                expanded = showGroupMenu,
-                onDismissRequest = { showGroupMenu = false },
-            ) {
-                topGroups.forEach { group ->
-                    DropdownMenuItem(
-                        text = { Text(group.name) },
-                        leadingIcon = { Icon(Icons.Outlined.Forum, contentDescription = null) },
-                        onClick = {
-                            showGroupMenu = false
-                            onNewChatWithGroup(group.id)
-                        },
-                    )
-                }
-            }
-        }
-    }
 
-    val searchFab: @Composable () -> Unit = {
-        if (hasSessions) {
-            AnimatedVisibility(
-                visible = !isSearchActive,
-                enter = fadeIn(tween(200)) + scaleIn(tween(200), initialScale = 0.85f),
-                exit = fadeOut(tween(150)) + scaleOut(tween(150), targetScale = 0.85f),
-            ) {
-                FloatingActionButton(
-                    onClick = onSearchToggle,
-                    shape = CircleShape,
-                    // iOS: UIColor.secondarySystemBackground = #F2F2F7 (light) / #1C1C1E (dark).
-                    // ChatColors.secondaryBg already matches these values across themes.
-                    containerColor = ChatColors.secondaryBg,
-                    modifier = Modifier
-                        .size(56.dp)
-                        .offset { IntOffset(searchDragX.roundToInt(), 0) }
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    if (kotlin.math.abs(searchDragX) > swapThreshold) {
-                                        isSwapped = !isSwapped
-                                        prefs.edit().putBoolean(PREF_FAB_SWAPPED, isSwapped).apply()
-                                    }
-                                    searchDragX = 0f
-                                },
-                                onDragCancel = { searchDragX = 0f },
-                                onHorizontalDrag = { _, dragAmount -> searchDragX += dragAmount },
-                            )
-                        }
-                        .shadow(6.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.15f)),
-                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
-                ) {
-                    Icon(Icons.Outlined.Search, contentDescription = stringResource(R.string.sessionlist_search_action), tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
-                }
-            }
         }
     }
 
@@ -1634,12 +1535,10 @@ private fun DualFabRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Render in swapped or normal order
-        if (isSwapped) { searchFab(); } else { chatFab() }
-
         // Middle: Inline search bar (when active)
         AnimatedVisibility(
             visible = isSearchActive,
+            modifier = Modifier.weight(1f),
             enter = fadeIn(tween(200)) + scaleIn(tween(200), initialScale = 0.85f),
             exit = fadeOut(tween(150)) + scaleOut(tween(150), targetScale = 0.85f),
         ) {
@@ -1693,8 +1592,8 @@ private fun DualFabRow(
                     unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 ),
                 modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 10.dp)
+                    .fillMaxWidth()
+                    .padding(end = 12.dp)
                     // [T-android-search-height] Left at the component's own
                     // height. Forcing 42dp here clipped the placeholder: a
                     // plain OutlinedTextField keeps its 16dp vertical
@@ -1708,7 +1607,8 @@ private fun DualFabRow(
             )
         }
 
-        if (isSwapped) { chatFab() } else { searchFab() }
+        if (!isSearchActive) Spacer(Modifier.weight(1f))
+        chatFab()
     }
 }
 

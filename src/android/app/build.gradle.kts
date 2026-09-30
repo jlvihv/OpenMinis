@@ -1,4 +1,7 @@
 import java.util.Properties
+import java.util.zip.ZipFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 plugins {
     id("com.android.application")
@@ -65,6 +68,15 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // The vendored ARM32 PRoot loader has 4 KB ELF LOAD segments.
+            // Our rootfs is aarch64; keep this optional loader out of the APK
+            // until it can be rebuilt with 16 KB alignment.
+            excludes += "**/libproot-loader32.so"
         }
     }
 
@@ -310,4 +322,43 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("junit:junit:4.13.2")
+}
+
+// Check every packaged ELF, including executables shipped as .so in jniLibs.
+// A successful JNI build alone does not validate vendored rootfs binaries.
+listOf("debug", "release").forEach { variant ->
+    val variantTitle = variant.replaceFirstChar { it.uppercaseChar() }
+    val alignmentCheck = tasks.register("verify${variantTitle}NativeAlignment") {
+        group = "verification"
+        val apk = layout.buildDirectory.file("outputs/apk/$variant/app-$variant.apk")
+        inputs.file(apk)
+        doLast {
+            val failures = mutableListOf<String>()
+            ZipFile(apk.get().asFile).use { zip ->
+                zip.entries().asSequence().filter { it.name.startsWith("lib/") && it.name.endsWith(".so") }.forEach { entry ->
+                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    check(bytes.size >= 64 && bytes[0] == 0x7f.toByte() && bytes[1] == 'E'.code.toByte()) {
+                        "Invalid ELF: ${entry.name}"
+                    }
+                    val data = ByteBuffer.wrap(bytes).order(
+                        if (bytes[5] == 1.toByte()) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN,
+                    )
+                    val is64 = bytes[4] == 2.toByte()
+                    val table = if (is64) data.getLong(32).toInt() else data.getInt(28)
+                    val stride = data.getShort(if (is64) 54 else 42).toInt() and 0xffff
+                    val count = data.getShort(if (is64) 56 else 44).toInt() and 0xffff
+                    repeat(count) { index ->
+                        val header = table + index * stride
+                        if (data.getInt(header) == 1) {
+                            val alignment = if (is64) data.getLong(header + 48) else data.getInt(header + 28).toLong()
+                            if (alignment < 16384L) failures.add("${entry.name}: LOAD alignment=$alignment")
+                        }
+                    }
+                }
+            }
+            check(failures.isEmpty()) { "APK does not meet 16 KB page alignment:\n${failures.distinct().joinToString("\n")}" }
+            logger.lifecycle("$variant APK: all native ELF LOAD segments meet 16 KB alignment")
+        }
+    }
+    tasks.matching { it.name == "assemble$variantTitle" }.configureEach { finalizedBy(alignmentCheck) }
 }

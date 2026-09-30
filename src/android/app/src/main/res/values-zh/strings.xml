@@ -9,6 +9,7 @@
     <string name="no_sessions">暂无会话</string>
     <string name="no_providers">添加一个提供商以开始使用</string>
     <string name="send">发送</string>
+    <string name="voice_panel_exit_voice">切换到键盘</string>
     <string name="type_message">输入消息…</string>
     <string name="delete">删除</string>
     <string name="cancel">取消</string>
@@ -359,7 +360,7 @@
     <string name="onboarding_save_api_key">保存 API 密钥</string>
     <string name="onboarding_saved">已保存</string>
     <string name="onboarding_select_models_title">选择模型</string>
-    <string name="onboarding_select_models_subtitle">为默认模型组选择最多 3 个模型。</string>
+    <string name="onboarding_select_models_subtitle">选择一个默认对话模型。</string>
     <string name="onboarding_search_models">搜索模型</string>
     <string name="onboarding_filter_models">筛选模型</string>
     <string name="onboarding_done_count">完成 (%1$d/3)</string>
@@ -1765,4 +1766,17 @@
     <string name="chat_input_placeholder_hint_5">Minis 可以把 ↩︎ 键设为发送或换行</string>
     <string name="compact_progress">正在压缩… 已进行 %1$d 秒</string>
     <string name="compact_progress_split">正在压缩… %1$d 秒 · 分段摘要中（%2$d/%3$d）</string>
+    <string name="model_selection_title">模型选择</string>
+    <string name="model_selection_description">直接为各项功能选择模型。</string>
+    <string name="model_selection_default">默认对话模型</string>
+    <string name="model_selection_last_used">使用上次选择的模型</string>
+    <string name="model_selection_system">系统引擎</string>
+    <string name="model_selection_disabled">未启用</string>
+    <string name="model_selection_vision">辅助读图模型</string>
+    <string name="model_selection_vision_hint">当对话模型不支持图片时，使用此模型辅助读图。</string>
+    <string name="model_selection_agent">助手可调用的模型</string>
+    <string name="model_selection_add_models">添加模型</string>
+    <string name="model_selection_disable_vision">停用辅助读图</string>
+    <string name="model_selection_title_model">标题生成模型</string>
+    <string name="model_selection_chat_model">使用对话模型</string>
 </resources>

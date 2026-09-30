@@ -296,20 +296,11 @@ private fun fuzzyMatch(text: String, query: String): Boolean {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ModelPickerSheet(
-    groups: List<ModelGroup>,
-    selectedGroupId: String?,
     activeEntryId: String?,
-    defaultPrimaryGroupId: String?,
     config: ProviderConfig,
     providerRepository: ProviderRepository,
-    onSelectGroup: (String) -> Unit,
-    onSelectGroupEntry: (String, String) -> Unit,
     onSelectEntry: (String) -> Unit,
     onDismiss: () -> Unit,
-    /** [T-android-modelpicker-group-edit] "Edit" affordance on the Model Groups
-     *  section header — dismisses the sheet and navigates to the Model Groups
-     *  management screen. Null hides the button (callers without a route). */
-    onEditGroups: (() -> Unit)? = null,
 ) {
     val openTime = remember { System.nanoTime() }
 
@@ -322,7 +313,6 @@ internal fun ModelPickerSheet(
     }
 
     var searchText by remember { mutableStateOf("") }
-    var expandedGroupIds by remember { mutableStateOf(setOf<String>()) }
     // Note: the non-text-output "may not work as an Agent" confirmation lives
     // in ChatScreen's callback wrappers (ee828dba), NOT here — the sheet stays
     // a dumb list and the caller owns selection policy.
@@ -330,7 +320,7 @@ internal fun ModelPickerSheet(
         config.instances.filter { it.isEnabled }.map { it.id }.toSet()
     }
     var collapsedInstanceIds by remember(allInstanceIds) {
-        mutableStateOf(allInstanceIds)
+        mutableStateOf(emptySet<String>())
     }
 
     /**
@@ -342,18 +332,6 @@ internal fun ModelPickerSheet(
      * and another from the picker would be worse than no button at all.
      */
     var quickTestEntry by remember { mutableStateOf<ModelEntry?>(null) }
-
-    // Filtered groups
-    val filteredGroups = remember(groups, searchText) {
-        if (searchText.isEmpty()) groups
-        else {
-            val t0 = System.nanoTime()
-            val result = groups.filter { fuzzyMatch(it.name, searchText) }
-            val ms = (System.nanoTime() - t0) / 1_000_000.0
-            AppLogger.info("ModelPicker", "[ModelPicker] filter groups: ${result.size}/${groups.size}, ${"%.1f".format(ms)}ms")
-            result
-        }
-    }
 
     // Filtered entries by instance
     val allInstancesWithEntries = remember(config, searchText) {
@@ -521,389 +499,6 @@ internal fun ModelPickerSheet(
                     .fillMaxWidth()
                     .weight(1f, fill = false),
             ) {
-                // ── Model Groups (grouped section card with embedded header) ──
-                if (filteredGroups.isNotEmpty()) {
-                    // Section card: header + rows live in the same surface so
-                    // the visual unit is unambiguous. Header uses the
-                    // titleSmall + onSurfaceVariant pair so it reads as a
-                    // section label rather than another row.
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .padding(horizontal = 16.dp, vertical = 6.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    RoundedCornerShape(14.dp),
-                                ),
-                        ) {
-                            // [T-android-modelpicker-group-edit] Section header
-                            // row: label on the left, an "Edit" button on the
-                            // right that jumps to the Model Groups management
-                            // screen (mirrors the iOS picker's group-section edit
-                            // affordance). Button hidden when no route is wired.
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    stringResource(R.string.model_picker_groups_section),
-                                    // [T-android-model-picker-polish] Section
-                                    // headers outrank the rows beneath them.
-                                    // titleSmall is 14sp Medium while the group
-                                    // and model names are bodyMedium SemiBold —
-                                    // same size, HEAVIER weight — so the header
-                                    // read as the weaker of the two and the
-                                    // hierarchy inverted. titleMedium (16sp) +
-                                    // SemiBold puts it a step above.
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(start = 16.dp, top = 14.dp, bottom = 6.dp),
-                                )
-                                if (onEditGroups != null) {
-                                    // Text button (not a pencil icon) matching the
-                                    // sheet's other text actions like "Done".
-                                    MinisTextButton(
-                                        onClick = onEditGroups,
-                                        modifier = Modifier.padding(end = 8.dp),
-                                    ) {
-                                        Text(stringResource(R.string.model_picker_groups_edit))
-                                    }
-                                }
-                            }
-                            filteredGroups.forEachIndexed { index, group ->
-                                val isSelected = group.id == selectedGroupId
-                                val isDefault = group.id == defaultPrimaryGroupId
-                                val isExpanded = expandedGroupIds.contains(group.id)
-                                val strategyLabel = when (group.strategy) {
-                                    RoutingStrategy.fallback -> "FB"
-                                    RoutingStrategy.loadBalance -> "LB"
-                                }
-                                // Resolve entry: try memberEntryIds first, fallback to activeEntryId ONLY if this group is selected
-                                // SystemVoiceEntries fallback: voice groups are
-                                // seeded with "__builtin_system_speech__/…"
-                                // members that are synthesized on demand and
-                                // never stored in config.modelEntries, so
-                                // matching modelEntries alone counts them as 0.
-                                val resolvedEntry = group.memberEntryIds.firstNotNullOfOrNull { entryId ->
-                                    config.modelEntries.find { it.id == entryId }
-                                        ?: com.openminis.app.data.model.SystemVoiceEntries.resolve(entryId)
-                                } ?: if (isSelected && activeEntryId != null) config.modelEntries.find { it.id == activeEntryId } else null
-                                // Count of resolved members for display
-                                val resolvedCount = group.memberEntryIds.count { entryId ->
-                                    config.modelEntries.any { it.id == entryId } ||
-                                        com.openminis.app.data.model.SystemVoiceEntries.resolve(entryId) != null
-                                }
-
-                                // Header sits above the first row, so the
-                                // first-row corners are no longer rounded
-                                // (only the bottom row of the last group is).
-                                val groupShape = when {
-                                    index == filteredGroups.size - 1 -> RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
-                                    else -> RoundedCornerShape(0.dp)
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(groupShape)
-                                        .clickable { onSelectGroup(group.id) }
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = if (isSelected) Color(0xFF34C759)
-                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                    Spacer(Modifier.width(10.dp))
-                                    // [T-android-model-picker-polish] Group
-                                    // glyph, matching iOS's blue "layers" mark
-                                    // (SessionModelPicker). Without it a group
-                                    // row and a provider row differ only by
-                                    // their subtitle, which is easy to miss
-                                    // when scrolling — and the two mean very
-                                    // different things (a group can fail over
-                                    // or load-balance; a model cannot).
-                                    Icon(
-                                        Icons.Default.Layers,
-                                        contentDescription = null,
-                                        tint = Color(0xFF007AFF),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                group.name,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                            )
-                                            Spacer(Modifier.width(6.dp))
-                                            // iOS: ⊕ FB / ⊕ LB badge with icon
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier
-                                                    .background(
-                                                        MaterialTheme.colorScheme.surfaceContainerHigh,
-                                                        RoundedCornerShape(8.dp),
-                                                    )
-                                                    .padding(horizontal = 5.dp, vertical = 1.dp),
-                                            ) {
-                                                Icon(
-                                                    if (group.strategy == RoutingStrategy.fallback)
-                                                        Icons.Default.ArrowCircleDown
-                                                    else Icons.Default.AccountTree,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(9.dp),
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                )
-                                                Spacer(Modifier.width(2.dp))
-                                                Text(
-                                                    strategyLabel,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                )
-                                            }
-                                        }
-                                        // iOS: "→ ModelName" resolved entry
-                                        if (resolvedEntry != null) {
-                                            Text(
-                                                "→ ${resolvedEntry.model.displayName}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                            )
-                                        } else if (resolvedCount > 0) {
-                                            Text(
-                                                pluralStringResource(R.plurals.model_picker_models_count, resolvedCount, resolvedCount),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                            )
-                                        } else {
-                                            Text(
-                                                stringResource(R.string.model_picker_models_count_unlinked, group.memberEntryIds.size),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                            )
-                                        }
-                                    }
-
-                                    // [T-android-model-picker-polish] "Default"
-                                    // badge, matched to iOS
-                                    // (UnifiedModelPicker.swift:669-674):
-                                    // caption2 medium on a 10%-blue capsule with
-                                    // 5/1 padding. Android was running 6/2 —
-                                    // double the vertical inset — which made the
-                                    // capsule noticeably taller than the group
-                                    // name beside it and pulled the eye away from
-                                    // the group's own label. Font drops 10sp -> 9sp
-                                    // to match caption2's optical weight at this
-                                    // density, and lineHeight is pinned so Compose
-                                    // does not re-add the font's ascent/descent
-                                    // slack on top of the 1.dp padding.
-                                    if (isDefault) {
-                                        Text(
-                                            stringResource(R.string.model_picker_default_badge),
-                                            fontSize = 9.sp,
-                                            lineHeight = 11.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = Color(0xFF007AFF),
-                                            modifier = Modifier
-                                                .background(
-                                                    Color(0xFF007AFF).copy(alpha = 0.1f),
-                                                    RoundedCornerShape(50),
-                                                )
-                                                .padding(horizontal = 5.dp, vertical = 1.dp),
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                    }
-
-                                    // [T-android-model-picker-polish]
-                                    // Expand/collapse chevron, matched to iOS
-                                    // (UnifiedModelPicker.swift:688-691): a
-                                    // NEUTRAL tertiarySystemFill circle with a
-                                    // .secondary glyph.
-                                    //
-                                    // T295 had pushed this to secondaryContainer
-                                    // to escape surfaceContainerHigh, which on
-                                    // the light theme is #F7F7FA and vanished
-                                    // against the white card. That fixed the
-                                    // visibility but overshot: a tinted
-                                    // container reads as an accented ACTION,
-                                    // competing with the group name beside it,
-                                    // where this is only a disclosure control.
-                                    // onSurface at low alpha separates from the
-                                    // card without claiming that emphasis.
-                                    //
-                                    // 28dp -> 24dp: at 28 the circle stood
-                                    // taller than the row's own text and drew
-                                    // the eye first.
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .background(
-                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                                                CircleShape,
-                                            )
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                expandedGroupIds = if (isExpanded) {
-                                                    expandedGroupIds - group.id
-                                                } else {
-                                                    expandedGroupIds + group.id
-                                                }
-                                            },
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-
-                                // Expanded group member entries
-                                if (isExpanded) {
-                                    // Resolve actual entries from memberEntryIds
-                                    val resolvedMembers = group.memberEntryIds.mapNotNull { entryId ->
-                                        config.modelEntries.find { it.id == entryId }
-                                            ?: com.openminis.app.data.model.SystemVoiceEntries.resolve(entryId)
-                                    }
-                                    // Fallback: show active entry ONLY if this group is selected
-                                    val displayMembers = resolvedMembers.ifEmpty {
-                                        if (isSelected && activeEntryId != null)
-                                            listOfNotNull(config.modelEntries.find { it.id == activeEntryId })
-                                        else emptyList()
-                                    }
-                                    if (displayMembers.isEmpty()) {
-                                        Text(
-                                            stringResource(R.string.model_picker_no_linked_models),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                            modifier = Modifier.padding(start = 48.dp, top = 4.dp, bottom = 8.dp),
-                                        )
-                                    }
-                                    displayMembers.forEachIndexed { memberIndex, entry ->
-                                            // [T-android-model-picker-polish]
-                                            // Hairline between members. The group
-                                            // CARDS had one and the provider rows
-                                            // had one, but the members inside an
-                                            // expanded group did not — so a group
-                                            // with several models read as one
-                                            // undifferentiated block, which is
-                                            // exactly where separation matters
-                                            // most (these rows are indented and
-                                            // visually similar). Drawn BEFORE each
-                                            // row except the first, so it never
-                                            // collides with the divider that
-                                            // follows the group card itself.
-                                            if (memberIndex > 0) {
-                                                HorizontalDivider(
-                                                    modifier = Modifier.padding(start = 72.dp, end = 16.dp),
-                                                    thickness = 0.5.dp,
-                                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                                                )
-                                            }
-                                            val isActive = activeEntryId == entry.id
-                                            val instance = config.instances.find { it.id == entry.providerInstanceId }
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable { onSelectGroupEntry(group.id, entry.id) }
-                                                    .padding(start = 48.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Icon(
-                                                    if (isActive) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                                    contentDescription = null,
-                                                    tint = if (isActive) Color(0xFF007AFF)
-                                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f),
-                                                    modifier = Modifier.size(17.dp),
-                                                )
-                                                Spacer(Modifier.width(10.dp))
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(6.dp)
-                                                        .background(providerDotColor(instance?.providerType), CircleShape),
-                                                )
-                                                Spacer(Modifier.width(8.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(entry.model.displayName, style = MaterialTheme.typography.bodyMedium)
-                                                    Row {
-                                                        if (instance != null) {
-                                                            Text(
-                                                                instance.label.ifEmpty { instance.providerType.displayName },
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                fontWeight = FontWeight.Medium,
-                                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                            )
-                                                            Text(
-                                                                " · ",
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                                            )
-                                                        }
-                                                        Text(
-                                                            entry.model.id,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                                        )
-                                                    }
-                                                }
-                                                if (isActive) {
-                                                    Text(
-                                                        stringResource(R.string.model_picker_active_badge),
-                                                        fontSize = 9.sp,
-                                                        lineHeight = 11.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        color = Color(0xFF34C759),
-                                                        modifier = Modifier
-                                                            .background(
-                                                                Color(0xFF34C759).copy(alpha = 0.1f),
-                                                                RoundedCornerShape(50),
-                                                            )
-                                                            .padding(horizontal = 5.dp, vertical = 1.dp),
-                                                    )
-                                                }
-                                                QuickTestButton(onClick = { quickTestEntry = entry })
-                                            }
-                                    }
-                                }
-
-                                // Inset hairline between groups, matches MinisMenuDivider rhythm.
-                                if (index < filteredGroups.size - 1) {
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(start = 48.dp, end = 16.dp),
-                                        thickness = 0.5.dp,
-                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (searchText.isEmpty()) {
-                        item {
-                            Text(
-                                stringResource(R.string.model_picker_groups_footer),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                // T236: hint sits between Model Groups card and
-                                // first Provider card — top 8 hugs the group
-                                // card, bottom 12 separates from the next card.
-                                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp),
-                            )
-                        }
-                    }
-                }
-
                 // ── Individual Models by Provider (one section card per provider) ──
                 // Each provider becomes a single grouped card containing: an
                 // embedded header row with the collapse chevron, then either
@@ -987,7 +582,7 @@ internal fun ModelPickerSheet(
 
                                 if (isCollapsed) {
                                     // Collapsed summary — show selected or first entry + model count.
-                                    val selectedEntry = entries.firstOrNull { it.id == activeEntryId && selectedGroupId == null }
+                                    val selectedEntry = entries.firstOrNull { it.id == activeEntryId }
                                     val displayEntry = selectedEntry ?: entries.firstOrNull()
                                     if (displayEntry != null) {
                                         val dotColor = providerDotColor(instance.providerType)
@@ -1109,7 +704,7 @@ internal fun ModelPickerSheet(
                                     }
                                 } else {
                                     entries.forEachIndexed { index, entry ->
-                                        val isSelected = activeEntryId == entry.id && selectedGroupId == null
+                                        val isSelected = activeEntryId == entry.id
                                         val dotColor = providerDotColor(instance.providerType)
                                         // Last row clips its own bottom so the
                                         // ripple respects the card corners.
@@ -1168,21 +763,6 @@ internal fun ModelPickerSheet(
                                                     }
                                                 }
                                             }
-                                            if (selectedGroupId != null && activeEntryId == entry.id) {
-                                                Text(
-                                                    stringResource(R.string.model_picker_active_badge),
-                                                    fontSize = 9.sp,
-                                                    lineHeight = 11.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = Color(0xFF34C759),
-                                                    modifier = Modifier
-                                                        .background(
-                                                            Color(0xFF34C759).copy(alpha = 0.1f),
-                                                            RoundedCornerShape(50),
-                                                        )
-                                                        .padding(horizontal = 5.dp, vertical = 1.dp),
-                                                )
-                                            }
                                             QuickTestButton(onClick = { quickTestEntry = entry })
                                         }
                                         // Inset hairline between entries.
@@ -1201,7 +781,7 @@ internal fun ModelPickerSheet(
                 }
 
                 // ── Empty / No Results ──
-                if (filteredGroups.isEmpty() && allInstancesWithEntries.isEmpty()) {
+                if (allInstancesWithEntries.isEmpty()) {
                     item {
                         Column(
                             modifier = Modifier

@@ -32,6 +32,8 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBarsPadding
+import com.openminis.app.ui.components.minisToolbarHeight
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
@@ -701,22 +703,12 @@ private fun NoConversationSelected(
         // own — the control must not appear to move when a session opens.
         Box(Modifier.fillMaxSize()) {
         if (onToggleSidebar != null) {
-            // Centred inside a band matching the SESSION LIST's TopAppBar (M3's
-            // default 64dp), not offset by an eyeballed padding: that is what
-            // puts this button on the same baseline as the toolbar across the
-            // seam, so it does not appear to jump when a session opens. The
-            // chat's Scaffold uses contentWindowInsets = WindowInsets(0), so
-            // there is no status-bar inset to account for on either side.
-            //
-            // [T-android-split-toggle-align] This comment used to say 64dp was
-            // "the chat's TopAppBar" height. It is not — the chat's bar is 68dp
-            // (ChatScreen expandedHeight, sized for its 3-row title). 64dp was
-            // right for the wrong reason, and the mistaken premise is why the
-            // chat's own toggle went on sitting 2dp low against the list.
+            // Align with the shared compact toolbar, including the system top inset.
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .height(64.dp)
+                    .statusBarsPadding()
+                    .height(minisToolbarHeight())
                     .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -923,7 +915,6 @@ fun ChatSplitScaffoldRoute(
                     FilePreviewHolder.currentItem = item
                     navController.safeNavigate(Routes.FILE_PREVIEW)
                 },
-                onModelGroupsClick = { navController.safeNavigate(Routes.MODEL_GROUPS) },
             )
         },
     )

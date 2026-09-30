@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import com.openminis.app.R
 import com.openminis.app.ui.components.MinisTextButton
 
@@ -37,7 +38,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -99,7 +99,7 @@ fun MinisSkillsBrowserScreen(
             // would fight the WebView measure pass. Match the SettingsScaffold
             // bar styling (background colour + SemiBold title) so the visual
             // signature stays consistent with the rest of the settings stack.
-            TopAppBar(
+            MinisTopAppBar(
                 title = { Text(stringResource(R.string.skills_browser_title), fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     IconButton(onClick = handleBack) {

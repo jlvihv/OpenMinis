@@ -93,10 +93,7 @@ class ScheduledTasksViewModel(private val appContext: Context) : ViewModel() {
         return runCatching {
             val o = org.json.JSONObject(json)
             when (o.optString("type")) {
-                "group" -> {
-                    val gid = o.optString("groupId").takeIf { it.isNotEmpty() } ?: return@runCatching null
-                    app.providerRepository.group(gid)?.name
-                }
+
                 "entry" -> {
                     val eid = o.optString("entryId").takeIf { it.isNotEmpty() } ?: return@runCatching null
                     app.providerRepository.config.value.modelEntries.firstOrNull { it.id == eid }?.model?.displayName

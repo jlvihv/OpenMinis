@@ -166,6 +166,11 @@ fun ProviderConfig.toSnapshot(
     }
 
     val metaRows = mutableListOf<ProviderConfigMetaEntity>()
+    titleModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("title_model_entry_id", idMap[it] ?: it)) }
+    defaultModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("default_model_entry_id", idMap[it] ?: it)) }
+    visionModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("vision_model_entry_id", idMap[it] ?: it)) }
+    defaultThinkingLevel?.let { metaRows.add(ProviderConfigMetaEntity("default_thinking_level", it.name)) }
+    defaultContextLimitTokens?.let { metaRows.add(ProviderConfigMetaEntity("default_context_limit_tokens", it.toString())) }
     defaultPrimaryGroupId?.let {
         metaRows.add(ProviderConfigMetaEntity(ProviderConfigMetaKeys.DEFAULT_PRIMARY_GROUP_ID, it))
     }
@@ -270,6 +275,11 @@ fun ProviderConfigSnapshot.toProviderConfig(jsonForBlobs: Json): ProviderConfig 
         instances = instances,
         modelEntries = entries,
         modelGroups = groups,
+        titleModelEntryId = metaMap["title_model_entry_id"],
+        defaultModelEntryId = metaMap["default_model_entry_id"],
+        visionModelEntryId = metaMap["vision_model_entry_id"],
+        defaultThinkingLevel = metaMap["default_thinking_level"]?.let { runCatching { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }.getOrNull() },
+        defaultContextLimitTokens = metaMap["default_context_limit_tokens"]?.toIntOrNull(),
         defaultPrimaryGroupId = metaMap[ProviderConfigMetaKeys.DEFAULT_PRIMARY_GROUP_ID],
         defaultSubGroupId = metaMap[ProviderConfigMetaKeys.DEFAULT_SUB_GROUP_ID],
         voiceInputGroupId = metaMap[ProviderConfigMetaKeys.VOICE_INPUT_GROUP_ID],

@@ -280,13 +280,14 @@ object SpeechRecognitionManager {
             if (cb != null) {
                 currentEngine()?.cancel()
                 setState(RecognitionState.IDLE)
-                startRecording(cb.first, cb.second)
+                startRecording(cb.first, cb.second, activeQuickTurn)
             }
         }
     }
 
     /** Callbacks from the most recent [startRecording] so [selectLocale] can restart with them. */
     private var activeCallbacks: Pair<(String, Boolean) -> Unit, (RecognitionError, String?) -> Unit>? = null
+    private var activeQuickTurn = false
 
     fun availableEngines(): List<SpeechRecognitionEngine> = engines.toList()
 
@@ -315,6 +316,7 @@ object SpeechRecognitionManager {
     fun startRecording(
         onPartialOrFinal: (text: String, isFinal: Boolean) -> Unit,
         onError: (RecognitionError, String?) -> Unit,
+        quickTurn: Boolean = false,
     ) {
         if (_state.value != RecognitionState.IDLE) {
             Log.d(TAG, "startRecording ignored; state=${_state.value}")
@@ -342,6 +344,9 @@ object SpeechRecognitionManager {
         _lastError.value = null
         resetLevels()
         activeCallbacks = onPartialOrFinal to onError
+        activeQuickTurn = quickTurn
+        (engine as? SystemSpeechRecognitionEngine)?.quickTurnMode = quickTurn
+        (engine as? ProviderSpeechRecognitionEngine)?.quickTurnMode = quickTurn
 
         val listener = object : SpeechRecognitionEngine.Listener {
             override fun onReadyForSpeech() {

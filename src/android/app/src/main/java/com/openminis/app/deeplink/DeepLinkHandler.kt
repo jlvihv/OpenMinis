@@ -169,9 +169,8 @@ object DeepLinkHandler {
             "providers" ->
                 if (arg != null) DeepLinkAction.OpenSettingsScreen(Routes.providerDetail(arg))
                 else DeepLinkAction.OpenSettingsScreen(Routes.PROVIDER_LIST)
-            "model-groups", "model_groups" ->
-                if (arg != null) DeepLinkAction.OpenSettingsScreen(Routes.modelGroupDetail(arg))
-                else DeepLinkAction.OpenSettingsScreen(Routes.MODEL_GROUPS)
+            "models", "model-selection", "model-groups", "model_groups" ->
+                DeepLinkAction.OpenSettingsScreen(Routes.MODEL_SELECTION)
             "usage", "usage-stats", "usage_stats" ->
                 DeepLinkAction.OpenSettingsScreen(Routes.USAGE_STATS)
             "skills" -> DeepLinkAction.OpenSettingsScreen(Routes.SKILLS)

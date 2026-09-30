@@ -34,10 +34,6 @@ fun VoiceInputPickerSheet(
         providerRepository = providerRepository,
         title = stringResource(R.string.voice_input_picker_title),
         modalityFilter = PickerModalityFilter.AUDIO_INPUT,
-        boundGroup = config.voiceInputGroupId?.let { gid ->
-            config.modelGroups.find { it.id == gid }
-        },
-        boundGroupName = providerRepository.voiceInputGroupName(),
         selectedId = providerRepository.voiceInputOverrideEntryId,
         onSelect = { providerRepository.voiceInputOverrideEntryId = it },
         onDismiss = onDismiss,
@@ -61,10 +57,6 @@ fun VoiceOutputPickerSheet(
         providerRepository = providerRepository,
         title = stringResource(R.string.tts_capsule_picker_title),
         modalityFilter = PickerModalityFilter.AUDIO_OUTPUT,
-        boundGroup = config.voiceOutputGroupId?.let { gid ->
-            config.modelGroups.find { it.id == gid }
-        },
-        boundGroupName = providerRepository.voiceOutputGroupName(),
         selectedId = providerRepository.voiceOutputOverrideEntryId,
         onSelect = { providerRepository.voiceOutputOverrideEntryId = it },
         onDismiss = onDismiss,

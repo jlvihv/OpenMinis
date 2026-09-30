@@ -499,7 +499,12 @@ class MainActivity : ComponentActivity() {
         // while inside a chat, synthesise an OpenSession deep-link so
         // the navigation stack lands on that chat instead of the
         // sessions list. T166.
-        val explicitDeepLink = DeepLinkHandler.parse(intent?.data)
+        val explicitDeepLink = if (intent?.action == Intent.ACTION_ASSIST) {
+            com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
+            DeepLinkAction.NewVoiceChat
+        } else {
+            DeepLinkHandler.parse(intent?.data)
+        }
         val launchDeepLink = if (explicitDeepLink !is DeepLinkAction.Unknown) {
             explicitDeepLink
         } else {
@@ -699,6 +704,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.action == Intent.ACTION_ASSIST) {
+            com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
+        }
         // T51: warm-start share — ShareReceiverActivity re-launches with
         // FLAG_ACTIVITY_CLEAR_TOP, which delivers the new intent here when
         // MainActivity is already alive. Process the buffered share before
@@ -706,7 +714,10 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("shared_content", false)) {
             com.openminis.app.share.ShareCoordinator.processPendingShare(this)
         }
-        handleDeepLink(intent.data)
+        handleDeepLink(
+            if (intent.action == Intent.ACTION_ASSIST) Uri.parse("minis://action/voice_chat")
+            else intent.data
+        )
     }
 
     private fun handleDeepLink(uri: Uri?) {

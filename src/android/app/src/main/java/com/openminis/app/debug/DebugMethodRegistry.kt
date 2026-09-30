@@ -488,17 +488,6 @@ object DebugMethodRegistry {
             example = ex("configJson" to "{\"version\":1,\"config\":{...}}"),
         ),
         MethodSpec(
-            name = "provider.groups.list",
-            description = "List all configured model groups.",
-            params = listOf(
-                ParamSpec("includeMembers", "bool", required = false, default = true, description = "Include resolved member summaries in each group."),
-            ),
-            returns = "{defaultGroupId, count, groups:[{id, name, strategy, fallbackStrategy, isDefault, inAgentLoop, memberEntryIds, members?}]}",
-            example = JSONObject(),
-        ),
-
-        // --- Chat (read-only — Phase 1) ---
-        MethodSpec(
             name = "chat.sessions.list",
             description = "List recent chat sessions sorted by updated_at desc.",
             params = listOf(
@@ -673,62 +662,6 @@ object DebugMethodRegistry {
             example = ex("entryId" to "entry_123", "inLoop" to true),
         ),
         MethodSpec(
-            name = "provider.groups.create",
-            description = "Create a new model group.",
-            params = listOf(
-                ParamSpec("name", "string", required = true, description = "Display name."),
-                ParamSpec("memberEntryIds", "[string]", required = false, description = "Initial member entries (order significant for fallback)."),
-                ParamSpec("strategy", "string", required = false, default = "fallback", description = "fallback / loadBalance"),
-                ParamSpec("fallbackStrategy", "string", required = false, default = "default", description = "default / always"),
-            ),
-            returns = "{group:{...}}",
-            example = ex("name" to "Coding", "memberEntryIds" to JSONArray().apply { put("entry_a") }),
-        ),
-        MethodSpec(
-            name = "provider.groups.update",
-            description = "Patch fields on an existing group.",
-            params = listOf(
-                ParamSpec("groupId", "string", required = true, description = "Target group UUID."),
-                ParamSpec("name", "string", required = false, description = "Must be non-empty if supplied."),
-                ParamSpec("memberEntryIds", "[string]", required = false, description = "Replace members entirely; order preserved."),
-                ParamSpec("strategy", "string", required = false, description = "fallback / loadBalance"),
-                ParamSpec("fallbackStrategy", "string", required = false, description = "default / always"),
-            ),
-            returns = "{group:{...}}",
-            example = ex("groupId" to "grp_xyz"),
-        ),
-        MethodSpec(
-            name = "provider.groups.delete",
-            description = "Remove a group. Sessions bound to it fall back to the default group.",
-            params = listOf(
-                ParamSpec("groupId", "string", required = true, description = "Target group UUID."),
-                ParamSpec("confirm", "bool", required = true, default = false, description = "Must be true."),
-            ),
-            returns = "{groupId, deleted, wasDefault}",
-            example = ex("groupId" to "grp_xyz", "confirm" to true),
-        ),
-        MethodSpec(
-            name = "provider.groups.setDefault",
-            description = "Set or clear the global default model group.",
-            params = listOf(
-                ParamSpec("groupId", "string", required = true, description = "Target group UUID, or null to clear."),
-            ),
-            returns = "{defaultGroupId}",
-            example = ex("groupId" to "grp_xyz"),
-        ),
-        MethodSpec(
-            name = "provider.groups.setAgentLoop",
-            description = "Toggle whether a model group is exposed to the in-shell minis-model-use agent.",
-            params = listOf(
-                ParamSpec("groupId", "string", required = true, description = "Target group UUID."),
-                ParamSpec("inLoop", "bool", required = true, description = "true to add, false to remove."),
-            ),
-            returns = "{groupId, inLoop}",
-            example = ex("groupId" to "grp_xyz", "inLoop" to true),
-        ),
-
-        // --- Chat mutate ---
-        MethodSpec(
             name = "chat.prompt",
             description = "Send a prompt to a new or existing chat session. wait=true blocks until completion.",
             params = listOf(
@@ -736,7 +669,7 @@ object DebugMethodRegistry {
                 ParamSpec("sessionId", "string", required = false, description = "Existing session id; omit to create a new one (source=debug)."),
                 ParamSpec("attachments", "[object]", required = false, description = "Array of {name, data, mime?}; data is base64."),
                 ParamSpec("modelEntryId", "string", required = false, description = "Pin to a specific model entry (mutually exclusive with modelGroupId)."),
-                ParamSpec("modelGroupId", "string", required = false, description = "Pin to a model group."),
+
                 ParamSpec("thinkingLevel", "string", required = false, description = "off / low / medium / high / xhigh / max / ultra — applies before send; leaves the VM setting alone when omitted."),
                 ParamSpec("wait", "bool", required = false, default = false, description = "Block until completion."),
                 ParamSpec("waitTimeout", "int", required = false, default = 600, description = "Seconds; clamped to [1, 1800]."),

@@ -32,6 +32,8 @@ import java.util.Locale
  */
 class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRecognitionEngine {
 
+    @Volatile var quickTurnMode: Boolean = false
+
     override val id: String = "system"
     override val displayName: String = "System recognizer"
     override val supportsPartialResults: Boolean = true
@@ -293,6 +295,15 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
     private val segmentTranscript = StringBuilder()
 
     private fun startEndpointingVad() {
+        val quickTurn = quickTurnMode
+        // Google's current Pixel recognition service treats EOF on an
+        // EXTRA_AUDIO_SOURCE stream as RecognitionService.cancel(), then maps
+        // that cancellation to ERROR_NETWORK. Let the platform own the mic;
+        // its normal capture path returns real finals reliably. Provider STT
+        // retains its own AudioRecord/VAD path.
+        Log.i(TAG, "[vad] system recognizer uses platform microphone and endpointing")
+        return
+        @Suppress("UNREACHABLE_CODE")
         // EXTRA_AUDIO_SOURCE is API 33+. Below that the recogniser must open
         // the mic itself, so we cannot run a VAD at all: two AudioRecords on
         // one device leaves one of them silent.
@@ -356,7 +367,8 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
                     // pause, "send it" (0.9 s) — cancelled on the first burst
                     // and could never be dictated.
                     heldSpokenSeconds += spokenSeconds
-                    if (heldSpokenSeconds < MIN_SEGMENT_SECONDS) {
+                    val minimumSeconds = if (quickTurn) QUICK_TURN_MIN_SEGMENT_SECONDS else MIN_SEGMENT_SECONDS
+                    if (heldSpokenSeconds < minimumSeconds) {
                         Log.i(
                             TAG,
                             "[vad] silence close, spoken=${"%.2f".format(spokenSeconds)}s " +
@@ -404,6 +416,7 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
                     stopVad()
                 }
             },
+            endSilenceFrames = if (quickTurn) VoiceActivityDetector.QUICK_TURN_END_FRAMES else VoiceActivityDetector.DEFAULT_END_FRAMES,
         )
         // ONE capture serves both: the VAD judges these samples and the very
         // same frames go down the pipe to the recogniser.
@@ -608,10 +621,20 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
             // the recogniser evaluated a stream that our capture was still
             // writing to and repeatedly answered NO_SPEECH_DETECTED even though
             // the user had spoken — the "recording silently discarded" report.
+            val wasFeedingAudio = feedingAudio
             stopVad()
             closeAudioPipe()
-            try { recognizer?.stopListening() }
-            catch (e: Throwable) { Log.w(TAG, "stopListening: ${e.message}") }
+            if (!wasFeedingAudio) {
+                try { recognizer?.stopListening() }
+                catch (e: Throwable) { Log.w(TAG, "stopListening: ${e.message}") }
+            } else {
+                // EXTRA_SEGMENTED_SESSION + EXTRA_AUDIO_SOURCE defines closing
+                // the source as the end of the session. Calling stopListening
+                // as well makes Google's network recognizer classify a normal
+                // endpoint as user cancellation and report ERROR_NETWORK (2).
+                // Let the closed pipe produce onEndOfSegmentedSession instead.
+                Log.i(TAG, "[segmented] audio source closed; awaiting final result")
+            }
         }
     }
 
@@ -1040,6 +1063,7 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
          * (VoiceInputPanel.swift:607). Shorter utterances are discarded.
          */
         private const val MIN_SEGMENT_SECONDS = 2.0f
+        private const val QUICK_TURN_MIN_SEGMENT_SECONDS = 0.3f
 
         /** Below this we stay silent; above it the user is told why (iOS :661). */
         private const val TOO_SHORT_FLOOR_SECONDS = 0.3f

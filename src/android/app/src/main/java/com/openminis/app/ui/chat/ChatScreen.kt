@@ -526,10 +526,6 @@ fun ChatScreen(
     onBrowseChatFiles: () -> Unit = {},
     /** T150: open FilePreviewScreen for a non-image attachment in a user bubble. */
     onPreviewAttachment: (com.openminis.app.ui.sandbox.FileItem) -> Unit = {},
-    /** [T-android-modelpicker-group-edit] Navigate to the Model Groups
-     *  management screen — wired to the "Edit" button on the model picker's
-     *  Model Groups section header. */
-    onModelGroupsClick: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -572,12 +568,9 @@ fun ChatScreen(
     // [T-android-paste-placeholder] Folded pastes, rendered as chips above the
     // attachment row.
     val pastedTexts by viewModel.pastedTexts.collectAsState()
-    val availableGroups by viewModel.availableGroups.collectAsState()
-    val selectedGroupId by viewModel.selectedGroupId.collectAsState()
     val showBrowserSheet by viewModel.showBrowserSheet.collectAsState()
     val showMemorySheet by viewModel.showMemorySheet.collectAsState()
     val memoryToolRecords by viewModel.memoryToolRecords.collectAsState()
-    val selectedGroupName by viewModel.selectedGroupName.collectAsState()
     val providerName by viewModel.providerName.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -2523,7 +2516,7 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    // iOS-style centered layout: "Minis" + group row + provider·model row
+                    // Centered model group and provider/model labels.
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
@@ -2546,58 +2539,9 @@ fun ChatScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Color.Red.copy(alpha = 0.35f * fallbackPulseAlpha.value))
-                                // [T-android-topbar-shrink] vertical 4dp→2dp.
-                                // Combined with the expandedHeight drop below,
-                                // closes the dead-space gap between the model
-                                // name row and the TopAppBar bottom edge that
-                                // T-topbar-model-row-clip's 76dp overshoot left
-                                // behind. Horizontal 32dp keeps the fallback
-                                // pulse highlight comfortably padded around
-                                // the longest title.
-                                .padding(horizontal = 32.dp, vertical = 2.dp),
+                                .padding(horizontal = 8.dp),
                         ) {
-                            // Nav title: current session title when one
-                            // exists and the toggle is on, else fall back to
-                            // the Soul name (matches the input placeholder
-                            // "Message <SoulName>"), then to app_name
-                            // ("Minis") as the terminal fallback.
-                            // Tap opens the same SessionEditSheet used from
-                            // the session list — drafts return null from
-                            // loadSessionEntity so the sheet stays closed.
-                            // SoulStore.cachedMetadata is the same source the
-                            // input placeholder uses (see ~line 3581), so
-                            // soul renames in Soul Settings reflect here live.
-                            val topBarSoul by com.openminis.app.agent.SoulStore
-                                .cachedMetadata.collectAsState()
-                            val displayTitle = when {
-                                showChatTitlePill
-                                    && sessionTitle.isNotBlank()
-                                    && sessionTitle != "New Chat" -> sessionTitle
-                                topBarSoul.name.isNotBlank() -> topBarSoul.name
-                                else -> stringResource(R.string.app_name)
-                            }
-                            Text(
-                                text = displayTitle,
-                                fontSize = 16.sp,
-                                lineHeight = 19.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ChatColors.primaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = noFontPad,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        coroutineScope.launch {
-                                            editingSession = viewModel.loadSessionEntity()
-                                        }
-                                    }
-                                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                            )
-                            // Model picker subtitle: green dot + group +
-                            // provider/model. Tap opens the model picker —
-                            // separated from the title above so tapping the
-                            // title rows opens the rename sheet instead.
+                            // Tap the model/group label to open the model picker.
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier
@@ -2618,79 +2562,6 @@ fun ChatScreen(
                                     ) { showModelPicker = true }
                                     .padding(horizontal = 4.dp, vertical = 1.dp),
                             ) {
-                                // Line 1: green dot + group name + dropdown arrow (iOS: "● Default ⌄")
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .background(
-                                                if (modelName.isNotEmpty()) Color(0xFF34C759) else Color(0xFFFF9500),
-                                                CircleShape,
-                                            ),
-                                    )
-                                    // T-android-topbar-group-name-fallback:
-                                    // _selectedGroupName is empty during the
-                                    // brief window before loadSession's group
-                                    // resolve runs, or whenever a binding
-                                    // resolve fails. Falling straight to the
-                                    // "Default" badge string masks the
-                                    // active group's real name (e.g. the
-                                    // onboarding-created "Default Models" or
-                                    // any user-renamed group). Insert a real
-                                    // fallback chain: collected VM value →
-                                    // active/default group name from the live
-                                    // config → terminal badge string. Mirrors
-                                    // the #476 TopBar title fallback pattern
-                                    // (commit b4c88775).
-                                    //
-                                    // [T-android-group-resolve-skip-uncredentialed]
-                                    // ...but only while a group is ACTUALLY
-                                    // bound. This chain used to run
-                                    // unconditionally, so a session that failed
-                                    // to resolve its group — and was therefore
-                                    // running on a model from the new-chat
-                                    // default chain, unrelated to any group —
-                                    // still displayed the default group's name.
-                                    // The header then contradicted the model
-                                    // line right below it and made a real
-                                    // routing failure read as normal operation,
-                                    // which is what made that bug hard to spot.
-                                    // Mirrors iOS, which keys the group glyph
-                                    // off the binding (`isGroupBound`) rather
-                                    // than off a name lookup.
-                                    val groupNameDisplay = selectedGroupName.ifEmpty {
-                                        if (selectedGroupId == null) {
-                                            ""
-                                        } else {
-                                            val defaultGroupId = providerRepository.defaultPrimaryGroupId
-                                            availableGroups.firstOrNull { it.id == defaultGroupId }?.name
-                                                ?: stringResource(R.string.model_picker_default_badge)
-                                        }
-                                    }
-                                    // Drop the whole affordance when no group is
-                                    // bound — an empty label would still leave
-                                    // a dangling chevron pointing at nothing.
-                                    if (groupNameDisplay.isNotEmpty()) {
-                                        Text(
-                                            text = groupNameDisplay,
-                                            fontSize = 12.sp,
-                                            lineHeight = 14.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = ChatColors.secondaryText,
-                                            maxLines = 1,
-                                            style = noFontPad,
-                                        )
-                                        Icon(
-                                            Icons.Default.KeyboardArrowDown,
-                                            contentDescription = null,
-                                            tint = ChatColors.tertiaryText,
-                                            modifier = Modifier.size(14.dp),
-                                        )
-                                    }
-                                }
                                 // Line 2: "provider · model" (iOS: "MiniMax ·
                                 // MiniMax-M2.7") + the thinking-level badge laid
                                 // out as a Row of two SEPARATE tappable siblings
@@ -2748,8 +2619,8 @@ fun ChatScreen(
                                             } else {
                                                 modelName.ifEmpty { providerName }
                                             },
-                                            fontSize = 11.sp,
-                                            lineHeight = 13.sp,
+                                            fontSize = 14.sp,
+                                            lineHeight = 18.sp,
                                             color = ChatColors.tertiaryText,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
@@ -2820,36 +2691,9 @@ fun ChatScreen(
                         // glyphs now share a baseline to the pixel. Menu is
                         // also the conventional sidebar-toggle icon.
                         //
-                        // [T-android-split-toggle-align] Two corrections, both
-                        // measured on a Mate Pad against the SESSION LIST's
-                        // toolbar rather than this bar's own ⋮ — the toggle sits
-                        // hard against the pane seam, so the icons it is read
-                        // beside are the list's Schedule/Terminal, not the
-                        // kebab at the far end of this bar. Aligned only to the
-                        // kebab, it measured 8px shorter and 3.5px lower than
-                        // its actual neighbours.
-                        //
-                        // 1. `offset(y = -2.dp)`: this bar is 68dp (see
-                        //    expandedHeight below — sized for the 3-row title
-                        //    and NOT reducible without re-triggering
-                        //    T-topbar-model-row-clip), while the list's bar is
-                        //    M3's default 64dp. A TopAppBar centres its
-                        //    navigation icon in its OWN height, so the 4dp
-                        //    difference put this glyph 2dp below the list's row.
-                        //    Offsetting by half the delta lands it on the list's
-                        //    baseline while leaving the taller bar intact.
-                        //
-                        // 2. `size(28.dp)`: Menu's three bars ink only ~12 of
-                        //    their 24dp viewport (bars at y=6/11/16), where the
-                        //    circular Schedule and boxy Terminal fill ~20 of
-                        //    theirs. At a matched box size Menu therefore reads
-                        //    markedly lighter and smaller. Scaling the box to
-                        //    28dp brings its ink to ~14dp, closing most of the
-                        //    optical gap. The IconButton's 48dp touch target is
-                        //    unchanged, so this is purely visual weight.
+                        // Match the compact list toolbar without a vertical offset.
                         IconButton(
                             onClick = onToggleSidebar,
-                            modifier = Modifier.offset(y = (-2).dp),
                         ) {
                             Icon(
                                 Icons.Filled.Menu,
@@ -3122,20 +2966,9 @@ fun ChatScreen(
                     containerColor = ChatColors.background.copy(alpha = 0.92f),
                     scrolledContainerColor = ChatColors.background.copy(alpha = 0.92f),
                 ),
-                // [T-android-topbar-shrink] 76dp → 68dp. The earlier
-                // T-topbar-model-row-clip fix bumped 60dp → 76dp to give the
-                // 3-row title (14sp/lh17 + 12sp/lh14 + 11sp/lh13 ≈ 44sp text
-                // + 4dp+2dp+1dp vertical padding ≈ 51dp on mdpi, mid-60s on
-                // xxhdpi) room to breathe — but overshot, leaving visible
-                // dead-space below the model row. This trim pairs with the
-                // outer Column's vertical-padding drop (4dp→2dp above):
-                // budget is now ~44sp text + 2dp+2dp+1dp ≈ 49dp typical,
-                // ~58-62dp at xxhdpi 2.625× rounding. 68dp keeps a 6-10dp
-                // safety margin so the model name still fits at any
-                // user-configured font scale on xhdpi/xxhdpi without
-                // re-clipping (T-topbar-model-row-clip regression check).
-                // Font sizes + lineHeights stay untouched per spec.
-                expandedHeight = 68.dp,
+                // One model row; grow only for enlarged system text.
+                // Keep 48dp for the toolbar buttons' touch targets.
+                expandedHeight = com.openminis.app.ui.components.minisToolbarHeight(),
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -3173,98 +3006,7 @@ fun ChatScreen(
 
             // Messages + scroll-to-bottom button
             Box(modifier = Modifier.weight(1f)) {
-                var toolBarHeightPx by remember { mutableStateOf(0) }
-                val density = LocalDensity.current
-                val toolBarHeightDp = with(density) { toolBarHeightPx.toDp() }
-                // T166 / T170 / T173: bottomReserve must clear the visible
-                // top of the floating tool-status overlay. Layout primitives
-                // come from FloatingToolStatusBar:
-                //   - status bar height = 38 dp
-                //   - thumbnail floats over the bar with overhang = 27 dp
-                //   - thumbnail TOP = bar top - overhang = 65 dp above the
-                //     input bar's upper edge (which is also the LazyColumn
-                //     bottom edge under reverseLayout).
-                //
-                // `onGloballyPositioned` on the wrapper Box reports ~98 dp
-                // because it includes wrapper padding(bottom=6) + horizontal
-                // padding insets + shadow allowance — none of which are
-                // *visually occluding* the LazyColumn. Using the measured
-                // value + 8 dp left a ~25 dp gap above the thumbnail (red
-                // box in the user's report).
-                //
-                // Pin to the visual constant: thumbnail height (65 dp) + a
-                // visual buffer (18 dp) so the latest row's bottom has clear
-                // breathing room above the thumbnail top.
-                //
-                // T174: an earlier version gated reserve on `toolBarHeightPx
-                // > 0`, but `onGloballyPositioned` fires asynchronously after
-                // the first floating-bar layout pass; for one frame after
-                // toolBlocks appeared the reserve evaluated the small
-                // default (28 dp) and the just-arrived user bubble landed
-                // beneath the bar. Logcat showed the inverse glitch too:
-                // `toolBarHeightPx=258 toolBarHeightDp=0 reserve=28` — the
-                // px state and the dp/reserve values come from different
-                // recomposition snapshots. Drive the reserve directly off
-                // the same predicate used for *whether* the floating bar is
-                // emitted (`hasFloatingTools` below) so reserve and bar
-                // visibility flip on the same frame.
-                // [T-android-chat-cannot-scroll-bottom-many-tools]
-                // Bug 𝙓𝙄𝙉 TG36286: with 7+ tools the user couldn't scroll the
-                // last messages above the floating tool status bar.
-                //
-                // Asymmetry between the bar's render condition and its
-                // bottomReserve gate: [lastToolBlocks] (drives whether to
-                // mount FloatingToolStatusBar) merges `messages` with the
-                // streaming-side-channel `streamingById`, so during a live
-                // turn the in-flight tool's toolStatus shows up there →
-                // bar renders. [hasFloatingTools] (drives bottomReserve)
-                // only read `messages`, which the streaming architecture
-                // intentionally leaves stable during a turn — so the
-                // in-flight tool is invisible to this predicate → reserve
-                // collapsed to 20dp while a 65dp+6dp floating bar covered
-                // the bottom of the LazyColumn. The new arrivals (status
-                // pill, "Minis is thinking" indicator, inline retry banner) landed
-                // behind the bar with no way to scroll them into view.
-                //
-                // Fix: also subscribe to streamingById so the predicate
-                // matches the bar's actual mount condition. The bar's
-                // mount uses `lastToolBlocks.isNotEmpty()` over the merged
-                // view; we mirror that semantically by checking the same
-                // filter on both sources.
-                val streamingById by viewModel.streamingById.collectAsState()
-                val hasFloatingTools = remember(messages, streamingById) {
-                    val merged = if (streamingById.isEmpty()) messages
-                                 else mergeStreamingOverlay(messages, streamingById)
-                    merged.any { msg ->
-                        msg.role == "assistant" && msg.toolBlocks.any { tb ->
-                            tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info"
-                        }
-                    }
-                }
-                val visualOverlayHeight = 65.dp  // thumbnailHeight in FloatingToolStatusBar
-                // Halve the breathing room above the input bar in both
-                // states — felt too sparse before. The thumbnail's 65dp
-                // physical height is preserved (it has to clear the
-                // floating overlay).
-                //
-                // T245: buffer raised 9dp → 14dp so the gap between the
-                // last LazyColumn tool row and the floating thumbnail's
-                // top reads at least as loose as the inter-tool spacing
-                // (each ToolCallPill carries padding(vertical = 3.dp) +
-                // LazyColumn spacedBy(2.dp) = ~8dp inter-tool gap; the
-                // 9dp buffer combined with the floating bar's internal
-                // overhang was visually tighter than 8dp). 14dp also
-                // matches the no-tool branch — single visual constant
-                // for "row-bottom → bottom chrome" breathing room.
-                // [T-bottom-occluded 0a6d3c92] No-tools branch bumped from
-                // 14dp → 20dp to give the last message bubble a comfortable
-                // gap above the composer's top edge. With 14dp the trailing
-                // line sat too close to the composer shadow / rounded edge
-                // (user reported "the bottom of the text is slightly clipped"). The floating-tools branch
-                // already reserves visualOverlayHeight (65dp) + buffer and
-                // was not part of the report; keep its +14 buffer.
-                val bottomReserve =
-                    if (hasFloatingTools) visualOverlayHeight + 14.dp else 20.dp
+                val bottomReserve = 20.dp
                 // T174: when bottomReserve changes (toolbar appearing /
                 // disappearing or thumbnail height shift), re-pin to bottom
                 // if we are currently following. Without this, the new
@@ -3557,28 +3299,10 @@ fun ChatScreen(
                     // (rendered via asReversed()), so the newest row is at
                     // the end.
                     val newest = flatItems.lastOrNull() ?: return@LaunchedEffect
-                    // [T-android-queued-bubble-behind-toolbar] UserBubble is in
-                    // the accept-list too, for the queued ("candidate") message
-                    // the user sends WHILE a turn is streaming.
-                    //
-                    // enqueuePrompt() appends the bubble to `_messages` without
-                    // going through the normal send path, so the only scrolls it
-                    // gets are the two position-0 pins (SEND-PATH/* and
-                    // LE(messages.size)USER-SEND-SNAP). Those fire — the logs
-                    // show all three landing `idx=0 off=0` — but position 0
-                    // under reverseLayout is the LazyColumn's own bottom edge,
-                    // which the floating tool bar (65dp thumbnail + overhang)
-                    // covers. contentPadding.bottom already reserves that space
-                    // via bottomReserve, yet the reserve does NOT change here:
-                    // a tool bar was already on screen before the enqueue, so
-                    // hasFloatingTools stays true and LE(bottomReserve) never
-                    // re-fires (verified: zero `reserve-change` events at the
-                    // enqueue moment). The bubble is laid out inside the
-                    // reserved band and stays half-occluded.
-                    //
-                    // This effect re-pins AFTER flatItems republishes with the
-                    // new row measured, which is exactly the missing step: the
-                    // earlier pins ran against a flatItems that did not yet
+                    // UserBubble is in the accept-list too, for the queued
+                    // message the user sends while a turn is streaming. Re-pin
+                    // after flatItems publishes the newly measured row; the
+                    // earlier send-path pin ran against a list that did not yet
                     // contain the bubble. Restricting it to isQueued keeps
                     // ordinary user sends (already handled by the send path,
                     // and never appended mid-stream) off this path.
@@ -4367,17 +4091,8 @@ fun ChatScreen(
                 } // Box (selection scope)
                 } // CompositionLocalProvider
 
-                // Floating tool status bar — shows only actual tool calls (not text/thinking/info).
-                // Matches iOS: filter on toolStatus != nil (text blocks have toolStatus = null).
-                //
-                // T-streaming-side-channel-tool-blocks: derive lastToolBlocks
-                // from a state that combines messages + streamingById INSIDE
-                // a LaunchedEffect (not via a top-level collectAsState read),
-                // so streaming-tick churn stays off the ChatScreen invalidation
-                // list. Without including streamingById, a tool pill clicked
-                // mid-turn is missing from lastToolBlocks → ToolDetailSheet
-                // never opens (and its sentinel LaunchedEffect immediately
-                // closes the detail state because the id "doesn't exist").
+                // Keep the merged tool-block list for details opened from
+                // the tool cards embedded in assistant messages.
                 var lastToolBlocks by remember { mutableStateOf<List<AssistantBlock>>(emptyList()) }
                 LaunchedEffect(messages) {
                     kotlinx.coroutines.flow.combine(
@@ -4390,60 +4105,13 @@ fun ChatScreen(
                             .filter { it.toolStatus != null && it.kind != "thinking" && it.kind != "info" }
                     }.collect { lastToolBlocks = it }
                 }
-                val allToolBlocks = lastToolBlocks
-                if (lastToolBlocks.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            // [T-android-chat-max-content-width] The tool status
-                            // bar is part of the conversation column, so it
-                            // takes the same cap as the message list and the
-                            // composer. Without it the bar alone spanned the
-                            // full pane while everything above and below it was
-                            // capped, so on a tablet it visibly overhung both.
-                            //
-                            // ORDER MATTERS: widthIn must come BEFORE
-                            // fillMaxWidth. fillMaxWidth pins the incoming
-                            // MIN width to the full pane as well as the max, so
-                            // a widthIn placed after it is raised back up by
-                            // that min and does nothing — which is exactly how
-                            // the first attempt at this failed. Declared first,
-                            // widthIn narrows the constraint and fillMaxWidth
-                            // then fills the already-narrowed one.
-                            //
-                            // BottomCenter on the parent centres the result, so
-                            // no extra alignment is needed.
-                            .widthIn(max = CHAT_MAX_CONTENT_WIDTH)
-                            .fillMaxWidth()
-                            .onGloballyPositioned { toolBarHeightPx = it.size.height }
-                            .padding(horizontal = 12.dp)
-                            .padding(bottom = 6.dp),
-                    ) {
-                        FloatingToolStatusBar(
-                            toolBlocks = lastToolBlocks,
-                            // T14: per-card stop on the floating bar — same
-                            // global cancel as the message-list pill button.
-                            onStop = { viewModel.cancelStream() },
-                            onOpenTerminalWithCommand = onOpenTerminalWithCommand,
-                            // T261: route detail open through the same VM
-                            // state as in-list pills so both surfaces share
-                            // one always-mounted sheet instance.
-                            onOpenDetail = { viewModel.openToolDetail(it) },
-                        )
-                    }
-                } else {
-                    SideEffect { toolBarHeightPx = 0 }
-                }
 
                 // [T-android-tts-capsule] Floating speech-player control for
                 // "Read replies" TTS — expand/compact capsule with mute, model
                 // switch and speed cycling. Mounted LAST in this Box so it
-                // draws above the list, the FABs and the floating tool bar
-                // (iOS mounts its SpeechPlayerControl at app root; chat-screen
-                // scope is the Android first pass).
-                // [T-android-tts-capsule-avoid] toolBarHeightPx is the same
-                // measurement bottomReserve uses — the capsule lifts above the
-                // floating tool bar instead of covering its trailing edge.
+                // draws above the list and the FABs (iOS mounts its
+                // SpeechPlayerControl at app root; chat-screen scope is the
+                // Android first pass).
                 // [T-android-tts-capsule-avoid-fabs] The scroll FABs share the
                 // capsule's bottom-end corner and OVERLAPPED it (user report:
                 // capsule stacked on the jump-to-user-message / scroll-to-
@@ -4457,14 +4125,14 @@ fun ChatScreen(
                 val upFabVisible = messages.isNotEmpty() && !isNearBottom.value
                 val downFabVisible =
                     userScrolledAway && contentOverflows.value && messages.isNotEmpty()
-                val fabBaseDp = if (lastToolBlocks.isNotEmpty()) 80.dp else 8.dp
+                val fabBaseDp = 8.dp
                 val fabStackTopDp = when {
                     upFabVisible -> fabBaseDp + 46.dp + 36.dp
                     downFabVisible -> fabBaseDp + 36.dp
                     else -> 0.dp
                 }
                 com.openminis.app.ui.chat.voice.SpeechPlayerCapsule(
-                    bottomObstructionPx = toolBarHeightPx,
+                    bottomObstructionPx = 0,
                     additionalObstructionDp = fabStackTopDp,
                 )
 
@@ -4538,7 +4206,7 @@ fun ChatScreen(
                 // spacing). Tapping walks BACK one user turn at a time rather
                 // than jumping to the oldest message.
                 if (messages.isNotEmpty() && !isNearBottom.value) {
-                    val upBaseBottom = if (lastToolBlocks.isNotEmpty()) 80.dp else 8.dp
+                    val upBaseBottom = 8.dp
                     androidx.compose.material3.FilledIconButton(
                         onClick = {
                             // [T-android-updown-fab-asymmetry] Arm the same flag a
@@ -4580,7 +4248,7 @@ fun ChatScreen(
                 }
 
                 if (userScrolledAway && contentOverflows.value && messages.isNotEmpty()) {
-                    val fabBottomPadding = if (lastToolBlocks.isNotEmpty()) 80.dp else 8.dp
+                    val fabBottomPadding = 8.dp
                     androidx.compose.material3.FilledIconButton(
                         onClick = {
                             // [T-android-scroll-fab-down-stuck] Clear the
@@ -5547,6 +5215,17 @@ fun ChatScreen(
                                 viewModel.setInputText(text)
                                 viewModel.updateSlashMenuState(text)
                             },
+                            onAutoSend = { text -> performSendOrEnqueue(text) },
+                            onExitVoice = {
+                                if (com.openminis.app.speech.SpeechRecognitionManager.state.value !=
+                                    com.openminis.app.speech.RecognitionState.IDLE
+                                ) {
+                                    com.openminis.app.speech.SpeechRecognitionManager.stopRecording()
+                                }
+                                com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive = false
+                                ComposerInputModePrefs.save(context, voice = false)
+                                voiceUsedSinceClear = false
+                            },
                             ensureMicPermission = { ensureMicPermissionFlow() },
                             // [T-android-correction-context-wiring] Feed AI
                             // correction the live conversation context. Reads the
@@ -6030,12 +5709,21 @@ fun ChatScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            // T185: 12dp horizontal lines the +/slash and
-                            // mic/send icon-button column up with the
-                            // attachment row + textfield + Move-to popup.
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            // Voice mode owns its mic/keyboard row inside the
+                            // inline panel. Keep this legacy composer row out
+                            // of the layout entirely while voice mode is on.
+                            .then(
+                                if (com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
+                                    Modifier.height(0.dp)
+                                } else {
+                                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                }
+                            ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // Voice conversation uses the mic and keyboard switch;
+                        // attachments and slash commands remain in text mode.
+                        if (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
                         // Left: + button (iOS: 34×34 circle, secondary bg)
                         Box {
                             InputCircleButton(
@@ -6111,6 +5799,7 @@ fun ChatScreen(
                                 fontStyle = FontStyle.Italic,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
                         }
 
                         // T187: Exit Edit Mode pill, only while editingMessageId
@@ -6208,7 +5897,6 @@ fun ChatScreen(
                                 com.openminis.app.speech.SpeechRecognitionManager
                                     .clearDegradationAndRefresh()
                                 voiceUsedSinceClear = true
-                                com.openminis.app.ui.chat.voice.VoiceModePrefs.enteredFromText = true
                                 com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive = true
                             }
                         }
@@ -6239,7 +5927,10 @@ fun ChatScreen(
                             ) {
                                 com.openminis.app.deeplink.DeepLinkCoordinator
                                     .consumePendingChatAction()
-                                triggerVoiceInput()
+                                com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
+                                if (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
+                                    triggerVoiceInput()
+                                }
                             }
                         }
 
@@ -6268,9 +5959,7 @@ fun ChatScreen(
                             }
                             val ttsEnabled by com.openminis.app.speech.VoiceOutputState
                                 .isEnabled.collectAsState()
-                            val ttsMuted by com.openminis.app.speech.VoiceOutputState
-                                .isMuted.collectAsState()
-                            val readReplies = ttsEnabled && !ttsMuted
+                            val readReplies = ttsEnabled
                             // [T-android-provider-tts-readaloud] Routes each
                             // utterance through the resolved Voice Output
                             // selection (provider TTS, system engine as
@@ -6284,82 +5973,6 @@ fun ChatScreen(
                             // entry into the voice panel.
                             DisposableEffect(replyTts) {
                                 onDispose { replyTts.shutdown() }
-                            }
-                            // [T-android-read-replies-pill-metrics] Sizing mirrors
-                            // iOS readAloudToolbarToggle: 10/6 padding around a
-                            // 5pt-spaced icon+label, on a capsule that HUGS its
-                            // content (iOS pins it with .fixedSize()).
-                            //
-                            // Two Compose-specific corrections are needed to land
-                            // on the same result:
-                            //  • wrapContentWidth() + centered arrangement — this
-                            //    pill sits between weight(1f) spacers, so without
-                            //    hugging it absorbs slack and the un-arranged Row
-                            //    packed icon+text against the start edge, which is
-                            //    what read as "not horizontally centered".
-                            //  • the label's line height is pinned to the font size
-                            //    and its font padding disabled. Compose Text
-                            //    otherwise reserves the font's full ascent/descent
-                            //    leading on top of the 6dp padding, making the pill
-                            //    visibly taller than iOS's for the same numbers.
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier
-                                    .wrapContentWidth()
-                                    .clip(RoundedCornerShape(50))
-                                    .background(
-                                        if (ttsEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                        else ChatColors.secondaryText.copy(alpha = 0.10f),
-                                    )
-                                    .clickable {
-                                        // iOS tap-cycle (readAloudToolbarToggle):
-                                        // active → mute (capsule stays visible);
-                                        // muted → fully off (capsule hides);
-                                        // off → on, un-muted.
-                                        val s = com.openminis.app.speech.VoiceOutputState
-                                        when {
-                                            ttsEnabled && !ttsMuted -> s.setMuted(true)
-                                            ttsEnabled && ttsMuted -> s.setEnabled(false)
-                                            else -> { s.setMuted(false); s.setEnabled(true) }
-                                        }
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                            ) {
-                                Icon(
-                                    if (readReplies) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = if (ttsEnabled) MaterialTheme.colorScheme.primary else ChatColors.secondaryText,
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    stringResource(R.string.voice_panel_read_replies),
-                                    // Metrics live IN the style, not as separate
-                                    // Text parameters: passing `style =` replaces
-                                    // the merged style, so a lineHeight given
-                                    // alongside it can be lost.
-                                    //
-                                    // includeFontPadding=false drops the font's
-                                    // ascent/descent slack that Compose otherwise
-                                    // adds on top of the 6dp padding — that slack
-                                    // was what made the pill overshoot its
-                                    // siblings. lineHeight is pinned to 1.25× the
-                                    // font size (a normal text leading) and
-                                    // centered, so the label occupies a
-                                    // predictable box and the 6dp padding reads
-                                    // evenly above and below.
-                                    style = LocalTextStyle.current.copy(
-                                        fontSize = 13.sp,
-                                        lineHeight = 16.25.sp,
-                                        platformStyle = PlatformTextStyle(includeFontPadding = false),
-                                        lineHeightStyle = LineHeightStyle(
-                                            alignment = LineHeightStyle.Alignment.Center,
-                                            trim = LineHeightStyle.Trim.None,
-                                        ),
-                                    ),
-                                    color = if (ttsEnabled) MaterialTheme.colorScheme.primary else ChatColors.secondaryText,
-                                )
                             }
                             // [T-android-streaming-readaloud] Speak the reply AS
                             // IT STREAMS. Previously this waited for isStreaming
@@ -6513,15 +6126,7 @@ fun ChatScreen(
                                     if (!streamingNow && live == null) replyTts.flush()
                                 }
                             }
-                            // [T-android-read-replies-pill-metrics] Balancing
-                            // spacer. There is a weight(1f) spacer BEFORE the
-                            // pill but the trailing side only had a fixed 8dp,
-                            // so all the row's slack collected on the left and
-                            // pushed the pill right of the bar's centre (measured
-                            // +59px on a 1080px screen). Matching weights on both
-                            // sides centre it between the leading (+, /) and
-                            // trailing (keyboard, mic/send) button groups.
-                            Spacer(modifier = Modifier.weight(1f))
+
                         }
 
                         // [T-android-voice-entry-always-available] The voice /
@@ -6585,7 +6190,7 @@ fun ChatScreen(
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
-                        } else {
+                        } else if (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive || hasContent) {
                             // Streaming with content → Send-into-queue; Idle with content → Send.
                             // Idle without text or attachments → disabled.
                             val canActivate = hasContent
@@ -6880,42 +6485,9 @@ fun ChatScreen(
             config.modelEntries.firstOrNull { it.id == entryId }
 
         ModelPickerSheet(
-            groups = availableGroups,
-            selectedGroupId = selectedGroupId,
             activeEntryId = activeEntryId,
-            defaultPrimaryGroupId = config.defaultPrimaryGroupId,
             config = config,
             providerRepository = providerRepository,
-            onSelectGroup = { groupId ->
-                val group = availableGroups.firstOrNull { it.id == groupId }
-                val firstEntry = group?.memberEntryIds?.firstNotNullOfOrNull(::entryById)
-                val label = firstEntry?.model?.let(::nonTextLabelFor)
-                if (label != null) {
-                    pendingNonTextSelection = PendingNonTextSelection.Group(
-                        groupId = groupId,
-                        modelDisplayName = firstEntry.model.displayName,
-                        modalityLabel = label,
-                    )
-                } else {
-                    viewModel.selectGroup(groupId)
-                    showModelPicker = false
-                }
-            },
-            onSelectGroupEntry = { groupId, entryId ->
-                val entry = entryById(entryId)
-                val label = entry?.model?.let(::nonTextLabelFor)
-                if (entry != null && label != null) {
-                    pendingNonTextSelection = PendingNonTextSelection.GroupEntry(
-                        groupId = groupId,
-                        entryId = entryId,
-                        modelDisplayName = entry.model.displayName,
-                        modalityLabel = label,
-                    )
-                } else {
-                    viewModel.selectGroupEntry(groupId, entryId)
-                    showModelPicker = false
-                }
-            },
             onSelectEntry = { entryId ->
                 val entry = entryById(entryId)
                 val label = entry?.model?.let(::nonTextLabelFor)
@@ -6931,13 +6503,6 @@ fun ChatScreen(
                 }
             },
             onDismiss = { showModelPicker = false },
-            // [T-android-modelpicker-group-edit] Close the picker first, then
-            // navigate — pushing the management screen on top of an open bottom
-            // sheet leaves the sheet lingering behind it on back.
-            onEditGroups = {
-                showModelPicker = false
-                onModelGroupsClick()
-            },
         )
 
         pendingNonTextSelection?.let { pending ->
@@ -6954,9 +6519,6 @@ fun ChatScreen(
                 dismissText = stringResource(R.string.model_picker_non_text_warning_choose_other),
                 onConfirm = {
                     when (val sel = pending) {
-                        is PendingNonTextSelection.Group -> viewModel.selectGroup(sel.groupId)
-                        is PendingNonTextSelection.GroupEntry ->
-                            viewModel.selectGroupEntry(sel.groupId, sel.entryId)
                         is PendingNonTextSelection.Entry -> viewModel.selectEntry(sel.entryId)
                     }
                     pendingNonTextSelection = null
@@ -7234,5 +6796,3 @@ private fun ThinkingLevelSheet(
         }
     }
 }
-
-

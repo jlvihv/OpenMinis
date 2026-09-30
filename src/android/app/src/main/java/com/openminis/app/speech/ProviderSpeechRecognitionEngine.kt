@@ -37,6 +37,8 @@ import kotlin.math.sqrt
  */
 class ProviderSpeechRecognitionEngine(private val appContext: Context) : SpeechRecognitionEngine {
 
+    @Volatile var quickTurnMode: Boolean = false
+
     companion object {
         private const val TAG = "ProviderASR"
         private const val SAMPLE_RATE = 16_000
@@ -57,6 +59,7 @@ class ProviderSpeechRecognitionEngine(private val appContext: Context) : SpeechR
          * door would otherwise cost a paid transcription request.
          */
         private const val MIN_SEGMENT_SECONDS = 2.0f
+        private const val QUICK_TURN_MIN_SEGMENT_SECONDS = 0.3f
 
         /** Below this we stay silent; above it the user gets told why (iOS :661). */
         private const val TOO_SHORT_TOAST_FLOOR = 0.3f
@@ -310,6 +313,7 @@ class ProviderSpeechRecognitionEngine(private val appContext: Context) : SpeechR
         candidates: List<Pair<com.openminis.app.data.model.ProviderInstance, com.openminis.app.data.model.ModelEntry>>,
         listener: SpeechRecognitionEngine.Listener,
     ) {
+        val quickTurn = quickTurnMode
         val det = VoiceActivityDetector(
             appContext,
             object : VoiceActivityListener {
@@ -341,13 +345,14 @@ class ProviderSpeechRecognitionEngine(private val appContext: Context) : SpeechR
                     pendingSegments.add(wav)
                     val heldSeconds = WavSegmentMerger.totalSeconds(pendingSegments)
 
+                    val minimumSeconds = if (quickTurn) QUICK_TURN_MIN_SEGMENT_SECONDS else MIN_SEGMENT_SECONDS
                     if (reason == SegmentEndReason.SILENCE_DETECTED &&
-                        heldSeconds < MIN_SEGMENT_SECONDS
+                        heldSeconds < minimumSeconds
                     ) {
                         Log.i(
                             TAG,
                             "[vad] holding ${"%.2f".format(spokenSeconds)}s segment " +
-                                "(total ${"%.2f".format(heldSeconds)}s < ${MIN_SEGMENT_SECONDS}s)",
+                                "(total ${"%.2f".format(heldSeconds)}s < ${minimumSeconds}s)",
                         )
                         // Keep the mic OPEN so the next burst can top it up.
                         // Force-flush after HOLD_FLUSH_MS of real silence so a
@@ -406,6 +411,7 @@ class ProviderSpeechRecognitionEngine(private val appContext: Context) : SpeechR
                     listener.onError(RecognitionError.AUDIO_ERROR, message)
                 }
             },
+            endSilenceFrames = if (quickTurn) VoiceActivityDetector.QUICK_TURN_END_FRAMES else VoiceActivityDetector.DEFAULT_END_FRAMES,
         ).also {
             // iOS splits this by engine: 59 s for Apple's system ASR (which
             // rejects >60 s per request) and the full 300 s session cap for

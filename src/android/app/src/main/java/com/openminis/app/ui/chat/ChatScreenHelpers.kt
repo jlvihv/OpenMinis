@@ -311,19 +311,6 @@ internal sealed class PendingNonTextSelection {
     abstract val modelDisplayName: String
     abstract val modalityLabel: String
 
-    data class Group(
-        val groupId: String,
-        override val modelDisplayName: String,
-        override val modalityLabel: String,
-    ) : PendingNonTextSelection()
-
-    data class GroupEntry(
-        val groupId: String,
-        val entryId: String,
-        override val modelDisplayName: String,
-        override val modalityLabel: String,
-    ) : PendingNonTextSelection()
-
     data class Entry(
         val entryId: String,
         override val modelDisplayName: String,

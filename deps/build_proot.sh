@@ -274,7 +274,7 @@ build_proot() {
     # sources use paths like `#include "execve/elf.h"`.
     local cppflags="-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -DARG_MAX=131072 -I$TALLOC_DIR"
     local cflags="-O2 -Wall -Wextra -fPIE"
-    local ldflags="-Wl,-z,noexecstack -pie -L$BUILD_DIR -ltalloc"
+    local ldflags="-Wl,-z,noexecstack -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -pie -L$BUILD_DIR -ltalloc"
 
     (
         cd "$PROOT_DIR/src"

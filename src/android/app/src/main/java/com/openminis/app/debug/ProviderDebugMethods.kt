@@ -231,53 +231,7 @@ internal object ProviderDebugMethods {
         }
     }
 
-    fun groupsList(context: Context, params: JSONObject): JSONObject {
-        val repo = repo(context)
-        val includeMembers = params.optBoolean("includeMembers", true)
-        val cfg = repo.config.value
-        val arr = JSONArray()
-        for (group in cfg.modelGroups) {
-            val isDefault = group.id == cfg.defaultPrimaryGroupId
-            val obj = JSONObject().apply {
-                put("id", group.id)
-                put("name", group.name)
-                put("strategy", group.strategy.name)
-                put("fallbackStrategy", group.fallbackStrategy.name)
-                put("isDefault", isDefault)
-                put("inAgentLoop", group.id in cfg.agentLoopGroupIds)
-                val ids = JSONArray()
-                for (id in group.memberEntryIds) ids.put(id)
-                put("memberEntryIds", ids)
-            }
-            if (includeMembers) {
-                val members = JSONArray()
-                for (memberId in group.memberEntryIds) {
-                    // SystemVoiceEntries fallback: the default voice groups are
-                    // seeded with "__builtin_system_speech__/…" members that are
-                    // synthesized on demand and never stored in modelEntries, so
-                    // matching modelEntries alone reported `members: []` for both
-                    // voice groups while memberEntryIds listed two.
-                    val entry = cfg.modelEntries.find { it.id == memberId }
-                        ?: com.openminis.app.data.model.SystemVoiceEntries.resolve(memberId)
-                        ?: continue
-                    val instLabel = cfg.instances.find { it.id == entry.providerInstanceId }?.label
-                    members.put(JSONObject().apply {
-                        put("entryId", entry.id)
-                        put("modelId", entry.baseModel.id)
-                        put("displayName", entry.model.displayName)
-                        put("providerLabel", instLabel ?: "")
-                    })
-                }
-                obj.put("members", members)
-            }
-            arr.put(obj)
-        }
-        return JSONObject().apply {
-            put("defaultGroupId", cfg.defaultPrimaryGroupId ?: JSONObject.NULL)
-            put("count", arr.length())
-            put("groups", arr)
-        }
-    }
+
 
     /**
      * [T-android-debug-quicktest] `provider.quickTest` — run the UI Quick Test

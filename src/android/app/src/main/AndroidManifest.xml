@@ -207,6 +207,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="minis" />
             </intent-filter>
+            <!-- Qualify as a user-selectable digital assistant. The system
+                 dispatches the assist gesture here; MainActivity opens the
+                 existing voice-chat entry point. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <!-- T-android-dynamic-app-icon: launcher-icon aliases. Exactly

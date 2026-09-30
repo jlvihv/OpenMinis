@@ -109,14 +109,12 @@ class LlmCorrectionStrategy(
      */
     private fun resolveModel(): Pair<ModelEntry, String>? {
         repository.resolveTitleSubEntry()?.let { return it to "sub" }
-        val primaryGroupId = repository.defaultPrimaryGroupId
-        val group = primaryGroupId?.let { repository.group(it) }
-        // [T-android-group-resolve-skip-uncredentialed] Credential-aware filter:
-        // picking a member whose provider has no credential would fail the
-        // correction request outright instead of using the next usable member.
-        val entry = group?.let { repository.availableMemberEntries(it).firstOrNull() }
+        val config = repository.config.value
+        val entry = config.modelEntries.firstOrNull { it.id == config.defaultModelEntryId }
+            ?: repository.lastUsedVisibleEntry()
+            ?: repository.newestProviderNewestTextEntry()
         if (entry != null) return entry to "primary"
-        Log.e(TAG, "no correction model available (neither sub nor primary group resolves)")
+        Log.e(TAG, "no correction model available")
         return null
     }
 

@@ -394,7 +394,13 @@ data class ModelEntry(
 data class ProviderConfig(
     val instances: MutableList<ProviderInstance> = mutableListOf(),
     val modelEntries: MutableList<ModelEntry> = mutableListOf(),
+    // Legacy groups are read only for migration from older backups.
     val modelGroups: MutableList<ModelGroup> = mutableListOf(),
+    var defaultModelEntryId: String? = null,
+    var visionModelEntryId: String? = null,
+    var titleModelEntryId: String? = null,
+    var defaultThinkingLevel: ThinkingLevel? = null,
+    var defaultContextLimitTokens: Int? = null,
     var defaultPrimaryGroupId: String? = null,
     var defaultSubGroupId: String? = null,
     // [T-android-provider-voice] Voice Input / Voice Output group bindings —

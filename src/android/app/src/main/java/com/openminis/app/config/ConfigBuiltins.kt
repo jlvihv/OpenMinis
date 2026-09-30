@@ -3,7 +3,6 @@ package com.openminis.app.config
 import android.content.Context
 import com.openminis.app.config.collections.EnvVarsCollection
 import com.openminis.app.service.DynamicIslandSupport
-import com.openminis.app.config.collections.GroupsCollection
 import com.openminis.app.config.collections.ModelsCollection
 import com.openminis.app.config.collections.ProvidersCollection
 import com.openminis.app.config.fields.ClosureField
@@ -553,7 +552,6 @@ internal object ConfigBuiltins {
     ) {
         r.register(ProvidersCollection(providerRepo, envVarRepo))
         r.register(ModelsCollection(providerRepo))
-        r.register(GroupsCollection(providerRepo))
         r.register(EnvVarsCollection(envVarRepo))
         // [T-android-thinking-rules-phase2] Custom thinking rules under
         // thinkingrules.<instanceId>:<ruleId>.<field>.
@@ -737,50 +735,6 @@ internal object ConfigBuiltins {
     private fun registerDefaults(r: ConfigRegistry, repo: ProviderRepository) {
         r.register(
             ClosureField(
-                path = "defaults.primaryGroup",
-                displayName = "Default primary group",
-                description = "Group used by new sessions. Empty string clears the default.",
-                valueSchema = ConfigSchema.Str(maxLength = 200),
-                risk = ConfigRisk.SENSITIVE,
-                revertable = true,
-                reader = { ConfigValue.Str(repo.defaultPrimaryGroupId ?: "") },
-                writer = { v ->
-                    val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
-                    if (s.isEmpty()) {
-                        repo.defaultPrimaryGroupId = null
-                    } else {
-                        if (repo.config.value.modelGroups.none { it.id == s }) {
-                            throw ConfigError.InvalidValue("No group with id $s")
-                        }
-                        repo.defaultPrimaryGroupId = s
-                    }
-                },
-            )
-        )
-        r.register(
-            ClosureField(
-                path = "defaults.subGroup",
-                displayName = "Default sub group",
-                description = "Secondary group for fallback. Empty string clears the default.",
-                valueSchema = ConfigSchema.Str(maxLength = 200),
-                risk = ConfigRisk.SENSITIVE,
-                revertable = true,
-                reader = { ConfigValue.Str(repo.defaultSubGroupId ?: "") },
-                writer = { v ->
-                    val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
-                    if (s.isEmpty()) {
-                        repo.defaultSubGroupId = null
-                    } else {
-                        if (repo.config.value.modelGroups.none { it.id == s }) {
-                            throw ConfigError.InvalidValue("No group with id $s")
-                        }
-                        repo.defaultSubGroupId = s
-                    }
-                },
-            )
-        )
-        r.register(
-            ClosureField(
                 path = "defaults.agentLoopEntries",
                 displayName = "Agent loop model entries",
                 description = "Model entries available via minis-model-use. Replace with full list to set; use .append/.remove for single-element ops.",
@@ -820,40 +774,7 @@ internal object ConfigBuiltins {
                 },
             )
         )
-        r.register(
-            ClosureField(
-                path = "defaults.agentLoopGroups",
-                displayName = "Agent loop groups",
-                description = "Whole groups exposed via minis-model-use.",
-                valueSchema = ConfigSchema.Array(ConfigSchema.Str()),
-                risk = ConfigRisk.SENSITIVE,
-                revertable = true,
-                reader = {
-                    // [T-android-agentloop-dirty-data-skip] Skip ids that no
-                    // longer match a real group (deleted / legacy bare UUID).
-                    val valid = repo.config.value.modelGroups.map { it.id }.toSet()
-                    ConfigValue.Arr(
-                        repo.config.value.agentLoopGroupIds
-                            .filter { it in valid }
-                            .map { ConfigValue.Str(it) }
-                    )
-                },
-                writer = { v ->
-                    val arr = (v as? ConfigValue.Arr)?.value ?: throw ConfigError.TypeMismatch("array")
-                    val ids = arr.mapNotNull { (it as? ConfigValue.Str)?.value }
-                    val valid = repo.config.value.modelGroups.map { it.id }.toSet()
-                    // [T-android-agentloop-dirty-data-skip] Silent-skip unknown
-                    // group ids (same rationale as agentLoopEntries above).
-                    val cleanIds = ids.filter { it in valid }
-                    ids.filterNot { it in valid }.forEach { bad ->
-                        com.openminis.app.logging.AppLogger.warning(
-                            "MinisConfig", "skipped unknown agentLoopGroups id: $bad"
-                        )
-                    }
-                    repo.setAgentLoopGroupIds(cleanIds)
-                },
-            )
-        )
+
     }
 
     // -- Soul (SOUL.md personality) --

@@ -2852,7 +2852,7 @@ class OpenAIProvider private constructor(
          *
          * This parameter did not exist, and that was a silent data loss: every
          * caller that supplies images this way (minis-model-use's `image_url`
-         * blocks, VisionGroupResolver.describeOnce, any direct
+         * blocks, VisionModelResolver.describeOnce, any direct
          * sendMessage(imageParts=…)) had its pixels dropped on the floor the
          * moment the provider was on the Responses path, with no error. The
          * user-visible symptom was a vision model replying "no image was
@@ -3256,7 +3256,7 @@ class OpenAIProvider private constructor(
             } else if (attachTopLevelImages) {
                 // [T-android-responses-toplevel-images] THE reported bug's path.
                 // A plain (contentParts-free) user message plus top-level
-                // images — what VisionGroupResolver.describeOnce and
+                // images — what VisionModelResolver.describeOnce and
                 // minis-model-use's image_url blocks produce. This builder had
                 // no imageParts parameter at all, so the message was emitted as
                 // a bare text string and the pixels never reached the wire. The

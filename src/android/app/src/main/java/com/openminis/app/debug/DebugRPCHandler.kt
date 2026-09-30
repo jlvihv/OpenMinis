@@ -121,7 +121,7 @@ class DebugRPCHandler(private val context: Context) {
             "provider.types" -> ProviderDebugMethods.types()
             "provider.instances.list" -> ProviderDebugMethods.instancesList(context, params)
             "provider.models.list" -> ProviderDebugMethods.modelsList(context, params)
-            "provider.groups.list" -> ProviderDebugMethods.groupsList(context, params)
+
             "provider.quickTest" -> ProviderDebugMethods.quickTest(context, params)
             "provider.export" -> ProviderDebugMethods.export(context, params)
             "provider.import" -> ProviderDebugMethods.import(context, params)
@@ -136,11 +136,11 @@ class DebugRPCHandler(private val context: Context) {
             "provider.models.delete" -> ProviderMutationMethods.modelsDelete(context, params)
             "provider.models.refresh" -> ProviderMutationMethods.modelsRefresh(context, params)
             "provider.models.setAgentLoop" -> ProviderMutationMethods.modelsSetAgentLoop(context, params)
-            "provider.groups.create" -> ProviderMutationMethods.groupsCreate(context, params)
-            "provider.groups.update" -> ProviderMutationMethods.groupsUpdate(context, params)
-            "provider.groups.delete" -> ProviderMutationMethods.groupsDelete(context, params)
-            "provider.groups.setDefault" -> ProviderMutationMethods.groupsSetDefault(context, params)
-            "provider.groups.setAgentLoop" -> ProviderMutationMethods.groupsSetAgentLoop(context, params)
+
+
+
+
+
 
             // Chat (read)
             "chat.sessions.list" -> ChatDebugMethods.sessionsList(context, params)

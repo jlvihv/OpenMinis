@@ -250,24 +250,9 @@ internal object ChatDebugMethods {
             })
         }
 
-        val groupsArr = JSONArray()
-        for (group in cfg.modelGroups) {
-            val ids = JSONArray()
-            for (memberId in group.memberEntryIds) ids.put(memberId)
-            groupsArr.put(JSONObject().apply {
-                put("id", group.id)
-                put("name", group.name)
-                put("strategy", group.strategy.name)
-                put("isDefault", group.id == cfg.defaultPrimaryGroupId)
-                put("memberEntryIds", ids)
-            })
-        }
-
         return JSONObject().apply {
-            put("defaultGroupId", cfg.defaultPrimaryGroupId ?: JSONObject.NULL)
-            put("groupCount", groupsArr.length())
+            put("defaultEntryId", cfg.defaultModelEntryId ?: JSONObject.NULL)
             put("entryCount", entriesArr.length())
-            put("groups", groupsArr)
             put("entries", entriesArr)
         }
     }

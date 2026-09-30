@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.ui.components.MinisTopAppBar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,9 +33,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -77,10 +75,6 @@ fun SettingsScaffold(
     // edit screens. When null, the slot falls back to the back arrow iff
     // onBack is set, so every existing caller renders unchanged.
     navigation: @Composable (() -> Unit)? = null,
-    // [T-android-modeldetail-savecancel-ios-parity] Center the title
-    // (CenterAlignedTopAppBar) for iOS-modal-style edit screens. Default
-    // keeps the start-aligned TopAppBar.
-    centerTitle: Boolean = false,
     floatingActionButton: @Composable (() -> Unit)? = null,
     scrollable: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
@@ -101,25 +95,11 @@ fun SettingsScaffold(
                     }
                 }
             }
-            if (centerTitle) {
-                CenterAlignedTopAppBar(
-                    title = titleSlot,
-                    navigationIcon = navigationSlot,
-                    actions = { actions?.invoke() },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                    ),
-                )
-            } else {
-                TopAppBar(
-                    title = titleSlot,
-                    navigationIcon = navigationSlot,
-                    actions = { actions?.invoke() },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                    ),
-                )
-            }
+            MinisTopAppBar(
+                title = titleSlot,
+                navigationIcon = navigationSlot,
+                actions = { actions?.invoke() },
+            )
         },
         floatingActionButton = { floatingActionButton?.invoke() },
         containerColor = MaterialTheme.colorScheme.background,

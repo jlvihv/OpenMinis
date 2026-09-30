@@ -207,51 +207,15 @@ object ScheduledAgentRunner {
                 }
             }
             ScheduledTargetMode.NewSession -> {
-                // Resolution priority (mirrors the UI's normal-chat boot):
-                //   1. task.modelBinding (user picked a group or specific entry
-                //      on the task editor) → write it through verbatim so the
-                //      new session lights up the same group/entry chip.
-                //   2. legacy task.modelId (pre-binding, kept for backcompat) →
-                //      pin to that entry, no binding.
-                //   3. default primary group → write a group binding so the
-                //      session boots through the user's default group.
-                //   4. first visible entry → last-resort fallback.
-                val explicitBinding = task.modelBinding
-                val pinnedModelId = task.modelId
-                val defaultGroupId =
-                    if (explicitBinding == null && pinnedModelId == null) {
-                        app.providerRepository.defaultPrimaryGroupId
-                    } else null
-
-                // Derive the seed modelId for the session row (must be valid
-                // even before restoreFromBinding runs).
-                val seedModelId: String = pinnedModelId
-                    ?: run {
-                        // Try to peek a member from whichever binding we'll
-                        // write — explicit takes priority, then default group.
-                        val groupIdForSeed: String? = explicitBinding
-                            ?.let { parseGroupIdFromBinding(it) }
-                            ?: defaultGroupId
-                        val entryIdForSeed: String? = explicitBinding
-                            ?.let { parseEntryIdFromBinding(it) }
-
-                        // Entry binding → use that entry's model id.
-                        entryIdForSeed
-                            ?.let { eid -> app.providerRepository.config.value.modelEntries.firstOrNull { it.id == eid }?.model?.id }
-                            ?: groupIdForSeed
-                                ?.let { gid -> app.providerRepository.group(gid) }
-                                // [T-android-group-resolve-skip-uncredentialed]
-                                // Credential-aware filter — a scheduled run
-                                // seeded with an uncredentialed member would
-                                // fail unattended, with no user around to see
-                                // the auth error.
-                                ?.let { g -> app.providerRepository.availableMemberEntries(g).firstOrNull()?.model?.id }
-                    }
-                    ?: app.providerRepository.allVisibleEntries().firstOrNull()?.baseModel?.id
-                    ?: run {
-                        AppLogger.warning(TAG, "task ${task.id}: no provider — abort")
-                        return null
-                    }
+                val config = app.providerRepository.config.value
+                val explicitEntry = task.modelBinding?.let { parseEntryIdFromBinding(it) }
+                val entry = config.modelEntries.firstOrNull { it.id == explicitEntry }
+                    ?: task.modelId?.let { id -> config.modelEntries.firstOrNull { it.model.id == id } }
+                    ?: config.modelEntries.firstOrNull { it.id == config.defaultModelEntryId }
+                    ?: app.providerRepository.lastUsedVisibleEntry()
+                    ?: app.providerRepository.newestProviderNewestTextEntry()
+                    ?: return null
+                val seedModelId = entry.model.id
                 val title = task.label.ifBlank { "Scheduled task" }
                 val memoryOn = com.openminis.app.data.MemoryGlobalPrefs.isGlobalEnabled(app)
                 val session = app.chatRepository.createSession(
@@ -261,15 +225,9 @@ object ScheduledAgentRunner {
                 )
                 app.chatRepository.dao.updateSource(session.id, "scheduled")
 
-                // Write a model_binding when the task carried one OR when we
-                // fell back to defaultPrimaryGroupId. Pinned modelId (no
-                // binding) leaves modelBinding null so the chat layer treats
-                // it as a hard-pinned entry, matching what the user picked.
-                val bindingToWrite: String? = explicitBinding
-                    ?: defaultGroupId?.let { """{"type":"group","groupId":"$it"}""" }
-                if (bindingToWrite != null) {
-                    app.chatRepository.updateSessionBinding(session.id, bindingToWrite, seedModelId)
-                }
+                val bindingToWrite = task.modelBinding?.takeIf { parseEntryIdFromBinding(it) != null }
+                    ?: org.json.JSONObject().put("type", "entry").put("entryId", entry.id).toString()
+                app.chatRepository.updateSessionBinding(session.id, bindingToWrite, seedModelId)
                 session.id
             }
         }
@@ -277,12 +235,6 @@ object ScheduledAgentRunner {
 
     // Mirrors ChatViewModel.restoreFromBinding's JSON shape. Robust against
     // malformed JSON — both parsers return null and the caller fall-backs.
-    private fun parseGroupIdFromBinding(json: String): String? = runCatching {
-        val o = org.json.JSONObject(json)
-        if (o.optString("type") == "group") {
-            o.optString("groupId").takeIf { it.isNotEmpty() }
-        } else null
-    }.getOrNull()
 
     private fun parseEntryIdFromBinding(json: String): String? = runCatching {
         val o = org.json.JSONObject(json)

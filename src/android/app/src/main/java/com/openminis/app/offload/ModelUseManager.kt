@@ -9,7 +9,7 @@ import org.json.JSONObject
  * Provides model listing and search capabilities for the model_use tool.
  * Only surfaces the Agent-Loop-visible subset (mirrors iOS
  * ProviderConfigStore.resolvedAgentLoopEntries). Models not exposed in
- * Settings > Model Groups > "Available Models in Agent Loop" are hidden.
+ * Settings > Models > "Models available to the assistant" are hidden.
  *
  * Output shape mirrors iOS `ModelUseOffloadBridge.entryDict` so the agent
  * sees the same fields on both platforms — most importantly `modalities`,
@@ -18,7 +18,7 @@ import org.json.JSONObject
 object ModelUseManager {
 
     private const val NO_MODELS_HINT =
-        "No models available. Go to Settings > Model Groups > Available Models in Agent Loop to expose models to the agent."
+        "No models available. Go to Settings > Models > Models available to the assistant to expose models to the agent."
 
     /**
      * List the agent-loop-visible models, optionally filtered by a free-text
