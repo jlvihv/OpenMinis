@@ -122,6 +122,12 @@ fun AddAgentLoopModelsScreen(
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
+        // [T-picker-search-debounce] Ranked, capped, debounced search.
+        val searchSections = com.openminis.app.ui.components.rememberModelEntryPickerSections(
+            instances = config.instances,
+            availableEntries = availableEntries,
+            searchQuery = searchQuery.value,
+        )
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -140,6 +146,7 @@ fun AddAgentLoopModelsScreen(
                 emptySearchTextRes = R.string.add_models_to_group_no_match,
                 searchPlaceholderRes = R.string.add_models_to_group_search_models,
                 clearContentDescriptionRes = R.string.add_models_to_group_clear,
+                sections = searchSections,
             )
         }
     }

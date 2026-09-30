@@ -77,11 +77,12 @@ class DirectModelMigrationTest {
     }
     @Test fun directDefaultsSurviveDatabaseSnapshotRoundTrip() {
         val c = config().copy(modelGroups = mutableListOf(), defaultModelEntryId = "b/shared",
-            titleModelEntryId = "a/shared", visionModelEntryId = "b/shared",
+            titleModelEntryId = "a/shared", subModelEntryId = "b/shared", visionModelEntryId = "b/shared",
             defaultThinkingLevel = ThinkingLevel.HIGH, defaultContextLimitTokens = 32768)
         val restored = c.toSnapshot(Json).toProviderConfig(Json)
         assertEquals(c.defaultModelEntryId, restored.defaultModelEntryId)
         assertEquals(c.titleModelEntryId, restored.titleModelEntryId)
+        assertEquals(c.subModelEntryId, restored.subModelEntryId)
         assertEquals(c.visionModelEntryId, restored.visionModelEntryId)
         assertEquals(c.defaultThinkingLevel, restored.defaultThinkingLevel)
         assertEquals(c.defaultContextLimitTokens, restored.defaultContextLimitTokens)

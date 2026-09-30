@@ -51,6 +51,7 @@ internal fun migrateToDirectModels(context: Context, config: ProviderConfig, cre
     val defaultGroup = config.modelGroups.firstOrNull { it.id == config.defaultPrimaryGroupId }
     if (config.defaultThinkingLevel == null) config.defaultThinkingLevel = defaultGroup?.defaultThinkingLevel
     if (config.defaultContextLimitTokens == null) config.defaultContextLimitTokens = defaultGroup?.contextLimitTokens
+    if (config.subModelEntryId == null) config.subModelEntryId = migrator.choose(config.defaultSubGroupId, allowSystem = false)
     if (config.titleModelEntryId == null) config.titleModelEntryId = migrator.choose(config.defaultSubGroupId, allowSystem = false, accepts = { it.model.outputModalities?.contains("text") != false })
     if (config.visionModelEntryId == null) config.visionModelEntryId = migrator.choose(config.visionGroupId, allowSystem = false, accepts = { it.model.hasImageInput })
     val editor = prefs.edit()
@@ -66,6 +67,12 @@ internal fun migrateToDirectModels(context: Context, config: ProviderConfig, cre
     config.agentLoopGroupIds.flatMap { gid -> config.modelGroups.firstOrNull { it.id == gid }?.memberEntryIds.orEmpty() }
         .filter { id -> config.modelEntries.any { it.id == id } }
         .forEach { if (it !in config.agentLoopModelEntryIds) config.agentLoopModelEntryIds.add(it) }
+    config.subAgents.forEach { agent ->
+        if (agent.modelEntryId == null && agent.modelGroupId != null) {
+            agent.modelEntryId = migrator.choose(agent.modelGroupId)
+        }
+        agent.modelGroupId = null
+    }
     config.modelGroups.clear()
     config.agentLoopGroupIds.clear()
     config.defaultPrimaryGroupId = null

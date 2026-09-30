@@ -40,6 +40,8 @@ fun ModelSelectionScreen(repo: ProviderRepository, onBack: () -> Unit, onAddAgen
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 16.dp))
                 SelectionRow(stringResource(R.string.model_selection_default), label(config.defaultModelEntryId)
                     .ifEmpty { stringResource(R.string.model_selection_last_used) }, { picker = "chat" })
+                SelectionRow(stringResource(R.string.model_selection_sub_model), label(config.subModelEntryId)
+                    .ifEmpty { stringResource(R.string.model_selection_chat_model) }, { picker = "sub" })
                 SelectionRow(stringResource(R.string.model_selection_title_model), label(config.titleModelEntryId)
                     .ifEmpty { stringResource(R.string.model_selection_chat_model) }, { picker = "title" })
                 SelectionRow(stringResource(R.string.voice_input_picker_title),
@@ -84,8 +86,11 @@ fun ModelSelectionScreen(repo: ProviderRepository, onBack: () -> Unit, onAddAgen
         "title" -> ModelPickerSheet(activeEntryId = config.titleModelEntryId, config = config,
             providerRepository = repo, onSelectEntry = { repo.titleModelEntryId = it; picker = null },
             onDismiss = { picker = null })
-        "input" -> VoiceInputPickerSheet(repo) { picker = null }
-        "output" -> VoiceOutputPickerSheet(repo) { picker = null }
+        "sub" -> ModelPickerSheet(activeEntryId = config.subModelEntryId, config = config,
+            providerRepository = repo, onSelectEntry = { repo.subModelEntryId = it; picker = null },
+            onDismiss = { picker = null })
+        "input" -> VoiceInputPickerSheet(repo, onDismiss = { picker = null })
+        "output" -> VoiceOutputPickerSheet(repo, onDismiss = { picker = null })
         "vision" -> UnifiedModelPickerSheet(providerRepository = repo,
             title = stringResource(R.string.model_selection_vision), modalityFilter = PickerModalityFilter.IMAGE_INPUT,
             selectedId = config.visionModelEntryId, onSelect = { repo.visionModelEntryId = it }, onDismiss = { picker = null })
