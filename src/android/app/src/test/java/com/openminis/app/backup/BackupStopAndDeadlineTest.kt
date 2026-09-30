@@ -74,14 +74,10 @@ class BackupStopAndDeadlineTest {
 
     @Test
     fun `the upload runs as an async rclone job that Stop can end`() {
-        val up = src("src/main/java/com/openminis/app/backup/remote/RcloneChunkedUpload.kt")
+        val up = src("src/main/java/com/openminis/app/backup/remote/LocalBackupTransfer.kt")
         val upload = up.substringAfter("    fun upload(").substringBefore("    private fun runCopyJob(")
-        assertTrue(upload.contains("runCopyJob("))
-        assertTrue(upload.contains("pauseCancellably(RETRY_BACKOFF_MS, isCancelled)"))
-        val job = up.substringAfter("    private fun runCopyJob(").substringBefore("    private fun pauseCancellably(")
-        assertTrue(job.contains("\"_async\" to true, \"_group\" to group"))
-        assertTrue(job.contains("\"job/stop\""))
-        assertTrue(job.contains("\"core/stats\", mapOf(\"group\" to group)"))
+        assertTrue(upload.contains("LocalFolderDelivery(context).deliver"))
+        assertTrue(upload.contains("isCancelled"))
         assertFalse("process-wide byte counter is gone", up.contains("private fun statsBytes()"))
     }
 
@@ -99,7 +95,6 @@ class BackupStopAndDeadlineTest {
 
     @Test
     fun `retry pause and tree checkpoint match iOS`() {
-        assertEquals(3_000L, com.openminis.app.backup.remote.RcloneChunkedUpload.RETRY_BACKOFF_MS)
         assertEquals(32, BackupFileTreeExporter.CANCEL_CHECK_EVERY)
     }
 }

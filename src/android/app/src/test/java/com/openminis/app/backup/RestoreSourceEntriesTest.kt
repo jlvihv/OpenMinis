@@ -158,7 +158,7 @@ class RestoreSourceEntriesTest {
             Regex("""fun AddServerForm\(""")
                 .findAll(
                     File(
-                        "src/main/java/com/openminis/app/ui/settings/backup/RcloneDestinationsScreen.kt",
+                        "src/main/java/com/openminis/app/ui/settings/backup/LocalDestinationsScreen.kt",
                     ).readText(),
                 ).count(),
         )
@@ -178,7 +178,7 @@ class RestoreSourceEntriesTest {
     @Test
     fun `the abandoned direct-to-form entry point is gone`() {
         val dest = File(
-            "src/main/java/com/openminis/app/ui/settings/backup/RcloneDestinationsScreen.kt",
+            "src/main/java/com/openminis/app/ui/settings/backup/LocalDestinationsScreen.kt",
         ).readText()
         val nav = File(
             "src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt",

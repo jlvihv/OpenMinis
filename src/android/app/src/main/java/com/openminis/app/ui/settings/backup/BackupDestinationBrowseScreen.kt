@@ -32,8 +32,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openminis.app.R
-import com.openminis.app.backup.remote.RcloneChunkedUpload
-import com.openminis.app.backup.remote.RcloneRemoteStore
+import com.openminis.app.backup.remote.LocalBackupTransfer
+import com.openminis.app.backup.remote.LocalDestinationStore
 import com.openminis.app.ui.components.MinisTextButton
 import com.openminis.app.ui.settings.SettingsScaffold
 import com.openminis.app.ui.settings.SettingsSection
@@ -53,14 +53,14 @@ import com.openminis.app.ui.settings.SettingsSection
  */
 @Composable
 fun BackupDestinationBrowseScreen(
-    remote: RcloneRemoteStore.Remote,
+    remote: LocalDestinationStore.Remote,
     vm: BackupViewModel,
     onBack: () -> Unit,
 ) {
     val packages by vm.serverPackages.collectAsState()
     val running by vm.isRunning.collectAsState()
     val error by vm.errorText.collectAsState()
-    var pendingDelete by remember { mutableStateOf<RcloneChunkedUpload.RemotePackage?>(null) }
+    var pendingDelete by remember { mutableStateOf<LocalBackupTransfer.RemotePackage?>(null) }
 
     LaunchedEffect(remote.name) { vm.clearError(); vm.listServerPackages(remote) }
 
@@ -151,7 +151,7 @@ fun BackupDestinationBrowseScreen(
 
 @Composable
 private fun PackageRow(
-    pkg: RcloneChunkedUpload.RemotePackage,
+    pkg: LocalBackupTransfer.RemotePackage,
     showDivider: Boolean,
     onDelete: () -> Unit,
 ) {

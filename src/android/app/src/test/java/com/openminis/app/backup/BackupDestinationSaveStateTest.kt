@@ -9,7 +9,7 @@ import org.junit.Test
 /**
  * The "did my destination actually save?" state machine.
  *
- * `RcloneDestinationsScreen` renders one of three things from two pieces of
+ * `LocalDestinationsScreen` renders one of three things from two pieces of
  * state — `browse != null` (folder browser), `adding` (add form), otherwise
  * the saved list. A successful save used to leave both flags untouched, so
  * the user stayed on the form and a save that worked looked exactly like one
@@ -18,7 +18,7 @@ import org.junit.Test
  *
  * The Compose screen itself needs an instrumented run, but the transition
  * rule is plain logic and is what regressed, so it is pinned here. This
- * mirrors `RcloneDestinationsViewModel.savePending`, which invokes its
+ * mirrors `LocalDestinationsViewModel.savePending`, which invokes its
  * `onDone` callback ONLY after `store.add` returns — its catch sets `_error`
  * instead — which is why leaving the form on the callback cannot strand a
  * failed save.

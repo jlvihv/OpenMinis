@@ -23,11 +23,11 @@ class BackupPackageNameTest {
     @Test
     fun `full filename matches iOS for the same inputs`() {
         assertEquals(
-            "Alexs-Pixel-20260817-m08r03g0nz0.minisbak",
+            "Alexs-Pixel-20260817-m08r03g0nz0.zip",
             BackupPackageName.packageFileName(uuid, 1_787_000_000_000L, "Alex's Pixel", zone = utc),
         )
         assertEquals(
-            "Alexs-Pixel-20260817-m08r03g0nz0-encrypted.minisbak",
+            "Alexs-Pixel-20260817-m08r03g0nz0-encrypted.zip",
             BackupPackageName.packageFileName(uuid, 1_787_000_000_000L, "Alex's Pixel", encrypted = true, zone = utc),
         )
     }

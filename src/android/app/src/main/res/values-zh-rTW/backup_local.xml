@@ -1,0 +1,6 @@
+<resources>
+    <string name="backup_local_folder_title">儲存位置</string>
+    <string name="backup_local_folder_choose">選擇資料夾…</string>
+    <string name="backup_local_folder_unselected">尚未選擇資料夾</string>
+    <string name="backup_local_folder_footer">將 ZIP 備份儲存到此資料夾。未選擇時，可在備份完成後另存檔案。</string>
+</resources>

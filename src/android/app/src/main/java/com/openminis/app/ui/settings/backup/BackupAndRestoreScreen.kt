@@ -213,12 +213,6 @@ private fun RowScope.PrimaryActionContent(
 @Composable
 fun BackupAndRestoreScreen(
     onBack: () -> Unit,
-    onManageDestinations: () -> Unit = {},
-    // [T-android-restore-server-list] Open the "Restore from Server" list —
-    // the servers you can RESTORE FROM, plus an Add Server entry. Distinct
-    // from [onManageDestinations], which is the editable destinations screen
-    // (rename/remove/enable) reached from the Backup tab: same servers, a
-    // different verb, so they are deliberately different screens.
     onChooseRestoreServer: () -> Unit = {},
     onOpenHistoryRecord: (String) -> Unit = {},
     onBrowseDestination: (String) -> Unit = {},
@@ -270,7 +264,7 @@ fun BackupAndRestoreScreen(
         // user a few keystrokes.
         if (tab == 0) {
             BackupTab(
-                vm, onManageDestinations, onOpenHistoryRecord,
+                vm, onOpenHistoryRecord,
                 passphrase = backupPassphrase,
                 onPassphraseChange = { backupPassphrase = it },
                 confirm = backupConfirm,
@@ -295,7 +289,6 @@ private const val HISTORY_COLLAPSED_COUNT = 10
 @Composable
 private fun BackupTab(
     vm: BackupViewModel,
-    onManageDestinations: () -> Unit = {},
     onOpenHistoryRecord: (String) -> Unit = {},
     passphrase: String,
     onPassphraseChange: (String) -> Unit,
@@ -326,9 +319,13 @@ private fun BackupTab(
         ActivityResultContracts.CreateDocument(com.openminis.app.backup.BackupFormat.MIME_TYPE),
     ) { uri -> uri?.let(vm::saveExportTo) }
 
-    // Re-read destinations every time this tab appears: the user may have just
-    // added one via "Manage Destinations…" and navigated back, and a stale
-    // empty list would keep the Start button disabled with no way to recover.
+    val folderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        uri?.let { vm.selectBackupFolder(it) }
+    }
+
+    // Refresh the saved folder and history when the tab appears.
     LaunchedEffect(Unit) {
         // [T-android-backup-transient-success] Drop a PREVIOUS visit's success
         // card on the way IN, not on the way out. Clearing on dispose would
@@ -500,17 +497,16 @@ private fun BackupTab(
         }
     }
 
-    // -- Destinations --
-    // [T-android-backup-destination-gate] Inline list, mirroring iOS's
-    // `destinationSection`. Android previously offered only a "Manage
-    // Destinations…" button, so the backup screen never showed WHETHER a
-    // destination existed — which is how "back up with none configured"
-    // stayed invisible.
-    DestinationsSection(
-        destinations = destinations,
+    // One local folder, selected directly with the system picker.
+    BackupFolderSection(
+        folder = destinations.firstOrNull { it.enabled },
         enabled = !running,
-        onManage = onManageDestinations,
-        onToggle = vm::setDestinationEnabled,
+        onChoose = {
+            val uri = destinations.firstOrNull { it.enabled }?.params
+                ?.get(com.openminis.app.backup.remote.LocalDestinationStore.PARAM_TREE_URI)
+                ?.let(android.net.Uri::parse)
+            folderLauncher.launch(uri)
+        },
     )
 
     // -- Action --
@@ -1006,7 +1002,7 @@ private fun RestoreTab(
 
     // Which destination the user is browsing for a package to restore from.
     var browsing by remember {
-        mutableStateOf<com.openminis.app.backup.remote.RcloneRemoteStore.Remote?>(null)
+        mutableStateOf<com.openminis.app.backup.remote.LocalDestinationStore.Remote?>(null)
     }
     val destinations by vm.destinations.collectAsState()
     LaunchedEffect(Unit) { vm.refreshDestinations() }
@@ -1036,7 +1032,7 @@ private fun RestoreTab(
         // picker reaches every folder on the device, not just the ones that
         // happen to be registered as backup destinations.
         val serverDestinations = destinations.filterNot {
-            com.openminis.app.backup.remote.RcloneRemoteStore.isLocalFolder(it.backend)
+            com.openminis.app.backup.remote.LocalDestinationStore.isLocalFolder(it.backend)
         }
         if (serverDestinations.isNotEmpty()) {
             SettingsSection(
@@ -1079,27 +1075,6 @@ private fun RestoreTab(
                 enabled = !running,
                 onClick = { pickLauncher.launch(arrayOf("*/*")) },
                 showDivider = true,
-            )
-            RestoreSourceRow(
-                icon = Icons.Outlined.Cloud,
-                iconColor = Color(0xFFAF52DE),
-                label = stringResource(R.string.backup_choose_server),
-                enabled = !running,
-                // [T-android-restore-server-list] ALWAYS the same destination:
-                // a "Restore from Server" list page. It used to branch on
-                // whether any server existed — a dialog when there was one,
-                // and with none a dialog whose entire content was "no servers
-                // configured" over a lone Cancel: a dead end that named the
-                // problem and then refused to solve it, on the one screen
-                // where the user had already said what they wanted.
-                //
-                // One unconditional destination is what makes the empty state
-                // stop being special. That page lists the servers with an Add
-                // Server entry always at the end, so "none configured" is just
-                // the case where the list happens to be empty — the entry the
-                // user needs is in the same place either way. Matches iOS.
-                onClick = onChooseRestoreServer,
-                showDivider = false,
             )
             error?.let {
                 Text(
@@ -1346,47 +1321,24 @@ private fun RestoreReport(
 
 // ─── Restore sources ─────────────────────────────────────────────────────
 
-/**
- * [T-android-backup-destination-gate] The destinations a backup will be
- * delivered to, listed inline on the Backup tab. Mirrors iOS
- * `BackupSettingsView.destinationSection`.
- *
- * Android previously surfaced destinations only behind a "Manage Destinations…"
- * button, so the screen never showed whether any existed — a user with none
- * configured saw a normal-looking Start button, got "Backup ready", and ended
- * up with a package that never left the app sandbox.
- */
+/** Select the single local save folder without navigating away from backup. */
 @Composable
-private fun DestinationsSection(
-    destinations: List<com.openminis.app.backup.remote.RcloneRemoteStore.Remote>,
+private fun BackupFolderSection(
+    folder: com.openminis.app.backup.remote.LocalDestinationStore.Remote?,
     enabled: Boolean,
-    onManage: () -> Unit,
-    onToggle: (String, Boolean) -> Unit,
+    onChoose: () -> Unit,
 ) {
     SettingsSection(
-        header = stringResource(R.string.backup_section_destinations),
-        footer = stringResource(
-            if (destinations.isEmpty()) R.string.backup_destinations_empty_footer
-            else R.string.backup_destinations_footer,
-        ),
+        header = stringResource(R.string.backup_local_folder_title),
+        footer = stringResource(R.string.backup_local_folder_footer),
     ) {
-        destinations.forEach { remote ->
-            DestinationRow(
-                remote = remote,
-                enabled = enabled,
-                onToggle = { on -> onToggle(remote.name, on) },
-                onClick = onManage,
-            )
-        }
-        // ONE entry point, as on iOS: two buttons ("Add Folder" / "Add Server")
-        // would ask the user to know which mechanism they wanted before they
-        // knew what either did.
         RestoreSourceRow(
-            icon = Icons.Outlined.Add,
+            icon = Icons.Outlined.Folder,
             iconColor = Color(0xFF34C759),
-            label = stringResource(R.string.backup_manage_destinations),
+            label = stringResource(R.string.backup_local_folder_choose),
+            subtitle = folder?.path ?: stringResource(R.string.backup_local_folder_unselected),
             enabled = enabled,
-            onClick = onManage,
+            onClick = onChoose,
             showDivider = false,
         )
     }
@@ -1404,13 +1356,13 @@ private fun DestinationsSection(
  */
 @Composable
 private fun DestinationRow(
-    remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
+    remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
     enabled: Boolean,
     onToggle: (Boolean) -> Unit,
     onClick: () -> Unit,
 ) {
     // Material equivalents of the SF Symbols iOS picks per backend.
-    val isLocal = com.openminis.app.backup.remote.RcloneRemoteStore
+    val isLocal = com.openminis.app.backup.remote.LocalDestinationStore
         .isLocalFolder(remote.backend)
     val icon = when {
         // [T-android-backup-local-folder] A folder icon, so the one
@@ -1706,7 +1658,7 @@ internal fun RestoreSourceRow(
 @Composable
 private fun ServerPackagePicker(
     vm: BackupViewModel,
-    remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
+    remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
     onDismiss: () -> Unit,
 ) {
     val serverPackages by vm.serverPackages.collectAsState()

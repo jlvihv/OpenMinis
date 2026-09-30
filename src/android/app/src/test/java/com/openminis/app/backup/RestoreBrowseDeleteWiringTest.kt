@@ -17,7 +17,7 @@ import org.junit.Test
 class RestoreBrowseDeleteWiringTest {
 
     private val uploader =
-        File("src/main/java/com/openminis/app/backup/remote/RcloneChunkedUpload.kt").readText()
+        File("src/main/java/com/openminis/app/backup/remote/LocalBackupTransfer.kt").readText()
     private val screen =
         File("src/main/java/com/openminis/app/ui/settings/backup/RestoreBrowseScreen.kt").readText()
     private val vm =
@@ -25,7 +25,7 @@ class RestoreBrowseDeleteWiringTest {
 
     @Test
     fun `a listed whole package is deleted by its key, not rebuilt from its name`() {
-        val body = uploader.substringAfter("fun deletePackage(remote: RcloneRemoteStore.Remote, pkg: RemotePackage)")
+        val body = uploader.substringAfter("fun deletePackage(remote: LocalDestinationStore.Remote, pkg: RemotePackage)")
             .substringBefore("operations/purge")
         assertTrue(body.contains("\"remote\" to pkg.key"))
         assertFalse(body.contains("deletePackage(remote, pkg.displayName)"))

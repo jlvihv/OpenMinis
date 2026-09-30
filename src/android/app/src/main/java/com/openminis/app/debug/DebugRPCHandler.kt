@@ -82,9 +82,6 @@ class DebugRPCHandler(private val context: Context) {
             // [T-android-backup-subagents] Backup round-trip + sub agent roster drivers.
             "debug.backup.export" -> BackupDebugMethods.backupExport(context, params)
             "debug.backup.restore" -> BackupDebugMethods.backupRestore(context, params)
-            "debug.backup.upload" -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { BackupDebugMethods.backupUpload(context, params) }
-            "debug.backup.remotes.addWebdav" -> BackupDebugMethods.remotesAddWebdav(context, params)
-            "debug.backup.remotes.remove" -> BackupDebugMethods.remotesRemove(context, params)
             "debug.subAgents.list" -> BackupDebugMethods.subAgentsList(context)
             "debug.subAgents.upsert" -> BackupDebugMethods.subAgentsUpsert(context, params)
             "debug.subAgents.delete" -> BackupDebugMethods.subAgentsDelete(context, params)

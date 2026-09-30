@@ -185,34 +185,6 @@ object DebugMethodRegistry {
             example = JSONObject().put("path", "/data/user/0/com.openminis.app/files/debug-backup/x.minisbak"),
         ),
         MethodSpec(
-            name = "debug.backup.upload",
-            description = "Upload a package to ONE named destination with the real RcloneChunkedUpload. cancelAfterMs simulates Stop.",
-            params = listOf(
-                ParamSpec("path", "string", required = true, description = "Package on the device."),
-                ParamSpec("remote", "string", required = true, description = "Destination name."),
-                ParamSpec("cancelAfterMs", "integer", required = false, description = "Flip the cancel flag after this long."),
-            ),
-            returns = "{ok, elapsedMs, cancelRequested, error}",
-            example = JSONObject().put("path", "...").put("remote", "SlowDavTest"),
-        ),
-        MethodSpec(
-            name = "debug.backup.remotes.addWebdav",
-            description = "Add a WebDAV destination, DISABLED so real backups never deliver to it.",
-            params = listOf(
-                ParamSpec("name", "string", required = true, description = "Destination name."),
-                ParamSpec("url", "string", required = true, description = "WebDAV URL."),
-            ),
-            returns = "{added, enabled:false}",
-            example = JSONObject().put("name", "SlowDavTest").put("url", "http://127.0.0.1:8099"),
-        ),
-        MethodSpec(
-            name = "debug.backup.remotes.remove",
-            description = "Remove a destination and its stored credential.",
-            params = listOf(ParamSpec("name", "string", required = true, description = "Destination name.")),
-            returns = "{removed}",
-            example = JSONObject().put("name", "SlowDavTest"),
-        ),
-        MethodSpec(
             name = "debug.subAgents.list",
             description = "List the sub agent roster (built-in + custom).",
             params = emptyList(),

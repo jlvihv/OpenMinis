@@ -118,7 +118,7 @@ android {
             //
             // NOT `keepDebugSymbols` (the old doNotStrip): that ships the
             // symbols INSIDE the APK and would add tens of MB to a package
-            // that already carries libgojni.so and libonnxruntime.so. The zip
+            // with large native libraries. The zip
             // is a build artifact to archive, not payload for the device.
             ndk {
                 debugSymbolLevel = "FULL"
@@ -288,7 +288,6 @@ dependencies {
     implementation("androidx.compose.material3.adaptive:adaptive-layout:1.2.0")
     implementation("androidx.compose.material3.adaptive:adaptive-navigation:1.2.0")
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Core
@@ -309,29 +308,11 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // DataStore
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
-
     // Security (EncryptedSharedPreferences)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // OkHttp
-    // [T-android-vad] Silero v5 VAD (ONNX Runtime + WebRTC APM). The Android
-    // build of the exact library iOS uses via SPM, from the same author, so
-    // both platforms share one model and one set of thresholds. Carries
-    // native .so payloads for ONNX Runtime and the APM — see the abiFilters
-    // note in `ndk`; we ship arm64-v8a only.
-    implementation("com.github.helloooideeeeea:RealTimeCutVADLibraryForAndroid:1.0.5@aar")
-
-    // rclone, via its official gomobile binding, for backup destinations
-    // (SMB / WebDAV / SFTP / S3 / FTP). Build it with
-    // `deps/build_rclone_android.sh` — the .aar is a build artifact under
-    // app/libs/, not a checked-in binary. Backends are decided by
-    // deps/rclone-mobile/backends/backends.go, shared with the iOS build.
-    implementation(group = "", name = "rclone", ext = "aar")
-
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 
     // Kotlinx Serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")

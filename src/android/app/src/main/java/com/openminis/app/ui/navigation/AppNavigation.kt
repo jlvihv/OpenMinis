@@ -110,7 +110,6 @@ object Routes {
      * browse flow, and an optional argument would change its pattern.
      */
     const val BACKUP_INITIAL_TAB_KEY = "backup_initial_tab"
-    const val BACKUP_DESTINATIONS = "backup_destinations"
     const val BACKUP_HISTORY_DETAIL = "backup_history_detail"
     const val BACKUP_DESTINATION_BROWSE = "backup_destination_browse"
     const val RESTORE_BROWSE = "restore_browse"
@@ -627,8 +626,6 @@ fun AppNavigation(
             com.openminis.app.ui.settings.backup.BackupAndRestoreScreen(
                 initialTab = initialTab,
                 onBack = { navController.safePopBackStack() },
-                onManageDestinations = { navController.safeNavigate(Routes.BACKUP_DESTINATIONS) },
-                onChooseRestoreServer = { navController.safeNavigate(Routes.RESTORE_SERVERS) },
                 onOpenHistoryRecord = { id ->
                     navController.safeNavigate("${Routes.BACKUP_HISTORY_DETAIL}/$id")
                 },
@@ -693,7 +690,7 @@ fun AppNavigation(
             val name = entry.arguments?.getString("remoteName").orEmpty()
             val ctx = androidx.compose.ui.platform.LocalContext.current
             val remote = remember(name) {
-                com.openminis.app.backup.remote.RcloneRemoteStore(ctx).remote(name)
+                com.openminis.app.backup.remote.LocalDestinationStore(ctx).remote(name)
             }
             if (remote == null) {
                 // The destination was removed since the record was written.
@@ -709,20 +706,6 @@ fun AppNavigation(
             }
         }
 
-        // [T-android-restore-server-list] Reached from the restore tab's
-        // "Choose from Server…" — always, configured or not. Picking a row
-        // (or finishing an add) continues to that server's package browser.
-        composable(Routes.RESTORE_SERVERS) {
-            com.openminis.app.ui.settings.backup.RestoreServersScreen(
-                onBack = { navController.safePopBackStack() },
-                onPickServer = { name ->
-                    navController.safeNavigate(
-                        "${Routes.RESTORE_BROWSE}/" + android.net.Uri.encode(name),
-                    )
-                },
-            )
-        }
-
         composable(
             "${Routes.RESTORE_BROWSE}/{remoteName}",
             arguments = listOf(navArgument("remoteName") { type = NavType.StringType }),
@@ -730,7 +713,7 @@ fun AppNavigation(
             val name = entry.arguments?.getString("remoteName").orEmpty()
             val ctx = androidx.compose.ui.platform.LocalContext.current
             val remote = remember(name) {
-                com.openminis.app.backup.remote.RcloneRemoteStore(ctx).remote(name)
+                com.openminis.app.backup.remote.LocalDestinationStore(ctx).remote(name)
             }
             if (remote == null) {
                 LaunchedEffect(Unit) { navController.safePopBackStack() }
@@ -770,12 +753,6 @@ fun AppNavigation(
                     },
                 )
             }
-        }
-
-        composable(Routes.BACKUP_DESTINATIONS) {
-            com.openminis.app.ui.settings.backup.RcloneDestinationsScreen(
-                onBack = { navController.safePopBackStack() },
-            )
         }
 
         composable(Routes.SHARED_FOLDERS) {

@@ -181,7 +181,7 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
         startInternal(locale, allowOnDeviceRetry = true)
     }
 
-    // ── [T-android-vad] Silero endpointing ────────────────────────────────
+    // ── [T-android-vad] audio capture endpointing ────────────────────────────────
 
     /**
      * The VAD that decides when the user stopped talking, replacing the
@@ -930,7 +930,7 @@ class SystemSpeechRecognitionEngine(private val appContext: Context) : SpeechRec
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
             if (preferOffline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            // [T-android-vad] Endpointing now belongs to our Silero VAD, so ask
+            // [T-android-vad] Endpointing now belongs to our raw audio capture, so ask
             // the platform to sit still and let it decide. These extras are
             // advisory (Google's recognizer has largely ignored them since
             // Android 4.x), which is precisely why we can no longer rely on

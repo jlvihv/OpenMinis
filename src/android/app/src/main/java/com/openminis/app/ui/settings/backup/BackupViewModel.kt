@@ -98,8 +98,8 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      * package will (not) go before they start.
      */
     private val _destinations =
-        MutableStateFlow<List<com.openminis.app.backup.remote.RcloneRemoteStore.Remote>>(emptyList())
-    val destinations: StateFlow<List<com.openminis.app.backup.remote.RcloneRemoteStore.Remote>> =
+        MutableStateFlow<List<com.openminis.app.backup.remote.LocalDestinationStore.Remote>>(emptyList())
+    val destinations: StateFlow<List<com.openminis.app.backup.remote.LocalDestinationStore.Remote>> =
         _destinations.asStateFlow()
 
     /** True when at least one ENABLED destination can receive the package. */
@@ -113,14 +113,37 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun refreshDestinations() {
         _destinations.value = runCatching {
-            com.openminis.app.backup.remote.RcloneRemoteStore(getApplication()).remotes
+            com.openminis.app.backup.remote.LocalDestinationStore(getApplication()).remotes
         }.getOrDefault(emptyList())
+    }
+
+    /** Persist access and select one local folder without a management screen. */
+    fun selectBackupFolder(uri: android.net.Uri) {
+        if (exportRunning.value) return
+        runCatching {
+            val app = getApplication<Application>()
+            app.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            val displayPath = android.provider.DocumentsContract.getTreeDocumentId(uri)
+            com.openminis.app.backup.remote.LocalDestinationStore(app)
+                .selectFolder(uri.toString(), displayPath)
+        }.onFailure {
+            _errorText.value = getApplication<Application>().getString(
+                com.openminis.app.R.string.backup_dest_local_folder_no_permission,
+            )
+        }.onSuccess {
+            _errorText.value = null
+            refreshDestinations()
+        }
     }
 
     /** Flip delivery for one destination without touching its credential. */
     fun setDestinationEnabled(name: String, on: Boolean) {
         runCatching {
-            com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
+            com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
                 .setEnabled(name, on)
         }
         refreshDestinations()
@@ -300,7 +323,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         val failures = withContext(Dispatchers.IO) {
             val failed = mutableListOf<String>()
             try {
-                val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
+                val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
                 // [T-android-backup-local-folder-delete] Mirror deliverToRemotes:
                 // only pay for the rclone config sync when a destination
                 // actually needs it. A record whose only destination is a
@@ -308,13 +331,13 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
                 val hasNonLocalDest = targets.any { outcome ->
                     val remote = store.remotes.firstOrNull { it.name == outcome.name }
                     remote != null &&
-                        !com.openminis.app.backup.remote.RcloneRemoteStore.isLocalFolder(remote.backend)
+                        !com.openminis.app.backup.remote.LocalDestinationStore.isLocalFolder(remote.backend)
                 }
                 if (hasNonLocalDest) {
-                    store.syncToRclone()
+                    store.refreshLocalDestinations()
                 }
                 val uploader =
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication())
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication())
                 val localDelivery =
                     com.openminis.app.backup.remote.LocalFolderDelivery(getApplication())
                 for (outcome in targets) {
@@ -332,9 +355,9 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
                         // root cause B: this branch did not exist, so a local
                         // folder's copy was handed to rclone, which has no
                         // remote by that name — the delete could never work.
-                        if (com.openminis.app.backup.remote.RcloneRemoteStore.isLocalFolder(remote.backend)) {
+                        if (com.openminis.app.backup.remote.LocalDestinationStore.isLocalFolder(remote.backend)) {
                             val treeUri = remote.params[
-                                com.openminis.app.backup.remote.RcloneRemoteStore.PARAM_TREE_URI,
+                                com.openminis.app.backup.remote.LocalDestinationStore.PARAM_TREE_URI,
                             ].orEmpty()
                             if (treeUri.isEmpty()) {
                                 throw IllegalStateException(
@@ -355,7 +378,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
                         }
                 }
             } catch (t: Throwable) {
-                // syncToRclone / store construction blew up: no destination was
+                // refreshLocalDestinations / store construction blew up: no destination was
                 // even attempted, so attribute it to the whole operation.
                 AppLogger.error(TAG, "[Backup] delete-with-files setup failed: ${t.message}")
                 failed += t.message ?: t::class.java.simpleName
@@ -445,25 +468,25 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Restore sources: Server -----------------------------------------
 
-    fun listServerRemotes(): List<com.openminis.app.backup.remote.RcloneRemoteStore.Remote> =
-        com.openminis.app.backup.remote.RcloneRemoteStore(getApplication()).remotes
+    fun listServerRemotes(): List<com.openminis.app.backup.remote.LocalDestinationStore.Remote> =
+        com.openminis.app.backup.remote.LocalDestinationStore(getApplication()).remotes
 
     private val _serverPackages =
-        MutableStateFlow<List<com.openminis.app.backup.remote.RcloneChunkedUpload.RemotePackage>>(emptyList())
-    val serverPackages: StateFlow<List<com.openminis.app.backup.remote.RcloneChunkedUpload.RemotePackage>> =
+        MutableStateFlow<List<com.openminis.app.backup.remote.LocalBackupTransfer.RemotePackage>>(emptyList())
+    val serverPackages: StateFlow<List<com.openminis.app.backup.remote.LocalBackupTransfer.RemotePackage>> =
         _serverPackages.asStateFlow()
 
     /** List the `.minisbak` packages on one configured remote. */
-    fun listServerPackages(remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote) {
+    fun listServerPackages(remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote) {
         _isRunning.value = true
         _statusText.value = "Listing…"
         _serverPackages.value = emptyList()
         viewModelScope.launch {
             try {
                 val pkgs = withContext(Dispatchers.IO) {
-                    val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
-                    store.syncToRclone()
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication())
+                    val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
+                    store.refreshLocalDestinations()
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication())
                         .listPackages(remote)
                 }
                 _serverPackages.value = pkgs
@@ -488,8 +511,8 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      * on the server.
      */
     private val _browseEntries =
-        MutableStateFlow<List<com.openminis.app.backup.remote.RcloneChunkedUpload.RemoteEntry>>(emptyList())
-    val browseEntries: StateFlow<List<com.openminis.app.backup.remote.RcloneChunkedUpload.RemoteEntry>> =
+        MutableStateFlow<List<com.openminis.app.backup.remote.LocalBackupTransfer.RemoteEntry>>(emptyList())
+    val browseEntries: StateFlow<List<com.openminis.app.backup.remote.LocalBackupTransfer.RemoteEntry>> =
         _browseEntries.asStateFlow()
 
     /** Path being listed, relative to the remote's own root. */
@@ -505,7 +528,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      * did it.
      */
     fun browseDestination(
-        remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
+        remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
         path: String = remote.path,
     ) {
         _browsing.value = true
@@ -513,9 +536,9 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val entries = withContext(Dispatchers.IO) {
-                    val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
-                    store.syncToRclone()
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication())
+                    val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
+                    store.refreshLocalDestinations()
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication())
                         .listDirectory(remote, path)
                 }
                 _browsePath.value = path
@@ -536,8 +559,8 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      * as it was and says why.
      */
     fun deleteBrowsedPackage(
-        remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
-        entry: com.openminis.app.backup.remote.RcloneChunkedUpload.RemoteEntry,
+        remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
+        entry: com.openminis.app.backup.remote.LocalBackupTransfer.RemoteEntry,
     ) {
         if (entry.isDirectory) return
         val folder = _browsePath.value.ifEmpty { remote.path }
@@ -546,11 +569,11 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
-                    store.syncToRclone()
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication()).deletePackage(
+                    val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
+                    store.refreshLocalDestinations()
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication()).deletePackage(
                         remote,
-                        com.openminis.app.backup.remote.RcloneChunkedUpload.RemotePackage(
+                        com.openminis.app.backup.remote.LocalBackupTransfer.RemotePackage(
                             key = entry.path,
                             displayName = entry.name,
                             size = entry.size,
@@ -591,7 +614,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
     private val _transfer = MutableStateFlow<TransferInfo?>(null)
     val transfer: StateFlow<TransferInfo?> = _transfer.asStateFlow()
 
-    private var downloadCancel: com.openminis.app.backup.remote.RcloneChunkedUpload.CancelFlag? = null
+    private var downloadCancel: com.openminis.app.backup.remote.LocalBackupTransfer.CancelFlag? = null
 
     /** Ask the in-flight download to stop. */
     fun cancelDownload() {
@@ -683,16 +706,16 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
      * the file is still there.
      */
     fun deleteServerPackage(
-        remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
-        pkg: com.openminis.app.backup.remote.RcloneChunkedUpload.RemotePackage,
+        remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
+        pkg: com.openminis.app.backup.remote.LocalBackupTransfer.RemotePackage,
     ) {
         _isRunning.value = true
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
-                    store.syncToRclone()
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication())
+                    val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
+                    store.refreshLocalDestinations()
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication())
                         .deletePackage(remote, pkg)
                 }
             } catch (e: Exception) {
@@ -707,22 +730,22 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Download a remote package to a temp file, then load it for preview. */
     fun downloadServerPackage(
-        pkg: com.openminis.app.backup.remote.RcloneChunkedUpload.RemotePackage,
-        remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
+        pkg: com.openminis.app.backup.remote.LocalBackupTransfer.RemotePackage,
+        remote: com.openminis.app.backup.remote.LocalDestinationStore.Remote,
     ) {
         _isRunning.value = true
         _report.value = null
         _errorText.value = null
-        val flag = com.openminis.app.backup.remote.RcloneChunkedUpload.CancelFlag()
+        val flag = com.openminis.app.backup.remote.LocalBackupTransfer.CancelFlag()
         downloadCancel = flag
         _transfer.value = TransferInfo(pkg.displayName, 0, pkg.size, 0.0, null)
         val dest = File(getApplication<Application>().cacheDir, "restore-server.minisbak")
         openJob = viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val store = com.openminis.app.backup.remote.RcloneRemoteStore(getApplication())
-                    store.syncToRclone()
-                    com.openminis.app.backup.remote.RcloneChunkedUpload(getApplication())
+                    val store = com.openminis.app.backup.remote.LocalDestinationStore(getApplication())
+                    store.refreshLocalDestinations()
+                    com.openminis.app.backup.remote.LocalBackupTransfer(getApplication())
                         .download(pkg, remote, dest, flag) { p ->
                             _transfer.value = TransferInfo(
                                 pkg.displayName, p.bytesSent, p.totalBytes,
@@ -741,7 +764,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
                 _transfer.value = null
                 _statusText.value = null
                 throw e
-            } catch (e: com.openminis.app.backup.remote.RcloneChunkedUpload.CancelledException) {
+            } catch (e: com.openminis.app.backup.remote.LocalBackupTransfer.CancelledException) {
                 // The transport cancelled the rclone job and already freed the
                 // partial file; nothing to report, the user asked for this.
                 AppLogger.info(TAG, "[Restore] download cancelled by user")

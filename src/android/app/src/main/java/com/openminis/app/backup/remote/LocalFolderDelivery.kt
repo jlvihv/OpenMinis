@@ -10,7 +10,7 @@ import java.io.File
  * [T-android-backup-local-folder] Delivers a finished `.minisbak` package to a
  * folder the user picked on this device, through SAF.
  *
- * This is the local-folder peer of [RcloneChunkedUpload]: same job, same
+ * This is the local-folder peer of [LocalBackupTransfer]: same job, same
  * contract (throw on failure, report progress), but a plain ContentResolver
  * stream copy instead of an rclone transfer — a destination that is a
  * directory on the phone has no server to talk to.

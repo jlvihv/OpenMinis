@@ -338,7 +338,7 @@ class BackupDeleteWithFilesTest {
             .substringBefore("fun removeHistoryRecord(")
         assertTrue(
             "the delete loop must branch on isLocalFolder",
-            body.contains("RcloneRemoteStore.isLocalFolder(remote.backend)"),
+            body.contains("LocalDestinationStore.isLocalFolder(remote.backend)"),
         )
         assertTrue(
             "and route local folders through LocalFolderDelivery",

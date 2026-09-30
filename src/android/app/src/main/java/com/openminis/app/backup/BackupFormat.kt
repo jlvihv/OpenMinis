@@ -104,7 +104,7 @@ object BackupFormat {
     const val CURRENT = "minisbak/1"
 
     /** File extension registered to the app for "open to import". */
-    const val FILE_EXTENSION = "minisbak"
+    const val FILE_EXTENSION = "zip"
 
     /**
      * MIME type for a `.minisbak` package.
@@ -115,7 +115,7 @@ object BackupFormat {
      * MIME type drives the extension the picker appends: the generic
      * `application/octet-stream` made it save the package as `.bin`.
      */
-    const val MIME_TYPE = "application/x-minisbak"
+    const val MIME_TYPE = "application/zip"
 
     /**
      * Cap for a single JSONL shard (§2). Beyond this the writer rolls over to

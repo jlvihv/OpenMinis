@@ -49,8 +49,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openminis.app.R
-import com.openminis.app.backup.remote.RcloneChunkedUpload
-import com.openminis.app.backup.remote.RcloneRemoteStore
+import com.openminis.app.backup.remote.LocalBackupTransfer
+import com.openminis.app.backup.remote.LocalDestinationStore
 import com.openminis.app.ui.components.MinisOutlinedButton
 import com.openminis.app.ui.components.MinisTextButton
 import com.openminis.app.ui.components.SwipeRowAction
@@ -73,7 +73,7 @@ import com.openminis.app.ui.settings.SettingsSection
  */
 @Composable
 fun RestoreBrowseScreen(
-    remote: RcloneRemoteStore.Remote,
+    remote: LocalDestinationStore.Remote,
     vm: BackupViewModel,
     onBack: () -> Unit,
     onPicked: () -> Unit,
@@ -87,9 +87,9 @@ fun RestoreBrowseScreen(
     val openProgress by vm.openProgress.collectAsState()
     val pending by vm.pending.collectAsState()
 
-    var confirming by remember { mutableStateOf<RcloneChunkedUpload.RemoteEntry?>(null) }
+    var confirming by remember { mutableStateOf<LocalBackupTransfer.RemoteEntry?>(null) }
     /** Package awaiting delete confirmation; the item itself, so a reload cannot retarget it. */
-    var pendingDelete by remember { mutableStateOf<RcloneChunkedUpload.RemoteEntry?>(null) }
+    var pendingDelete by remember { mutableStateOf<LocalBackupTransfer.RemoteEntry?>(null) }
 
     LaunchedEffect(remote.name) { vm.browseDestination(remote) }
     // Leaving mid-browse must not strand listing state for the next visit.
@@ -196,7 +196,7 @@ fun RestoreBrowseScreen(
                 MinisTextButton(onClick = {
                     confirming = null
                     vm.downloadServerPackage(
-                        RcloneChunkedUpload.RemotePackage(
+                        LocalBackupTransfer.RemotePackage(
                             key = e.path,
                             displayName = e.name,
                             size = e.size,
@@ -305,7 +305,7 @@ private fun Crumb(text: String, enabled: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun EntryRow(
-    entry: RcloneChunkedUpload.RemoteEntry,
+    entry: LocalBackupTransfer.RemoteEntry,
     showDivider: Boolean,
     onClick: () -> Unit,
 ) {

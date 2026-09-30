@@ -438,15 +438,15 @@ object BackupRunController {
         isCancelled: () -> Boolean = { false },
         onProgress: (String) -> Unit,
     ): List<BackupHistory.DestinationOutcome> {
-        val store = com.openminis.app.backup.remote.RcloneRemoteStore(context)
+        val store = com.openminis.app.backup.remote.LocalDestinationStore(context)
         val enabled = store.enabledRemotes
         if (enabled.isEmpty()) return emptyList()
         // Only pay for the rclone config sync when a destination needs it
         // (T-android-backup-local-folder).
-        if (enabled.any { !com.openminis.app.backup.remote.RcloneRemoteStore.isLocalFolder(it.backend) }) {
-            store.syncToRclone()
+        if (enabled.any { !com.openminis.app.backup.remote.LocalDestinationStore.isLocalFolder(it.backend) }) {
+            store.refreshLocalDestinations()
         }
-        val uploader = com.openminis.app.backup.remote.RcloneChunkedUpload(context)
+        val uploader = com.openminis.app.backup.remote.LocalBackupTransfer(context)
         val localDelivery = com.openminis.app.backup.remote.LocalFolderDelivery(context)
         val outcomes = mutableListOf<BackupHistory.DestinationOutcome>()
         for (remote in enabled) {
@@ -458,9 +458,9 @@ object BackupRunController {
             }
             try {
                 onProgress("Sending to ${remote.name}…")
-                if (com.openminis.app.backup.remote.RcloneRemoteStore.isLocalFolder(remote.backend)) {
+                if (com.openminis.app.backup.remote.LocalDestinationStore.isLocalFolder(remote.backend)) {
                     val treeUri = remote.params[
-                        com.openminis.app.backup.remote.RcloneRemoteStore.PARAM_TREE_URI,
+                        com.openminis.app.backup.remote.LocalDestinationStore.PARAM_TREE_URI,
                     ].orEmpty()
                     if (treeUri.isEmpty()) {
                         throw IllegalStateException("This folder destination is missing its location.")
