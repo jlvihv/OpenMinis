@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import com.openminis.app.ProductionSources
+import com.openminis.app.agent.AndroidSystemPrompt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -19,6 +20,9 @@ import org.junit.Test
 class ScheduledPrefillWiringTest {
 
     private val vm by lazy { ProductionSources.read("ui/chat/ChatViewModel.kt") }
+    private val prompt by lazy {
+        AndroidSystemPrompt.build("", browserEnabled = true, delegationBullets = "", delegationOffered = true)
+    }
 
     @Test
     fun `the runner stamps the envelope and passes the prefill to every prompting target`() {
@@ -83,29 +87,23 @@ class ScheduledPrefillWiringTest {
 
     @Test
     fun `the system prompt no longer says nothing can wake the model`() {
-        // [T-android-parity-fixes] The shell bullet claimed `delay` was the ONLY
-        // wait mechanism and that scheduling options "do not wake you", while
-        // the minis-scheduled bullet below it described exactly that. Synced
-        // with iOS 62286901a.
-        assertFalse(vm.contains("`delay` is your ONLY wait mechanism"))
-        assertFalse(vm.contains("they do not wake you"))
-        // [T-prompt-cli-via-shell] CLI commands are phrased as "run X via
-        // shell_execute", never as something to "use" like a tool (a model
-        // once called minis-scheduled as a function tool: Unknown tool).
-        assertTrue(vm.contains("For a check that should happen AFTER this turn ends, register it by running `minis-scheduled create …` via shell_execute"))
-        assertTrue(vm.contains("either register a `minis-scheduled` follow-up (say so, with its task id)"))
-        assertTrue(vm.contains("For follow-ups and recurring prompts, run `minis-scheduled create …` via shell_execute: it fires through a system alarm"))
-        assertTrue(vm.contains("Android framework commands (available to run via shell_execute):"))
-        assertFalse(vm.contains("Android-only tools (android-* CLIs)"))
-        assertFalse(vm.contains("Do NOT use minis-scheduled"))
-        assertFalse(vm.contains("Use `minis-model-use list`"))
+        // Check the rendered prompt, not the old inline literal's wording.
+        assertTrue(vm.contains("com.openminis.app.agent.AndroidSystemPrompt.build("))
+        assertFalse(prompt.contains("`delay` is your ONLY wait mechanism"))
+        assertFalse(prompt.contains("they do not wake you"))
+        // CLIs must be run through shell_execute, not hallucinated as tools.
+        assertTrue(prompt.contains("Run `minis-scheduled create …` via shell_execute"))
+        assertTrue(prompt.contains("report its task id"))
+        assertTrue(prompt.contains("minis-scheduled uses system alarms to start new turns"))
+        assertTrue(prompt.contains("run via shell_execute, NOT function tools"))
+        assertTrue(prompt.contains("Never promise future monitoring or reporting without registering a follow-up"))
     }
 
     @Test
     fun `the system prompt teaches the prefilled command flags`() {
-        assertTrue(vm.contains("add `--command \"<shell command>\"` (optionally `--command-timeout 2m`)"))
-        assertTrue(vm.contains("`--tool shell_execute --tool-args '{\"command\":\"…\"}'`"))
-        assertTrue(vm.contains("you receive its real output as an already-completed tool call"))
+        assertTrue(prompt.contains("--command \"<shell command>\" [--command-timeout 2m]"))
+        assertTrue(prompt.contains("--tool shell_execute --tool-args '{\"command\":\"…\"}'"))
+        assertTrue(prompt.contains("you receive its real output as an already-completed tool call"))
     }
 
     @Test

@@ -600,11 +600,8 @@ object SystemPromptBuilder {
         // is system-owned text and is NOT counted against the user-facing
         // SOUL body length limit (#356 / 1000 EN words / 1600 CN chars).
         val soulEditHint =
-            "---\n" +
-            "SOUL.md fields (name / icon / style / lang / body) can be edited two ways:\n" +
-            "1. Tool: call `minis-config` to propose changes (user must approve).\n" +
-            "2. UI: ask the user to go to Settings → Soul to edit directly.\n" +
-            "Pick whichever the user finds easier in context. Do not say you cannot change your personality."
+            "SOUL.md (name/icon/style/lang/body) is editable: run `minis-config` via shell_execute to propose user-approved changes, " +
+            "or offer [Settings → Soul](minis://settings/soul). Do not claim you cannot change your personality."
 
         // [T-soul-style-injection 2026-05-18, port iOS 0409e24f] The `style`
         // frontmatter field (response voice / tone / formatting preference,
@@ -618,7 +615,7 @@ object SystemPromptBuilder {
             // [T-agent-prompt-consistency-pass] Mirrors iOS SoulStore: a user-authored
             // style that prescribes a reply language is the more specific preference
             // and wins over the base prompt's match-the-user's-language default.
-            return "\n\nResponse style (from SOUL.md `style` — apply to every reply unless the user explicitly asks otherwise; if it prescribes a reply language, it overrides the default match-the-user's-language rule):\n$s"
+            return "\n\nResponse style (SOUL.md): apply to every reply unless the user asks otherwise; any specified reply language overrides language matching.\n$s"
         }
 
         val body = file?.body
@@ -646,7 +643,7 @@ object SystemPromptBuilder {
         // Strip the trailing space we'd otherwise leave hanging at the
         // end of the first paragraph when a personality block follows.
         return identityTrimmed +
-            "\n\nPersonality (from SOUL.md — your character and voice; defer to the user's latest message when it conflicts with anything here):\n" +
+            "\n\nPersonality (SOUL.md; character and voice only — the user's latest message takes precedence):\n" +
             personality +
             styleBlock(style) +
             "\n\n" +
