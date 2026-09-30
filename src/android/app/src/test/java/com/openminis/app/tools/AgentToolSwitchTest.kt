@@ -32,7 +32,7 @@ class AgentToolSwitchTest {
         // A null here means "always on". If a future edit accidentally routed
         // one of these through a switch, the agent could lose shell or file
         // access from a settings toggle that never claimed to do that.
-        for (core in listOf("shell_execute", "file_read", "file_write", "file_edit", "memory_get")) {
+        for (core in listOf("shell_execute", "file_read", "file_write", "file_edit")) {
             assertNull("$core must not be gated by a tool switch", AgentToolSwitch.governing(core))
         }
     }

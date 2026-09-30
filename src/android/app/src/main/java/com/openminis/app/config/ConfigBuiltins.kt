@@ -49,7 +49,6 @@ internal object ConfigBuiltins {
         registerProviderCollections(r, providerRepo, envVarRepo)
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
-        registerMemory(r, context)
         registerNetwork(r, context)
     }
 
@@ -66,34 +65,6 @@ internal object ConfigBuiltins {
             runCatching { com.openminis.app.sandbox.RootfsManager.getInstance(context).refreshDns() }
         }
         fields.forEach { r.register(it) }
-    }
-
-    // -- Memory — global default toggle for the persistent memory feature --
-    //
-    // [T-android-memory-enabled-minisconfig] `memory.enabled` mirrors the
-    // Settings → Memory switch (MemoryManagementScreen, backed by
-    // MemoryGlobalPrefs: SharedPreferences `minis_memory_prefs`, key
-    // `memory.global.enabled`, default true). It is the global DEFAULT
-    // applied to newly-created sessions: a new chat seeds its per-session
-    // memoryEnabled from this value. It does NOT retroactively flip
-    // already-open sessions — those carry their own per-session toggle,
-    // changed via the SessionMemorySheet / `/memory`. Registering the same
-    // prefs+key as MemoryGlobalPrefs keeps the CLI/agent and the Settings
-    // switch reading/writing one source of truth. Topic auto-surfaces in
-    // list-topics since topics derive from field-path prefixes.
-
-    private fun registerMemory(r: ConfigRegistry, context: Context) {
-        val prefs = context.getSharedPreferences("minis_memory_prefs", Context.MODE_PRIVATE)
-        r.register(
-            PrefsBoolField(
-                path = "memory.enabled",
-                displayName = "Memory enabled (global default)",
-                description = "Default for whether NEW chat sessions start with memory on. When on, a new session auto-injects GLOBAL.md + recent daily logs into the system prompt and exposes the memory_get / memory_write tools. When off, new sessions get neither. Already-open sessions keep their own per-session setting (toggle in the session memory sheet) and are not changed by this.",
-                prefs = prefs,
-                key = "memory.global.enabled",
-                defaultValue = true,
-            )
-        )
     }
 
     // -- Master switch surface (read-only via the registry; UI toggles it) --

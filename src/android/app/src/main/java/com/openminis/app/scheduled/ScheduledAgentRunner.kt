@@ -277,11 +277,9 @@ object ScheduledAgentRunner {
                     ?: return null
                 val seedModelId = entry.model.id
                 val title = task.label.ifBlank { "Scheduled task" }
-                val memoryOn = com.openminis.app.data.MemoryGlobalPrefs.isGlobalEnabled(app)
                 val session = app.chatRepository.createSession(
                     modelId = seedModelId,
                     title = title,
-                    memoryEnabled = memoryOn,
                 )
                 app.chatRepository.dao.updateSource(session.id, "scheduled")
 
@@ -331,7 +329,6 @@ object ScheduledAgentRunner {
         val child = app.chatRepository.createSession(
             modelId = resolution.seedModelId,
             title = com.openminis.app.agent.jobs.HelperRunner.childSessionTitle(app, title),
-            memoryEnabled = false,
             parentSessionId = parentSid,
             parentToolUseId = null,
         )

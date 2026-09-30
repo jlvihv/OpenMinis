@@ -63,12 +63,9 @@ import com.openminis.app.ui.settings.SharedFolderDetailScreen
 import com.openminis.app.ui.settings.SharedFoldersScreen
 import com.openminis.app.ui.settings.SkillsManagementScreen
 import com.openminis.app.data.repository.EnvVarRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.SkillRepository
 import com.openminis.app.ui.settings.LogDetailScreen
 import com.openminis.app.ui.settings.LogManagementScreen
-import com.openminis.app.ui.settings.MemoryFileEditScreen
-import com.openminis.app.ui.settings.MemoryManagementScreen
 import com.openminis.app.ui.settings.OffloadPermissionScreen
 import com.openminis.app.ui.settings.ShizukuPermissionScreen
 import com.openminis.app.sandbox.RootfsManager
@@ -160,7 +157,6 @@ object Routes {
     /** [T-agent-transcript-page] Full-screen read-only agent (child) transcript. */
     const val AGENT_TRANSCRIPT = "agent_transcript/{sessionId}"
     fun agentTranscript(sessionId: String) = "agent_transcript/$sessionId"
-    const val MEMORY = "memory"
     /** [T-p2-agent-settings] Settings › Agents. */
     const val AGENTS = "agents"
     // [T-sub-agents-v1] The roster the main model delegates to by name.
@@ -172,7 +168,6 @@ object Routes {
     const val MCP = "mcp"
     /** [T-soul-md] SOUL.md editor. */
     const val SOUL = "soul"
-    const val MEMORY_FILE_EDIT = "memory_file/{fileName}/{isGlobal}"
     const val PERMISSIONS = "permissions"
     /**
      * T322 / [T-android-privileged-backend]: Shizuku-protocol manager
@@ -193,7 +188,7 @@ object Routes {
     const val MOUNTED_FOLDERS = "mounted_folders"
     const val MOUNTED_FOLDERS_DETAIL = "mounted_folders_detail/{mountId}"
     fun mountedFoldersDetail(mountId: String) = "mounted_folders_detail/$mountId"
-    /** T235: Shared folders (Shared / Skills / Memory) — fixed list. */
+    /** T235: Shared folders (Shared / Skills) — fixed list. */
     const val SHARED_FOLDERS = "shared_folders"
     const val SHARED_FOLDERS_DETAIL = "shared_folders_detail/{folderId}"
     fun sharedFoldersDetail(folderId: String) = "shared_folders_detail/$folderId"
@@ -208,7 +203,6 @@ object Routes {
 
     fun logDetail(fileName: String) = "log_detail/$fileName"
     fun sessionStorageDetail(sessionId: String) = "session_storage/$sessionId"
-    fun memoryFileEdit(fileName: String, isGlobal: Boolean) = "memory_file/$fileName/$isGlobal"
     fun chat(sessionId: String) = "chat/$sessionId"
     fun providerDetail(instanceId: String) = "provider/$instanceId"
     fun shadowVoiceDetail(instanceId: String) = "voice_service/$instanceId"
@@ -238,7 +232,6 @@ fun AppNavigation(
     envVarRepository: EnvVarRepository? = null,
     skillRepository: SkillRepository? = null,
     mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
-    memoryRepository: MemoryRepository? = null,
     navController: NavHostController = rememberNavController(),
     initialDeepLink: DeepLinkAction? = null,
 ) {
@@ -579,7 +572,6 @@ fun AppNavigation(
                 navController = navController,
                 chatRepository = chatRepository,
                 providerRepository = providerRepository,
-                memoryRepository = memoryRepository,
                 skillRepository = skillRepository,
                 mcpRepository = mcpRepository,
             )
@@ -595,7 +587,6 @@ fun AppNavigation(
                 navController = navController,
                 chatRepository = chatRepository,
                 providerRepository = providerRepository,
-                memoryRepository = memoryRepository,
                 skillRepository = skillRepository,
                 mcpRepository = mcpRepository,
             )
@@ -611,7 +602,6 @@ fun AppNavigation(
                 onEnvVarsClick = { navController.safeNavigate(Routes.ENV_VARS) },
                 onSkillsClick = { navController.safeNavigate(Routes.SKILLS) },
                 onTerminalClick = { navController.safeNavigate(Routes.terminal()) },
-                onMemoryClick = { navController.safeNavigate(Routes.MEMORY) },
                 onAgentsClick = { navController.safeNavigate(Routes.AGENTS) },
                 onAgentToolsClick = { navController.safeNavigate(Routes.AGENT_TOOLS) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
@@ -812,14 +802,13 @@ fun AppNavigation(
                     val label = when (folderId) {
                         "shared" -> ctx.getString(com.openminis.app.R.string.shared_folder_name_shared)
                         "skills" -> ctx.getString(com.openminis.app.R.string.shared_folder_name_skills)
-                        "memory" -> ctx.getString(com.openminis.app.R.string.shared_folder_name_memory)
                         else -> folderId
                     }
                     FilePreviewHolder.fileBrowserViewModel = FileBrowserViewModel(
                         rootPath = hostPath,
                         rootLabel = label,
                         // Route reads through PRoot bind mounts so the host
-                        // dirs that back /var/minis/{shared,skills,memory}
+                        // dirs that back /var/minis/{shared,skills}
                         // resolve, matching how chat-files browse works.
                         linuxRootPath = "/var/minis/$folderId",
                         appContext = ctx.applicationContext,
@@ -1137,7 +1126,7 @@ fun AppNavigation(
                         ?: varMinis.takeIf { it.exists() },
                     rootLabel = "/",
                     // T121: route directory listings through PRootKernel bind
-                    // mounts so /var/minis/{skills,memory,shared} resolve to
+                    // mounts so /var/minis/{skills,shared} resolve to
                     // their backing host dirs (filesDir/minis-global/<subdir>).
                     // Without this the browser walks the rootfs tarball
                     // directly and shows the empty placeholder dirs that ship
@@ -1285,18 +1274,6 @@ fun AppNavigation(
             )
         }
 
-        composable(Routes.MEMORY) {
-            if (memoryRepository != null) {
-                MemoryManagementScreen(
-                    memoryRepository = memoryRepository,
-                    onBack = { navController.safePopBackStack() },
-                    onFileClick = { fileName, isGlobal ->
-                        navController.safeNavigate(Routes.memoryFileEdit(fileName, isGlobal))
-                    },
-                )
-            }
-        }
-
         // [T-mcp-integration-android] MCP Integrations management screen.
         composable(Routes.MCP) {
             if (mcpRepository != null) {
@@ -1313,25 +1290,6 @@ fun AppNavigation(
             com.openminis.app.ui.settings.SoulSettingsScreen(
                 onBack = { navController.safePopBackStack() },
             )
-        }
-
-        composable(
-            route = Routes.MEMORY_FILE_EDIT,
-            arguments = listOf(
-                navArgument("fileName") { type = NavType.StringType },
-                navArgument("isGlobal") { type = NavType.BoolType },
-            ),
-        ) { backStackEntry ->
-            val fileName = backStackEntry.arguments?.getString("fileName") ?: return@composable
-            val isGlobal = backStackEntry.arguments?.getBoolean("isGlobal") ?: false
-            if (memoryRepository != null) {
-                MemoryFileEditScreen(
-                    fileName = fileName,
-                    isGlobal = isGlobal,
-                    memoryRepository = memoryRepository,
-                    onBack = { navController.safePopBackStack() },
-                )
-            }
         }
 
         composable(Routes.PERMISSIONS) {

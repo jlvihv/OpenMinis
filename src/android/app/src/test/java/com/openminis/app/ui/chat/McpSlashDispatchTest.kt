@@ -78,7 +78,6 @@ class McpSlashDispatchTest {
         var unrecognized = false
         val action = when (id) {
             "compact" -> "compactAll"
-            "memory" -> "toggleMemoryEnabled"
             "thinking" -> "toggleThinking"
             "clear" -> "clearChatConfirmRequested"
             else -> { unrecognized = true; null }
@@ -168,7 +167,6 @@ class McpSlashDispatchTest {
     fun `built-in commands still dispatch by id and are not composer-filled`() {
         val expected = mapOf(
             "compact" to "compactAll",
-            "memory" to "toggleMemoryEnabled",
             "thinking" to "toggleThinking",
             "clear" to "clearChatConfirmRequested",
         )

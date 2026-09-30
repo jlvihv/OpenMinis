@@ -21,17 +21,8 @@ object AgentTools {
         // visionGroupConfigured. Neither native vision nor a Vision Group → tool
         // stays absent (current behaviour).
         visionGroupConfigured: Boolean = false,
-        // [T-memory-toggle-gates-injection-and-tools-android] When the
-        // user has turned memory off (via /memory or
-        // Settings/SessionMemorySheet), drop both memory_write and
-        // memory_get from the schema entirely so the model can't even
-        // attempt those calls. Mirrors the iOS gate at
-        // AIChatViewModel.makeAgentTools(memoryEnabled:).
-        memoryEnabled: Boolean = true,
         // [T-p1-delegate-task] True for a helper (child) vm. Depth = 1: a
-        // helper never sees delegate_task; it also loses memory_write (design
-        // §4.3 — helpers have no long-term memory). memory_get stays so a
-        // helper can still LOOK things up.
+        // helper never sees the delegation tool.
         isHelper: Boolean = false,
         // [T-p2-agent-settings] Settings › Agents can remove delegation globally.
         delegateEnabled: Boolean = true,
@@ -55,10 +46,6 @@ object AgentTools {
             add(ReadImageTool.definition())
         }
         if (browserEnabled) add(browserUseDefinition())
-        if (memoryEnabled) {
-            if (!isHelper) add(memoryWriteDefinition())
-            add(memoryGetDefinition())
-        }
         if (!isHelper && delegateEnabled) {
             add(subAgentTaskDefinition(rosterNames))
         }
@@ -189,33 +176,4 @@ object AgentTools {
         propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "text", "coordinate_x", "coordinate_y", "direction", "amount", "scroll_count", "item_selector", "script", "user_agent", "max_depth", "keywords", "fuzzy", "cookies", "timeout", "viewport_width", "viewport_height", "reset", "full_page"),
     )
 
-    // Aligned with iOS AIChatViewModel.swift:5059-5067
-    private fun memoryWriteDefinition(): AgentToolDefinition = AgentToolDefinition(
-        name = "memory_write",
-        description = "Write a memory entry to today's daily log (YYYY-MM-DD.md). Memories persist across all sessions. " +
-            "Each entry is prepended with a timestamp. " +
-            "Save: user preferences, recurring patterns, key facts, project conventions, reusable knowledge. " +
-            "Avoid saving passwords, API keys, tokens, or secrets unless the user explicitly confirms after being warned. " +
-            "Keep entries concise and general-purpose. GLOBAL.md is read-only (user-maintained via Settings).",
-        parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Save user preference for Python', 'Note today's project context'). Use the same language as the user."),
-            "content" to AgentToolParam("string", "The memory content to write. Use concise Markdown with a short heading (## Topic) and context about what was done/learned."),
-        ),
-        required = listOf("tool_title", "content"),
-        propertyOrdering = listOf("tool_title", "content"),
-    )
-
-    // Aligned with iOS AIChatViewModel.swift:5069-5078
-    private fun memoryGetDefinition(): AgentToolDefinition = AgentToolDefinition(
-        name = "memory_get",
-        description = "Retrieve memories from persistent storage. Supports keyword-based fuzzy search across memory files. " +
-            "Returns matching lines with surrounding context. Use this to recall previous knowledge, user preferences, or past notes.",
-        parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Recall user preferences', 'Search past notes'). Use the same language as the user."),
-            "scope" to AgentToolParam("string", "Memory scope to search: 'daily' for daily logs only, 'all' for daily logs + GLOBAL.md.", enumValues = listOf("daily", "all")),
-            "keywords" to AgentToolParam("string", "Space-separated keywords for fuzzy matching (e.g. 'python preference' or 'API key setup'). All keywords must appear in a line or its surrounding context for a match. Leave empty to return full memory files."),
-        ),
-        required = listOf("tool_title"),
-        propertyOrdering = listOf("tool_title", "scope", "keywords"),
-    )
 }

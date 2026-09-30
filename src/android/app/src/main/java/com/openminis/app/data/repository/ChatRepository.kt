@@ -17,12 +17,6 @@ class ChatRepository(internal val dao: ChatDao) {
     suspend fun createSession(
         modelId: String,
         title: String? = null,
-        // [T-memory-global-toggle-settings-ui-android] honor the global
-        // memory default at row-insert time. Caller (ChatViewModel) reads
-        // MemoryGlobalPrefs.isGlobalEnabled and passes the value through
-        // here; existing call sites that omit it keep the prior
-        // memoryEnabled=1 behavior (legacy default).
-        memoryEnabled: Boolean = true,
         // [T-p1-delegate-task] Non-null makes this a hidden child session.
         parentSessionId: String? = null,
         parentToolUseId: String? = null,
@@ -36,7 +30,6 @@ class ChatRepository(internal val dao: ChatDao) {
             parentToolUseId = parentToolUseId,
             createdAt = now,
             updatedAt = now,
-            memoryEnabled = if (memoryEnabled) 1 else 0,
         )
         dao.insertSession(session)
         return session
@@ -1043,20 +1036,6 @@ class ChatRepository(internal val dao: ChatDao) {
                     val url = str("url")
                     return if (url != null) cap(cleanPreview("$action $url"))
                     else cap(cleanPreview("browser_use $action"))
-                }
-                "memory_write" -> str("content")?.let { return cap(cleanPreview("memory_write: $it")) }
-                "memory_get" -> {
-                    val arr = input.optJSONArray("keywords")
-                    if (arr != null && arr.length() > 0) {
-                        val joined = buildString {
-                            for (i in 0 until arr.length()) {
-                                if (i > 0) append(", ")
-                                append(arr.optString(i))
-                            }
-                        }
-                        if (joined.isNotBlank()) return cap(cleanPreview("memory_get: $joined"))
-                    }
-                    str("keywords")?.let { return cap(cleanPreview("memory_get: $it")) }
                 }
             }
 

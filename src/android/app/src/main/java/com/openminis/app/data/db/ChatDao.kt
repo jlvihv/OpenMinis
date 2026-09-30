@@ -354,9 +354,6 @@ interface ChatDao {
     """)
     suspend fun lastMessageTailPerSession(): List<SessionTailRow>
 
-    // Session: memory_enabled
-    @Query("UPDATE sessions SET memory_enabled = :enabled, updated_at = :updatedAt WHERE id = :id")
-    suspend fun updateMemoryEnabled(id: String, enabled: Int, updatedAt: Long = System.currentTimeMillis())
 
     // Session: thinking_override (T239) — null clears the explicit choice and
     // falls back to the current model/group default; non-null is a

@@ -54,7 +54,7 @@ object PRootKernel {
 
     /**
      * Bind mounts: Linux path -> host filesystem path. GLOBAL mounts only —
-     * `memory`, `skills`, `shared`, `mcp-servers` and `mounts/<name>`.
+     * `soul`, `skills`, `shared`, `mcp-servers` and `mounts/<name>`.
      *
      * [T-android-session-private-mounts] Per-session directories (workspace,
      * attachments, offloads, browser) must never be in here: this map is
@@ -210,7 +210,7 @@ object PRootKernel {
         customEnvironment.putAll(systemProxyEnv(context))
 
         // Register global bind mounts so direct file I/O tools (file_read, file_edit)
-        // can resolve /var/minis/{memory,skills,shared}/... (idempotent).
+        // can resolve /var/minis/{soul,skills,shared}/... (idempotent).
         registerGlobalBindMounts(context)
 
         // Start the native_offload server so the proot extension can reach it
@@ -259,15 +259,15 @@ object PRootKernel {
     /**
      * Register the global (session-independent) Minis bind mounts so direct
      * file I/O tools (file_read, file_edit) can resolve
-     * `/var/minis/{memory,skills,shared}/...` without needing PRoot to be
+     * `/var/minis/{soul,skills,shared}/...` without needing PRoot to be
      * booted or any shell to have started. Safe to call repeatedly.
      */
     fun registerGlobalBindMounts(context: Context) {
         val globalBase = File(context.filesDir, "minis-global")
-        // [T-mcp-integration-android] mcp-servers is global (like memory/skills):
+        // [T-mcp-integration-android] mcp-servers is global (like soul/skills):
         // binding it here makes the in-PRoot minis-mcp-cli read/write the SAME
         // servers.json the Android Settings UI does (host: minis-global/mcp-servers).
-        listOf("memory", "skills", "shared", "mcp-servers").forEach { subdir ->
+        listOf("soul", "skills", "shared", "mcp-servers").forEach { subdir ->
             val hostDir = File(globalBase, subdir).also { it.mkdirs() }
             bindMounts["/var/minis/$subdir"] = hostDir.absolutePath
         }
@@ -765,7 +765,7 @@ object PRootKernel {
      * so its answer is last-writer-wins rather than "this session's view".
      *
      * Falls back to [resolveHostPath] for paths outside `/var/minis/` or for the
-     * shared subdirs (memory/skills/shared) which don't depend on sessionId.
+     * shared subdirs (soul/skills/shared) which don't depend on sessionId.
      */
     fun resolveSessionHostPath(sessionId: String, linuxPath: String, context: Context): File? {
         if (!linuxPath.startsWith("/var/minis/")) return resolveHostPath(linuxPath)

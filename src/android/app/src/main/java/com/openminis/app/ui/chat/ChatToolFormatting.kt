@@ -60,7 +60,6 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "file_edit" -> Color(0xFFFF9500)
     "browser_use" -> Color(0xFF007AFF)
     "read_image" -> Color(0xFFAF52DE)
-    "memory_write", "memory_get" -> Color(0xFFFF2D55)
     "web_search" -> Color(0xFF32ADE6)    // iOS: .cyan for search
     // [T-sub-agents-v1] Current name + the pre-rename one still in shipped transcripts.
     "subagent_task", "delegate_task", "agent_status" -> HelperAccentStatic  // iOS: HelperAccent.color (electric violet)
@@ -75,7 +74,6 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
     "file_edit" -> Icons.Default.EditNote             // iOS: square.and.pencil
     "browser_use" -> Icons.Default.Language            // iOS: globe
     "read_image" -> Icons.Default.Image                // iOS: photo
-    "memory_write", "memory_get" -> Icons.Default.Psychology // iOS: brain.head.profile
     "web_search" -> Icons.Default.Search               // iOS: magnifyingglass
     "subagent_task", "delegate_task", "agent_status" -> Icons.Default.Groups  // iOS: person.2.wave.2
     else -> Icons.Default.Build
@@ -95,7 +93,6 @@ internal fun toolIconResFor(toolName: String?): Int = when (toolName) {
     "file_edit" -> R.drawable.ic_tool_edit_note
     "browser_use" -> R.drawable.ic_tool_globe
     "read_image" -> R.drawable.ic_tool_image
-    "memory_write", "memory_get" -> R.drawable.ic_tool_psychology
     "web_search" -> R.drawable.ic_tool_search
     "subagent_task", "delegate_task", "agent_status" -> R.drawable.ic_tool_groups
     else -> R.drawable.ic_tool_build
@@ -111,7 +108,6 @@ internal fun toolAccentColorInt(toolName: String?): Int = when (toolName) {
     "file_edit" -> 0xFFFF9500.toInt()
     "browser_use" -> 0xFF007AFF.toInt()
     "read_image" -> 0xFFAF52DE.toInt()
-    "memory_write", "memory_get" -> 0xFFFF2D55.toInt()
     "web_search" -> 0xFF32ADE6.toInt()
     "subagent_task", "delegate_task", "agent_status" -> 0xFFAF52DE.toInt()
     else -> 0xFF8E8E93.toInt()
@@ -134,8 +130,6 @@ internal fun friendlyToolTitleFor(toolName: String?): String = when (toolName) {
     "file_edit" -> "Edit File"
     "browser_use" -> "Browse Web"
     "read_image" -> "Read Image"
-    "memory_write" -> "Write Memory"
-    "memory_get" -> "Read Memory"
     "web_search" -> "Search Web"
     else -> toolName
         .split('_')
@@ -151,8 +145,6 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
     "file_edit" -> "file editor"
     "browser_use" -> "browser"
     "read_image" -> "image viewer"
-    "memory_write" -> "memory"
-    "memory_get" -> "memory"
     "web_search" -> "search"
     "subagent_task", "delegate_task", "agent_status" -> "agent"
     else -> toolName
@@ -169,7 +161,6 @@ internal fun toolTitleLabel(toolName: String): String = when (toolName) {
     "file_edit" -> "Minis is editing File"
     "browser_use" -> "Minis is using Browser"
     "read_image" -> "Minis is reading Image"
-    "memory_write", "memory_get" -> "Minis is using Memory"
     "web_search" -> "Minis is using Search"
     "subagent_task", "delegate_task", "agent_status" -> "Minis is using an Agent"
     else -> "Minis is using ${toolDisplayName(toolName)}"

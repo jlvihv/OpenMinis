@@ -12,13 +12,13 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Exposes `<filesDir>/minis-global/{memory,skills,shared}` to the system
+ * Exposes `<filesDir>/minis-global/{skills,shared}` to the system
  * Files app as a storage root. Mirrors iOS `FileProviderExtension`
  * (spec_FileMount §1). Runs in the main app process — no IPC / no
  * independent extension target needed on Android.
  *
  * Capabilities match iOS:
- *   - `memory/` and `skills/` are read-only (tools own their content)
+ *   - `skills/` is read-only (tools own their content)
  *   - `shared/` accepts new subitems and in-place edits
  *   - root itself is read-only (can't create a new top-level folder)
  *
@@ -45,8 +45,8 @@ class MinisDocumentsProvider : DocumentsProvider() {
         const val AUTHORITY = "com.openminis.minis.documents"
         private const val ROOT_ID = "minis-root"
         private const val ROOT_DOC_ID = ""        // empty = providerRoot
-        private val TOP_LEVEL = listOf("memory", "skills", "shared")
-        private val READ_ONLY_TOP = setOf("memory", "skills")
+        private val TOP_LEVEL = listOf("skills", "shared")
+        private val READ_ONLY_TOP = setOf("skills")
         /** Never expose internal metadata that happens to sit in filesDir. */
         private val METADATA_BLACKLIST = setOf(
             "mounted-folders.json",

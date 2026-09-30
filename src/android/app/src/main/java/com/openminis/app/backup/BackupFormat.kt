@@ -144,7 +144,7 @@ enum class BackupCategory(val key: String) {
     CHATS("chats"),
     SHARED_FILES("shared_files"),
     SKILLS("skills"),
-    MEMORY("memory"),
+    SOUL("soul"),
     PROVIDERS("providers"),
     MCP_SERVERS("mcp_servers"),
     VOICE_CORRECTIONS("voice_corrections"),
@@ -165,7 +165,7 @@ enum class BackupCategory(val key: String) {
     val carriesFileTree: Boolean
         get() = when (this) {
             CHATS, SHARED_FILES, SKILLS -> true
-            MEMORY, PROVIDERS, MCP_SERVERS, VOICE_CORRECTIONS,
+            SOUL, PROVIDERS, MCP_SERVERS, VOICE_CORRECTIONS,
             ENVIRONMENT_VARIABLES -> false
         }
 

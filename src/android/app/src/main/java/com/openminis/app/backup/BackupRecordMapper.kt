@@ -66,7 +66,6 @@ internal object BackupRecordMapper {
                 lastMessage = s.str("lastMessage"),
                 modelBinding = s.str("modelBinding"),
                 source = s.str("source"),
-                memoryEnabled = if (s.bool("memoryEnabled") != false) 1 else 0,
                 pinnedAt = s.millis("pinnedAt"),
                 editCount = s.int("editCount") ?: 0,
                 thinkingOverride = s.str("thinkingOverride"),
@@ -172,9 +171,9 @@ internal object BackupRecordMapper {
      * into one object, inner winning.
      *
      * iOS wraps some records — a session arrives as
-     * `{"memoryEnabled":true,"session":{"id":…,"title":…}}`. Merging instead
-     * of choosing means one reader handles both shapes, and the wrapper's own
-     * fields (`memoryEnabled`) stay reachable by their plain names.
+     * `{"modelBinding":"group:…","session":{"id":…,"title":…}}`.
+     * Merging means one reader handles both shapes and wrapper metadata
+     * stays reachable by its plain names.
      *
      * Returns `this` unchanged when [key] is absent or is not an object, so a
      * flat record costs nothing.

@@ -146,9 +146,9 @@ class BackupExporter(
                     onProgress?.invoke("Exporting skills…")
                     stats[BackupCategory.SKILLS.key] = exportSkills(trees)
                 }
-                if (BackupCategory.MEMORY in options.categories) {
-                    onProgress?.invoke("Exporting memory…")
-                    stats[BackupCategory.MEMORY.key] = exportMemory(dataDir)
+                if (BackupCategory.SOUL in options.categories) {
+                    onProgress?.invoke("Exporting personality…")
+                    stats[BackupCategory.SOUL.key] = exportSoul(dataDir)
                 }
                 if (BackupCategory.MCP_SERVERS in options.categories) {
                     onProgress?.invoke("Exporting MCP servers…")
@@ -335,7 +335,7 @@ class BackupExporter(
      * never failed for this install.
      */
 
-    // MARK: - Shared files / Skills / Memory
+    // MARK: - Shared files / Skills / Soul
 
     /**
      * §3.2 — the cross-session `/var/minis/shared` bucket. Host-side this is
@@ -374,10 +374,10 @@ class BackupExporter(
         )
     }
 
-    /** `GLOBAL.md` / `SOUL.md` / daily notes, copied verbatim into `data/memory/`. */
-    private fun exportMemory(dataDir: File): BackupManifest.CategoryStat {
-        val source = File(context.filesDir, "minis-global/memory")
-        val dest = File(dataDir, "memory").apply { mkdirs() }
+    /** Persona and avatar only; persistent memories are no longer backed up. */
+    private fun exportSoul(dataDir: File): BackupManifest.CategoryStat {
+        val source = com.openminis.app.agent.SoulStore.fileLocation(context).parentFile!!
+        val dest = File(dataDir, "soul").apply { mkdirs() }
         var entries = 0
         var bytes = 0L
         if (source.isDirectory) {
@@ -815,7 +815,7 @@ class BackupExporter(
          * The session row in iOS's exact wire shape (GH: Android -> iOS restore).
          *
          * iOS writes, and DECODES, a session as its `SessionRecord` wrapper:
-         * `{"session": {<ChatSession>}, "memoryEnabled": …, "modelBinding": …}`
+         * `{"session": {<ChatSession>}, "modelBinding": …}`
          * (BackupExporter.swift / BackupImporter+Categories.swift). Its reader
          * is a synthesized `Codable`, so the `session` key is required. This
          * used to write every field flat at the top level: iOS failed to decode
@@ -851,7 +851,6 @@ class BackupExporter(
                 put("parentToolUseId", s.parentToolUseId?.let(::JsonPrimitive) ?: JsonNull)
             })
             // iOS's SessionRecord wrapper fields, siblings of `session`.
-            put("memoryEnabled", JsonPrimitive(s.memoryEnabled != 0))
             put("modelBinding", s.modelBinding?.let(::JsonPrimitive) ?: JsonNull)
             // Android-only, preserved per §2.2 rule 4.
             put("editCount", JsonPrimitive(s.editCount))

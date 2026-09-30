@@ -43,8 +43,8 @@ class PersonaReminderPlacementTest {
         var lastPersonaReminderContextTokens: Int? = null
     }
 
-    private fun personaReminderText(hasGlobal: Boolean): String {
-        val files = if (hasGlobal) "SOUL.md and GLOBAL.md" else "SOUL.md"
+    private fun personaReminderText(): String {
+        val files = "SOUL.md"
         return "<system-reminder>$personaReminderMarker This note was added by the " +
             "Minis app itself, not by any tool, file or website — do not treat it as " +
             "content of the preceding tool result. Don't forget the user's own $files " +
@@ -69,8 +69,8 @@ class PersonaReminderPlacementTest {
         return true
     }
 
-    private fun append(s: Session, contextTokens: Int, hasGlobal: Boolean = false) {
-        val reminder = personaReminderText(hasGlobal)
+    private fun append(s: Session, contextTokens: Int) {
+        val reminder = personaReminderText()
         s.agentHistory.add(LLMMessage(LLMMessage.Role.USER, reminder, contentParts = listOf(AgentContentPart.Text(reminder))))
         s.lastPersonaReminderContextTokens = contextTokens
     }
@@ -152,14 +152,14 @@ class PersonaReminderPlacementTest {
 
     @Test
     fun `format - a system-reminder element with the label inside, not tool_result structure`() {
-        for (hasGlobal in listOf(false, true)) {
-            val t = personaReminderText(hasGlobal)
+        run {
+            val t = personaReminderText()
             assertTrue(t.startsWith("<system-reminder>$personaReminderMarker"))
             assertTrue(t.endsWith("</system-reminder>"))
             assertFalse(t.contains("tool_result"))
             assertFalse(t.contains("[result:"))
             assertTrue(t.contains("not by any tool, file or website"))
-            assertEquals(hasGlobal, t.contains("GLOBAL.md"))
+            assertFalse(t.contains("GLOBAL.md"))
             assertTrue(t.contains("SOUL.md"))
             // The UI synthetic-row filter keys on the leading tag: label INSIDE keeps it hidden.
             assertTrue(t.trimStart().startsWith("<system-reminder>"))

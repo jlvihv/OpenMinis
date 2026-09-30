@@ -221,7 +221,7 @@ class BackupImporter(
                         BackupCategory.CHATS -> importChats(work, fileIndex, report0)
                         BackupCategory.SHARED_FILES -> importSharedFiles(work, fileIndex)
                         BackupCategory.SKILLS -> importSkills(work, fileIndex)
-                        BackupCategory.MEMORY -> importMemory(work)
+                        BackupCategory.SOUL -> importSoul(work)
                         BackupCategory.MCP_SERVERS -> importMcpServers(work)
                         BackupCategory.PROVIDERS -> importProviders(work)
                         BackupCategory.ENVIRONMENT_VARIABLES -> importEnvironmentVariables(work)
@@ -364,7 +364,7 @@ class BackupImporter(
             if (sessionsSeen % 100 == 0) coroutineContext.ensureActive()
             val envelope = rec.obj ?: return@readJsonl
             // [T-android-restore-ios-session-nesting] iOS nests the session
-            // under a "session" key, with wrapper fields like memoryEnabled as
+            // under a "session" key, with wrapper fields like modelBinding as
             // its SIBLINGS; Android writes those same fields flat. Reading only
             // the flat shape made every record from an iPhone backup look like
             // it had no id, so all 2350 sessions were counted "unreadable" and
@@ -661,16 +661,16 @@ class BackupImporter(
         return report
     }
 
-    private fun importMemory(root: File): CategoryReport {
-        val report = CategoryReport(BackupCategory.MEMORY.key)
-        val src = File(root, "data/memory")
+    private fun importSoul(root: File): CategoryReport {
+        val report = CategoryReport(BackupCategory.SOUL.key)
+        val src = File(root, "data/soul")
         if (!src.isDirectory) return report
-        val dest = File(context.filesDir, "minis-global/memory").apply { mkdirs() }
+        val dest = File(context.filesDir, "minis-global/soul").apply { mkdirs() }
         val destRoot = dest.canonicalFile
         for (file in src.walkTopDown().filter { it.isFile }) {
             val rel = file.relativeTo(src).path.replace(File.separatorChar, '/')
             val out = File(dest, rel)
-            // Same containment rule as the blob path: `data/memory` names come
+            // Same containment rule as the blob path: persona names come
             // from inside the package too.
             val parent = out.parentFile?.let { it.mkdirs(); it.canonicalFile }
             if (parent == null || !(parent.path == destRoot.path ||
@@ -1143,7 +1143,7 @@ class BackupImporter(
             BackupCategory.CHATS,
             BackupCategory.SHARED_FILES,
             BackupCategory.SKILLS,
-            BackupCategory.MEMORY,
+            BackupCategory.SOUL,
             BackupCategory.MCP_SERVERS,
             // Providers before env-vars: both pull VALUES from secrets.json, but
             // provider import is where credentials for BOTH are applied on iOS.

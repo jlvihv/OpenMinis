@@ -18,7 +18,6 @@ import com.openminis.app.ui.navigation.Routes
  *   minis://settings/model-groups/<groupId>     → Model Group detail
  *   minis://settings/usage                      → Token usage
  *   minis://settings/skills                     → Skills management
- *   minis://settings/memory                     → Memory management
  *   minis://settings/storage                    → Storage management
  *   minis://settings/mount-external             → Mount External Folders list
  *   minis://settings/mounts                     → alias for mount-external
@@ -174,7 +173,6 @@ object DeepLinkHandler {
             "usage", "usage-stats", "usage_stats" ->
                 DeepLinkAction.OpenSettingsScreen(Routes.USAGE_STATS)
             "skills" -> DeepLinkAction.OpenSettingsScreen(Routes.SKILLS)
-            "memory" -> DeepLinkAction.OpenSettingsScreen(Routes.MEMORY)
             // [T-p2-agent-settings] Settings › Agents; scheduled tasks list.
             "agents" -> DeepLinkAction.OpenSettingsScreen(Routes.AGENTS)
             "scheduled", "scheduled-tasks", "scheduled_tasks" -> DeepLinkAction.OpenSettingsScreen(Routes.SCHEDULED_TASKS)

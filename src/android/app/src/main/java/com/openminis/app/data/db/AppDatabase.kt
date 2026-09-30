@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WebAppShortcutEntity::class,
         FolderEntity::class,
     ],
-    version = 14,
+    version = 15,
     // [T-android-downgrade-compat] Kept ON so MigrationTestHelper and CI can
     // validate every migration (and its downgrade counterpart) against the
     // committed schema json. Without it the upgrade/downgrade chain has no
@@ -376,6 +376,45 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** Remove the retired persistent-memory flag without losing chat history. */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE sessions_new (
+                        id TEXT NOT NULL PRIMARY KEY, title TEXT, model_id TEXT NOT NULL,
+                        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                        category TEXT, last_message TEXT, model_binding TEXT, source TEXT,
+                        pinned_at INTEGER, edit_count INTEGER NOT NULL, thinking_override TEXT,
+                        folder_id TEXT, parent_session_id TEXT, parent_tool_use_id TEXT
+                    )
+                """.trimIndent())
+                val columns = "id, title, model_id, created_at, updated_at, category, " +
+                    "last_message, model_binding, source, pinned_at, edit_count, " +
+                    "thinking_override, folder_id, parent_session_id, parent_tool_use_id"
+                db.execSQL("INSERT INTO sessions_new ($columns) SELECT $columns FROM sessions")
+                // Room runs migrations in a transaction with foreign keys enabled.
+                // Dropping sessions cascades to these tables; preserve and restore them.
+                db.execSQL("CREATE TEMP TABLE messages_backup AS SELECT * FROM messages")
+                db.execSQL("CREATE TEMP TABLE markers_backup AS SELECT * FROM compact_markers")
+                db.execSQL("DROP TABLE sessions")
+                db.execSQL("ALTER TABLE sessions_new RENAME TO sessions")
+                // Older installations may lack cascade constraints, leaving the
+                // original rows intact. Restore only rows actually removed.
+                db.execSQL("INSERT OR IGNORE INTO messages SELECT * FROM messages_backup")
+                db.execSQL("INSERT OR IGNORE INTO compact_markers SELECT * FROM markers_backup")
+                db.execSQL("DROP TABLE messages_backup")
+                db.execSQL("DROP TABLE markers_backup")
+                db.execSQL("CREATE INDEX index_sessions_folder_id ON sessions(folder_id)")
+                db.execSQL("CREATE INDEX index_sessions_updated_at ON sessions(updated_at)")
+            }
+        }
+
+        val MIGRATION_15_14 = object : Migration(15, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN memory_enabled INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -390,7 +429,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
                         MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_12, MIGRATION_12_11,
-                        MIGRATION_13_14, MIGRATION_14_13,
+                        MIGRATION_13_14, MIGRATION_14_13, MIGRATION_14_15, MIGRATION_15_14,
                     )
                     .build()
                     .also { INSTANCE = it }

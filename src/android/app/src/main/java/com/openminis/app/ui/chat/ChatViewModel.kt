@@ -43,7 +43,6 @@ import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.R
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
@@ -62,7 +61,6 @@ import com.openminis.app.tools.AgentTools
 import com.openminis.app.tools.FileEditTool
 import com.openminis.app.tools.FileReadTool
 import com.openminis.app.tools.FileWriteTool
-import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
@@ -105,7 +103,6 @@ class ChatViewModel(
     private val chatRepository: ChatRepository,
     private val providerRepository: ProviderRepository,
     internal val context: Context,
-    val memoryRepository: MemoryRepository? = null,
     val skillRepository: com.openminis.app.data.repository.SkillRepository? = null,
     val mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
 ) : ViewModel() {
@@ -657,7 +654,6 @@ class ChatViewModel(
             chatRepository: ChatRepository,
             providerRepository: ProviderRepository,
             appContext: Context,
-            memoryRepository: MemoryRepository?,
             skillRepository: com.openminis.app.data.repository.SkillRepository?,
             mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
@@ -668,7 +664,6 @@ class ChatViewModel(
                     chatRepository = chatRepository,
                     providerRepository = providerRepository,
                     context = appContext,
-                    memoryRepository = memoryRepository,
                     skillRepository = skillRepository,
                     mcpRepository = mcpRepository,
                 ) as T
@@ -1250,7 +1245,7 @@ class ChatViewModel(
 
     // [T-p1-delegate-task] Set by the parent's executeDelegateTask on a CHILD
     // vm before its first turn. Its presence is what every helper-specific
-    // branch keys off: tool set (no delegate_task / memory_write), identity
+    // branch keys off: tool set (no delegation), identity
     // preamble, turn cap, and the SessionConcurrencyManager bypass.
     internal var helperConfig: com.openminis.app.agent.jobs.HelperConfig? = null
     internal val isHelper: Boolean get() = helperConfig != null
@@ -1926,9 +1921,7 @@ class ChatViewModel(
     private val agentHistory = mutableListOf<LLMMessage>()
 
     /**
-     * All agent tool definitions, recomputed on each read so the memory
-     * toggle gate (see [_memoryEnabled]) takes effect immediately when
-     * the user flips /memory mid-session without forcing a VM rebuild.
+     * Agent tool definitions are rebuilt so capability switches take effect immediately.
      * The cost is negligible — [AgentTools.makeAgentTools] just builds a
      * fixed list of definition objects, no I/O.
      */
@@ -1946,7 +1939,6 @@ class ChatViewModel(
             visionGroupConfigured = com.openminis.app.tools.VisionModelResolver.isConfigured(
                 providerRepository, context,
             ),
-            memoryEnabled = _memoryEnabled.value,
             isHelper = isHelper,
             delegateEnabled = com.openminis.app.tools.AgentToolSwitch.AGENTS.isEnabled(context),
             browserEnabled = com.openminis.app.tools.AgentToolSwitch.BROWSER.isEnabled(context),
@@ -2550,8 +2542,6 @@ class ChatViewModel(
     // [T-android-split-chat] toggleBrowserSheet / dismissBrowserSheet /
     // openBrowserSheetForUrl moved to ChatViewModelUiStateExt.kt.
 
-    internal val _showMemorySheet = MutableStateFlow(false)
-    val showMemorySheet: StateFlow<Boolean> = _showMemorySheet.asStateFlow()
 
     /** Set true by the slash-command "/clear" handler so ChatScreen can mirror
      *  it into the local Compose state that drives the existing
@@ -2564,110 +2554,8 @@ class ChatViewModel(
         _clearChatConfirmRequested.value = false
     }
 
-    private val _memoryToolRecords = MutableStateFlow<List<MemoryToolRecord>>(emptyList())
-    val memoryToolRecords: StateFlow<List<MemoryToolRecord>> = _memoryToolRecords.asStateFlow()
-
-    /**
-     * Revoke a previously recorded memory_write by removing its entry from
-     * today's or yesterday's daily log on disk, and dropping the row from
-     * [memoryToolRecords] so the SessionMemorySheet reflects the removal.
-     *
-     * Returns the repository result so the UI can show a success / not-found
-     * / I/O error dialog. The original ChatMessage tool block stays in the
-     * conversation history untouched — only the on-disk entry and the
-     * op-log row are mutated.
-     */
-    fun revokeMemoryRecord(record: MemoryToolRecord): com.openminis.app.data.repository.MemoryRepository.EntryMutationResult {
-        val repo = memoryRepository
-            ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.IOError("Memory not available")
-        val written = record.writtenContent
-            ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.NotFound
-        val result = repo.revokeEntry(written)
-        if (result is com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.Success) {
-            _memoryToolRecords.value = _memoryToolRecords.value - record
-        }
-        return result
-    }
-
-    /**
-     * T149: revoke every `memory_write` tool block embedded in the supplied
-     * messages. Used when a retry path truncates the conversation — the
-     * deleted assistant turns may have written entries to today's daily
-     * memory log, and leaving them on disk after the conversation rewinds
-     * means user-visible history is gone but the side effects remain.
-     *
-     * We match by the `content` field of the tool args against
-     * [MemoryToolRecord.writtenContent] (which is what `revokeMemoryRecord`
-     * keys on). If multiple records share the same content body — possible
-     * if the agent wrote the same note twice — we revoke them in the
-     * reverse insertion order so the most recent disk write is removed
-     * first; the repository's revokeEntry only removes the first match
-     * each call, so subsequent records may end up NotFound on disk but
-     * still get pulled from the in-memory record list.
-     */
-    private fun revokeMemoryWritesInDeletedMessages(deletedMessages: List<ChatMessage>) {
-        if (memoryRepository == null) return
-        val deletedContents = mutableListOf<String>()
-        for (msg in deletedMessages) {
-            for (block in msg.toolBlocks) {
-                if (block.kind != "tool_use") continue
-                if (block.toolName != "memory_write") continue
-                val content = try {
-                    JSONObject(block.toolArgs).optString("content", "")
-                } catch (_: Exception) { "" }
-                if (content.isNotBlank()) deletedContents.add(content)
-            }
-        }
-        if (deletedContents.isEmpty()) return
-        Log.i(TAG, "revokeMemoryWritesInDeletedMessages: ${deletedContents.size} write(s) to revoke")
-        for (content in deletedContents.asReversed()) {
-            // Find the latest matching record so revoke targets the most
-            // recent disk entry first. Snapshot value because revoke mutates
-            // the flow.
-            val record = _memoryToolRecords.value.lastOrNull {
-                it.isWrite && it.writtenContent == content
-            } ?: continue
-            val result = revokeMemoryRecord(record)
-            Log.i(TAG, "  revoke result: ${result::class.simpleName}")
-        }
-    }
-
-    /**
-     * Replace the body of a previously recorded memory_write with
-     * [newContent]. Mirrors iOS `MemoryWriteDetailView.replaceEntryInLog`.
-     * On success, also updates the in-memory [MemoryToolRecord] so a
-     * subsequent revoke or revisit sees the new body.
-     */
-    fun replaceMemoryRecord(
-        record: MemoryToolRecord,
-        newContent: String,
-    ): com.openminis.app.data.repository.MemoryRepository.EntryMutationResult {
-        val repo = memoryRepository
-            ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.IOError("Memory not available")
-        val old = record.writtenContent
-            ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.NotFound
-        val result = repo.replaceEntryBody(old, newContent)
-        if (result is com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.Success) {
-            _memoryToolRecords.value = _memoryToolRecords.value.map {
-                if (it === record) it.copy(
-                    writtenContent = newContent,
-                    preview = newContent.lines().firstOrNull { line -> line.isNotBlank() }?.take(100) ?: "",
-                ) else it
-            }
-        }
-        return result
-    }
-
     // ── Slash commands (mirrors iOS AIChatViewModel) ────────────────────
 
-    // [T-memory-global-toggle-settings-ui-android] Seed from the global
-    // pref so a fresh draft VM honors the user's "memory off by default"
-    // choice from Settings. For loaded sessions, `loadSession()` later
-    // overwrites this with the per-session DB value, which takes
-    // precedence — the global pref only applies to drafts.
-    internal val _memoryEnabled =
-        MutableStateFlow(com.openminis.app.data.MemoryGlobalPrefs.isGlobalEnabled(context))
-    val memoryEnabled: StateFlow<Boolean> = _memoryEnabled.asStateFlow()
 
     /**
      * [T-android-usage-capsule-style] Message ids whose token-usage capsule is
@@ -2862,7 +2750,7 @@ class ChatViewModel(
     // ── @ file-mention picker (mirrors iOS AIChatViewModel mention*) ─────
     /**
      * Per-app singleton — scans /var/minis/{workspace,attachments,shared,
-     * skills,memory}/<sessionId>/ on demand, ranks matches by basename
+     * skills}/<sessionId>/ on demand, ranks matches by basename
      * fuzzy score + scope priority. The composer hooks update*MentionMenu*
      * on every keystroke; the popup composes against [mentionEntries].
      */
@@ -3132,7 +3020,6 @@ class ChatViewModel(
         return SessionTokenStats(input, output, cacheRead, cacheWrite, context, loops, streamMs, streamOutput)
     }
 
-    // [T-android-split-chat] toggleMemorySheet / dismissMemorySheet moved to ChatViewModelUiStateExt.kt.
 
     // ── Slash command API (mirrors iOS AIChatViewModel) ─────────────────
 
@@ -3150,12 +3037,6 @@ class ChatViewModel(
             id = "compact",
             icon = Icons.Default.Compress,
             title = "Compact",
-            subtitle = "",
-        ),
-        SlashCommand(
-            id = "memory",
-            icon = Icons.Default.Psychology,
-            title = "Memory",
             subtitle = "",
         ),
         SlashCommand(
@@ -3244,7 +3125,6 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> compactAll()
-            "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
             "clear" -> _clearChatConfirmRequested.value = true
             else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
@@ -3257,24 +3137,6 @@ class ChatViewModel(
             return saved
         }
         return ""
-    }
-
-    /** Toggle memory writes on/off, persist to DB, and append a system-info message. */
-    private fun toggleMemoryEnabled() {
-        val newValue = !_memoryEnabled.value
-        _memoryEnabled.value = newValue
-        viewModelScope.launch {
-            // Toggling before the first message means the row doesn't exist
-            // yet — materialize the session row so the preference lands on
-            // the persisted id instead of silently updating zero rows under
-            // the draft key.
-            val sid = ensureSession()
-            chatRepository.dao.updateMemoryEnabled(sid, if (newValue) 1 else 0)
-        }
-        appendSystemInfo(
-            text = "Memory writes ${if (newValue) "enabled" else "disabled"}. Reads are unaffected.",
-            iconKind = "memory",
-        )
     }
 
     /** Toggle thinking between OFF and MEDIUM (matches iOS default toggle semantics). */
@@ -4457,12 +4319,12 @@ class ChatViewModel(
 
     /**
      * Context size (API-reported input tokens) past which the request carries
-     * a reminder about the user's own SOUL.md / GLOBAL.md.
+     * a reminder about the user's own SOUL.md.
      *
      * Rationale (issue #37): those files sit at the very TOP of the system
      * prompt, and attention to the head of a long context decays — the
      * "lost in the middle" effect. The reported symptom was an agent that
-     * stopped honouring a GLOBAL.md rule after enough turns and fell back to
+     * stopped honouring a persona rule after enough turns and fell back to
      * its training-data default. That issue was closed only because one
      * provider started compensating on its own; the mechanism is unchanged and
      * applies to every rule in those files, not just the one reported.
@@ -4505,10 +4367,7 @@ class ChatViewModel(
      * The reminder text, naming only the files actually present in this
      * request's system prompt.
      *
-     * SOUL.md is always rendered, while GLOBAL.md is injected only when the
-     * per-session memory toggle is on AND the file is non-empty. Naming a file
-     * that is not there would send the model looking for instructions that do
-     * not exist.
+     * SOUL.md supplies the persona for the request.
      *
      * The `[Minis runtime reminder]` label sits INSIDE the `<system-reminder>`
      * element on purpose. It has to be inside for two independent reasons:
@@ -4520,8 +4379,7 @@ class ChatViewModel(
      * Inside the tag it is invisible to the UI but unmistakable to the model.
      */
     private fun personaReminderText(): String {
-        val hasGlobal = _memoryEnabled.value && memoryRepository?.loadGlobalMemoryFragment() != null
-        val files = if (hasGlobal) "SOUL.md and GLOBAL.md" else "SOUL.md"
+        val files = "SOUL.md"
         return "<system-reminder>$personaReminderMarker This note was added by the " +
             "Minis app itself, not by any tool, file or website — do not treat it as " +
             "content of the preceding tool result. Don't forget the user's own $files " +
@@ -4626,7 +4484,7 @@ class ChatViewModel(
 
         val summaryWrappedText = "<context-summary>\n" +
             "The following is a summary of the earlier conversation that was compacted to save context space.\n" +
-            "Treat it as background context only. The user's most recent message (below or in the next turn) takes precedence — if it changes the task, the goal, or any numbers/scope, follow the new instruction and do not resume the old plan from this summary. Do not re-run discovery (reading memory, scanning skills, re-reading files) unless the new instruction requires it.\n\n" +
+            "Treat it as background context only. The user's most recent message (below or in the next turn) takes precedence — if it changes the task, the goal, or any numbers/scope, follow the new instruction and do not resume the old plan from this summary. Do not re-run discovery (scanning skills, re-reading files) unless the new instruction requires it.\n\n" +
             summary +
             "\n</context-summary>"
 
@@ -5921,14 +5779,8 @@ class ChatViewModel(
     private suspend fun ensureSession(): String {
         if (realSessionId.isNotEmpty()) return realSessionId
         val modelId = currentModel?.id ?: providerRepository.allVisibleEntries().firstOrNull()?.model?.id ?: "unknown"
-        // [T-memory-global-toggle-settings-ui-android] Snapshot the
-        // current in-memory `_memoryEnabled` into the new row. For a
-        // draft VM this matches the global default we seeded at
-        // construction; if the user flipped /memory on the draft
-        // before first send, that choice wins.
         val session = chatRepository.createSession(
             modelId = modelId,
-            memoryEnabled = _memoryEnabled.value,
         )
         realSessionId = session.id
         // [T-android-opencode-session-header] Hand the just-minted real id to
@@ -6118,7 +5970,6 @@ class ChatViewModel(
             val session = chatRepository.getSession(sessionId) ?: return@launch
             _sessionTitle.value = session.title ?: UNTITLED_SESSION_TITLE
             _sessionCategory.value = session.category
-            _memoryEnabled.value = session.memoryEnabled != 0
             // T239: hydrate persisted thinking-mode override. null = unset
             // (use OFF as the legacy default); non-null = explicit user
             // choice persisted across cold-start. runCatching guards against
@@ -7371,8 +7222,7 @@ class ChatViewModel(
         _canResume.value = false
         _error.value = null
 
-        // T149 parity: revoke memory_writes in the parts we're about to drop
-        // so the on-disk daily log doesn't keep entries the user rewound past.
+        // Snapshot the dropped range for conversation cleanup.
         // The dropped range is: the target turn's blocks FROM the target
         // onward (the target tool_use itself + any later same-turn blocks) +
         // every later message. The surviving earlier blocks of the target turn
@@ -7447,9 +7297,6 @@ class ChatViewModel(
                     chatRepository.updateMessageParts(row.id, keptArr.toString())
                     Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
                 }
-
-                // T149 parity: revoke memory writes in the dropped range.
-                revokeMemoryWritesInDeletedMessages(deletedMessages)
 
                 // Trim the UI in-memory (same approach as retryFromMessage's
                 // `_messages.value = retainedHead`, which doesn't reload from
@@ -7539,9 +7386,6 @@ class ChatViewModel(
         val provider: LLMProvider = initialProvider
         _error.value = null
 
-        // T149: snapshot messages about to be truncated so we can revoke any
-        // memory_write tool blocks they contain. Without this, a retry leaves
-        // the on-disk daily log with entries the user has just rewound past.
         // [T-android-bubble-anchor-drain] Keep through the LAST bubble of a
         // merged queue batch: they share one row, and retry keeps that row.
         val keepThrough = BubbleRowLocator.groupSpan(messages, index).last
@@ -7569,8 +7413,6 @@ class ChatViewModel(
         if (_streamingById.value.isNotEmpty()) {
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
-
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
 
         // T145: claim the streaming flag SYNCHRONOUSLY so a rapid second tap
         // (or any concurrent send/retry attempt) is rejected by the entry
@@ -7654,9 +7496,7 @@ class ChatViewModel(
         // An assistant target keeps the user row, so it cuts at itself.
         val cutFrom = BubbleRowLocator.groupSpan(messages, index).first
 
-        // Snapshot what's about to go so any memory_write tool blocks inside
-        // can be revoked — otherwise the on-disk daily log keeps entries from
-        // messages the user just deleted.
+        // Snapshot the messages being deleted.
         val deletedMessages = messages.subList(cutFrom, messages.size).toList()
 
         // Truncate the UI to everything BEFORE the target message, and drop
@@ -7677,8 +7517,6 @@ class ChatViewModel(
         if (_streamingById.value.isNotEmpty()) {
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
-
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
 
         val sid = activeSessionId ?: return
         viewModelScope.launch {
@@ -8045,8 +7883,6 @@ class ChatViewModel(
             retainStreamFlushStates(keptIds)
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
-
         val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
         // [T-android-bubble-anchor] Edit = delete from here + an ordinary
         // send, so the edited row itself goes: cut AT it. Found by id, not by
@@ -10768,8 +10604,8 @@ class ChatViewModel(
                         // user message. Falls through to the raw agentHistory when
                         // no compact has happened, so the common path stays zero-copy.
                         // [T-longctx-persona-reminder-cachebreak] Past ~100k
-                        // tokens, remind the model that the user's SOUL.md /
-                        // GLOBAL.md rules at the head of the system prompt still
+                        // tokens, remind the model that the user's SOUL.md
+                        // rules at the head of the system prompt still
                         // apply (issue #37).
                         //
                         // This used to rewrite the outbound copy's LAST message on
@@ -12215,7 +12051,7 @@ class ChatViewModel(
                             // shell_execute (long stdout streams where the tail is what
                             // matters). For tools whose first line carries metadata —
                             // file_read's `[path | N bytes | M lines | showing A-B of M]`
-                            // banner, file_write/file_edit confirmations, memory_* /
+                            // banner, file_write/file_edit confirmations /
                             // browser_use structured headers — clipping the head dropped
                             // the banner entirely. iOS routes file_read through a
                             // dedicated branch (AIChatViewModel.swift:5229) and avoids
@@ -12622,7 +12458,6 @@ class ChatViewModel(
                 } else {
                     toolDisabledResult("browser_use")
                 }
-            "memory_write" -> executeMemoryWriteTool(argsJson)
             // [T-sub-agents-v1] One tool, five actions. The legacy names are
             // accepted so a replayed call from a transcript written before the
             // rename still dispatches instead of hitting "Unknown tool".
@@ -12665,7 +12500,6 @@ class ChatViewModel(
                         false,
                     )
                 }
-            "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
         }
     }
@@ -12848,11 +12682,10 @@ class ChatViewModel(
         val subAgentOrigin = resolution.origin
         val subAgentGroupUnavailable = resolution.modelGroupUnavailable
 
-        // ── Child session (hidden; memory off; parent's source) ──────────
+        // ── Child session (hidden; parent's source) ──────────
         val child = chatRepository.createSession(
             modelId = resolution.seedModelId,
             title = hr.childSessionTitle(context, title, subAgent.name.takeIf { !subAgent.isBuiltIn }),
-            memoryEnabled = false,
             parentSessionId = parentSid,
             parentToolUseId = toolId,
         )
@@ -12897,7 +12730,7 @@ class ChatViewModel(
         registry.setTierUsed(job.id, resolution.tierUsed.wire)
         registry.setProgressLevel(job.id, if (args.wait) "none" else args.progressLevel)
 
-        // ── Child vm: helper config, no memory, parent's browser tabs ───
+        // ── Child vm: helper config, parent's browser tabs ───
         val childVm = withContext(Dispatchers.Main) {
             // [T-android-vm-store-dual-pool] delegate_task creates the sub
             // agent here — claim the CHILD pool at creation.
@@ -13989,43 +13822,6 @@ class ChatViewModel(
         return out.toByteArray()
     }
 
-    private fun executeMemoryWriteTool(argsJson: String): ToolExecutionResult {
-        val repo = memoryRepository ?: return ToolExecutionResult("Error: Memory not available", false)
-        if (!_memoryEnabled.value) {
-            val msg = "Memory writes are disabled for this session (user toggled /memory off). Reads remain available."
-            return ToolExecutionResult(msg, false, toolTitle = "Memory (disabled)")
-        }
-        val result = MemoryTools.executeMemoryWrite(argsJson, repo)
-        // Record for SessionMemorySheet
-        val content = try {
-            JSONObject(argsJson).optString("content", "")
-        } catch (_: Exception) { "" }
-        _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
-            title = result.toolTitle,
-            isWrite = true,
-            preview = content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: "",
-            output = result.output,
-            writtenContent = content,
-        )
-        return ToolExecutionResult(result.output, result.success, toolTitle = result.toolTitle)
-    }
-
-    private fun executeMemoryGetTool(argsJson: String): ToolExecutionResult {
-        val repo = memoryRepository ?: return ToolExecutionResult("Error: Memory not available", false)
-        val result = MemoryTools.executeMemoryGet(argsJson, repo)
-        val keywords = try {
-            JSONObject(argsJson).optString("keywords", "")
-        } catch (_: Exception) { "" }
-        _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
-            title = result.toolTitle,
-            isWrite = false,
-            preview = if (keywords.isNotBlank()) "Search: $keywords" else result.output.take(100),
-            output = result.output,
-            keywords = keywords,
-        )
-        return ToolExecutionResult(result.output, result.success, toolTitle = result.toolTitle)
-    }
-
     // ─── UI Helpers ──────────────────────────────────────────────────────
 
     private fun mergeDelegateOverrides(blocks: List<AssistantBlock>): List<AssistantBlock> {
@@ -14587,46 +14383,10 @@ class ChatViewModel(
             com.openminis.app.agent.jobs.HelperRunner.identitySection(it, browserEnabled = browserToolEnabled)
         }
             ?: com.openminis.app.agent.SystemPromptBuilder.identitySection(context)
-        // [T-memory-toggle-gates-injection-and-tools-android] Mirror the iOS
-        // gate: when memory is disabled for this session, replace the
-        // "memory_write / memory_get" tool bullets and the "Memory system:"
-        // guidance block with a single explicit DISABLED notice. The model
-        // never sees the tools either (filtered in agentTools above), but
-        // surfacing the state in the prompt lets it explain why memories
-        // aren't reachable when the user asks. The fragment / tool dual
-        // gate is symmetrical: enable both or disable both, never mismatch.
-        val memoryOn = _memoryEnabled.value
-        val toolListMemoryBullets = if (memoryOn) {
-            """
-${com.openminis.app.agent.jobs.HelperRunner.systemPromptBullet(!isHelper && com.openminis.app.agent.jobs.AgentSettings.isEnabled(context))}${subAgentRosterPromptSection()}- memory_write: Save a memory entry to today's daily log (YYYY-MM-DD.md). Use proactively to note user preferences, project patterns, and important context.
-- memory_get: Recall memories with keyword search. Check memory at the start of new topics to leverage past knowledge."""
-        } else {
-            // Empty — no memory_write / memory_get bullets when disabled.
-            // The "Memory system:" section below also collapses, so the
-            // model gets a coherent picture rather than half-mentioned
-            // tools it can't actually call.
-            ""
-        }
-        val memorySystemSection = if (memoryOn) {
-            """
-
-Memory system (currently ENABLED):
-- memory_write writes to today's daily log (YYYY-MM-DD.md) — use it for session notes, key facts, project context, things learned, and action items.
-- GLOBAL.md (/var/minis/memory/GLOBAL.md) stores persistent preferences, settings, and general-purpose conventions. To read it, use file_read (NOT memory_get). To update it, use file_read first then file_edit. If GLOBAL.md does not exist yet, use file_write to create it directly.
-- IMPORTANT: Only write to GLOBAL.md when the user explicitly asks (e.g. 'remember this globally', 'save to global memory'). Before editing, deduplicate and clean up — avoid ambiguity, repetition, or daily-log-style entries. GLOBAL.md should contain only concise, reusable knowledge (preferences, settings, conventions), NOT session logs or transient context.
-- Use memory_get to recall past knowledge before starting tasks — check if there are relevant memories that can help.
-- Proactively save memories (via memory_write to daily log) when you discover user preferences or important patterns — don't wait to be asked.
-- When the user says 'remember this' or similar, use memory_write to persist to the daily log. Only write to GLOBAL.md if the user specifically asks for global/persistent storage.
-- What NOT to remember: passwords, API keys, tokens, secrets, or any sensitive credentials. Warn the user about the risk first; only proceed if they explicitly confirm.
-- Keep memories concise, factual, and general-purpose — avoid noise that won't be useful later."""
-        } else {
-            """
-
-Memory system (currently DISABLED):
-- The user has turned OFF memory injection and memory tools for this session. GLOBAL.md and recent daily logs are NOT included in this prompt, and the memory_write / memory_get tools are NOT available — do not attempt to call them.
-- If the user asks why earlier memories aren't visible, or asks you to save something, tell them memory is currently disabled and point them at the /memory slash command or [Settings → Memory](minis://settings/memory) to re-enable it.
-- SOUL.md (personality / identity) is unaffected by this toggle; the persona section above still applies."""
-        }
+        val delegationBullets = "\n" +
+            com.openminis.app.agent.jobs.HelperRunner.systemPromptBullet(
+                !isHelper && com.openminis.app.agent.jobs.AgentSettings.isEnabled(context)
+            ) + subAgentRosterPromptSection()
         // [T-tools-granular-switches] The prompt must not advertise a tool the
         // schema does not carry. With browser_use switched off, the model would
         // otherwise be told it has a browser, find none in the schema, and
@@ -14655,7 +14415,7 @@ Memory system (currently DISABLED):
             " For delegating a whole task that needs tools and multiple rounds, use the subagent_task tool instead."
         } else ""
         val browserPromptBullet = if (browserToolEnabled) """- browser_use: Web browsing (navigate, screenshot, click, type, get_text, scroll, scroll_and_collect, get_readable, get_backbone, fetch, etc.). Starts with a desktop Chrome user agent. Use screenshot to see the page.
-  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${toolListMemoryBullets}""" else ""
+  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。""" else ""
         val minisUrlNote = if (browserToolEnabled) """IMPORTANT: minis:// URLs are app-internal — they are NOT web URLs. Do NOT pass minis:// action URLs (open_terminal, views, settings) to browser_use — those are app deep links, use Markdown links in chat instead. However, minis:// resource URLs CAN be opened in browser_use with navigate. All directories under /var/minis/ are accessible: workspace, attachments, offloads, shared, etc. The built-in browser fully supports minis:// — HTML pages and all sub-resources (JS, CSS, images, fonts, etc.) referenced via minis:// absolute URLs or relative paths resolve correctly within the current session. When building multi-file web projects, use file_write to create files in the same directory (e.g. /var/minis/workspace/myapp/), then reference sub-resources with relative paths in HTML (e.g. <link href="style.css">, <script src="app.js">, <img src="logo.png">). The browser resolves relative paths against the minis:// base URL automatically. Cross-directory references also work with absolute minis:// URLs (e.g. <img src="minis://attachments/photo.png"> from a workspace HTML page). Navigate to the entry HTML to preview, e.g. minis://workspace/myapp/index.html.""" else """IMPORTANT: minis:// URLs are app-internal — they are NOT web URLs. Do NOT treat minis:// action URLs (open_terminal, views, settings) as web links — those are app deep links, use Markdown links in chat instead."""
         // [T-prompt-file-search-rg] The "File search" bullet below is the single
         // place for finding files and searching their contents, and steers the
@@ -14669,6 +14429,7 @@ Available tools:
 - file_write: Create new files or overwrite existing files (faster than echo/tee).
 - file_edit: Edit existing files with exact string replacement (old_string → new_string). Preferred over file_write for modifications — always file_read first.
 ${browserPromptBullet}
+${delegationBullets}
 
 Shared directory /var/minis/ (bidirectional read/write between shell and app):
   /var/minis/attachments/ — Media files (images, audio, video). Display inline with ![desc](minis://attachments/filename).
@@ -14676,8 +14437,6 @@ Shared directory /var/minis/ (bidirectional read/write between shell and app):
   /var/minis/offloads/    — Auto-saved large outputs. Read with file_read.
   /var/minis/browser/     — Browser screenshots and extracts.
   /var/minis/shared/      — Cross-session shared storage for artifacts and documents. Organize by project or topic (e.g. shared/myproject/, shared/datasets/). Do NOT store temporary files here.
-  /var/minis/memory/GLOBAL.md    — Persistent global memory (read-only, user-maintained via Settings).
-  /var/minis/memory/YYYY-MM-DD.md — Daily memory log.
   /var/minis/mounts/<name>/      — User-mounted external folders from Settings → Mount External Folders. Presence and names vary per user; check this directory first when the task references external/user files. Some mounts may be read-only — file_write / file_edit will reject writes with a clear error message.
 
 The minis:// URL scheme:
@@ -14747,14 +14506,12 @@ Interactive terminal: minis://open_terminal opens a terminal for tasks that requ
 Environment variables:
 - Shell environment variables may contain sensitive API keys, tokens, or passwords. NEVER echo, print, cat, or otherwise output their values to stdout/stderr. Always reference them by variable name (e.g. ${'$'}API_KEY) inside scripts or commands — never inline the literal value.
 - When a skill or task requires an environment variable that is not set, tell the user which variable is missing and provide a tappable deep link to create it: [Set ENV_NAME](minis://settings/environments?create_key=ENV_NAME&create_value=) — the user can tap it to open the Environment Variables page with the key pre-filled.
-- Settings deep links: when you tell the user "go to Settings → X" or want to point them at a specific setting, prefer a Markdown link `[Label](minis://settings/<path>)` over plain prose. Available paths: providers (list), providers/<instanceId> (one provider), models (model selection and Agent Loop), usage (token usage), skills, memory, storage, shared-folders (Shared Folders: /var/minis/{shared,skills,memory}), mount-external (Mount External Folders), logs, appearance, background, about, permissions, environments[?create_key=K&create_value=V[&create_note=N]], rootfs (also reachable as mirrors). Unknown paths fall back to Settings home, but prefer the exact path so users land where they want. These settings/action links are app deep links — render them as Markdown links in chat (same action-vs-resource rule as the minis:// section above: only /var/minis resource URLs may go to browser_use).
-- To check if a variable is set, use `[ -n "${'$'}VAR" ] && echo 'set' || echo 'not set'`. NEVER use echo ${'$'}VAR, printenv VAR, or any command that would output the actual value into the conversation context.${memorySystemSection}
+- Settings deep links: when you tell the user "go to Settings → X" or want to point them at a specific setting, prefer a Markdown link `[Label](minis://settings/<path>)` over plain prose. Available paths: providers (list), providers/<instanceId> (one provider), models (model selection and Agent Loop), usage (token usage), skills, soul, storage, shared-folders (Shared Folders: /var/minis/{shared,skills}), mount-external (Mount External Folders), logs, appearance, background, about, permissions, environments[?create_key=K&create_value=V[&create_note=N]], rootfs (also reachable as mirrors). Unknown paths fall back to Settings home, but prefer the exact path so users land where they want. These settings/action links are app deep links — render them as Markdown links in chat (same action-vs-resource rule as the minis:// section above: only /var/minis resource URLs may go to browser_use).
+- To check if a variable is set, use `[ -n "${'$'}VAR" ] && echo 'set' || echo 'not set'`. NEVER use echo ${'$'}VAR, printenv VAR, or any command that would output the actual value into the conversation context.
 
 Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For follow-ups and recurring prompts, run `minis-scheduled create …` via shell_execute: it fires through a system alarm, so it runs a new turn even when Minis is in the background or closed (a force-stop cancels pending tasks until the app is next opened). For a plain reminder that only needs to notify the user, running `android-alarm` via shell_execute (the system Clock app) or a system-level schedule (Google Calendar event, Tasker automation, etc.) also works. (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)"""
 
-        // Match iOS order exactly: skills → global memory → recent daily memory.
-        // See ios/Agent/Chat/AIChatViewModel.swift:4375-4387. Each fragment is
-        // appended only when non-null; absent fragments leave no separator.
+        // Append optional capability fragments after the stable base.
         // [T-android-skill-scan-parity] No disk access here — this runs on the
         // main thread, twice per send (checkContextBeforeSend and the send
         // coroutine). Like iOS SkillStore.skillPromptFragment(), the fragment
@@ -14769,28 +14526,6 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // enabled-MCP disclosure, injected right after the skills fragment.
         mcpRepository?.reloadFromDisk()
         val mcpFragment = mcpRepository?.mcpPromptFragment(activeSessionId)
-        // [T-memory-toggle-gates-injection-and-tools-android] Skip loading
-        // GLOBAL.md + recent daily logs entirely when the user has turned
-        // memory off for this session. Cheaper (no disk read) and — more
-        // importantly — keeps the model from seeing stale persistent state
-        // it can't tell the user how to manage. Skills and SOUL.md are
-        // intentionally NOT gated by this toggle: skills are part of the
-        // tool surface and SOUL.md is part of identity, both orthogonal
-        // to the memory feature.
-        val globalMemoryFragment = if (memoryOn) memoryRepository?.loadGlobalMemoryFragment() else null
-        val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment() else null
-        // [XSessionDiag] Hypothesis 3: ties the memory-injection sizes to a
-        // SESSION id. MemoryRepository itself has no session context, so its own
-        // `memory/daily-inject` line (which names the source files) cannot say who
-        // received them — this line is the join key between the two. Emitted once
-        // per system-prompt build, not per request iteration.
-        AppLogger.info(
-            "XSessionDiag",
-            "[XSessionDiag] prompt/memory: session=${activeSessionId.take(8)} " +
-                "memoryEnabled=$memoryOn " +
-                "globalChars=${globalMemoryFragment?.length ?: 0} " +
-                "dailyChars=${dailyMemoryFragment?.length ?: 0}",
-        )
 
         return buildString {
             append(base)
@@ -14801,14 +14536,6 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             if (mcpFragment != null) {
                 append("\n\n")
                 append(mcpFragment)
-            }
-            if (globalMemoryFragment != null) {
-                append("\n\n")
-                append(globalMemoryFragment)
-            }
-            if (dailyMemoryFragment != null) {
-                append("\n\n")
-                append(dailyMemoryFragment)
             }
             // Runtime context goes last so the prefix above stays byte-stable
             // across requests within the same day. Keep ordering deterministic
@@ -14821,44 +14548,6 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
     }
 
     // ─── Legacy tool execution methods (kept for compatibility) ───────────
-
-    fun executeMemoryWrite(argsJson: String): MemoryTools.ToolResult {
-        val repo = memoryRepository ?: return MemoryTools.ToolResult("Error: Memory not available", false)
-        if (!_memoryEnabled.value) {
-            return MemoryTools.ToolResult(
-                "Memory writes are disabled for this session. Reads are still available. The user can re-enable writes via the /memory slash command.",
-                false,
-            )
-        }
-        val result = MemoryTools.executeMemoryWrite(argsJson, repo)
-        val content = try {
-            JSONObject(argsJson).optString("content", "")
-        } catch (_: Exception) { "" }
-        _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
-            title = result.toolTitle,
-            isWrite = true,
-            preview = content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: "",
-            output = result.output,
-            writtenContent = content,
-        )
-        return result
-    }
-
-    fun executeMemoryGet(argsJson: String): MemoryTools.ToolResult {
-        val repo = memoryRepository ?: return MemoryTools.ToolResult("Error: Memory not available", false)
-        val result = MemoryTools.executeMemoryGet(argsJson, repo)
-        val keywords = try {
-            JSONObject(argsJson).optString("keywords", "")
-        } catch (_: Exception) { "" }
-        _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
-            title = result.toolTitle,
-            isWrite = false,
-            preview = if (keywords.isNotBlank()) "Search: $keywords" else result.output.take(100),
-            output = result.output,
-            keywords = keywords,
-        )
-        return result
-    }
 
     suspend fun executeBrowserUse(argsJson: String): BrowserToolResult {
         val input = BrowserActionInput.parse(argsJson)
@@ -16388,7 +16077,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
     /**
      * T-android-new-chat-empty-residue: when the user leaves the chat screen,
      * drop sessions that were materialised in the DB (e.g. via a thinking /
-     * memory toggle in `ensureSession()`) but never received a real message.
+     * settings toggle in `ensureSession()`) but never received a real message.
      * Without this hook, tapping "New chat" → toggling a session-scoped
      * setting → exiting leaves an empty row at the top of the session list.
      *
@@ -16988,8 +16677,6 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"
         "read_image" -> "Read Image"
-        "memory_write" -> "Write Memory"
-        "memory_get" -> "Read Memory"
         "web_search" -> "Search Web"
         else -> toolName
             .split('_')

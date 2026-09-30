@@ -273,7 +273,6 @@ import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
@@ -789,50 +788,6 @@ private fun ToolPreviewThumbnail(
                         val lines = displayText.lines()
                         Text(
                             text = lines.takeLast(12).joinToString("\n"),
-                            fontSize = 5.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = toolAccent.copy(alpha = 0.85f),
-                            maxLines = 12,
-                            lineHeight = 6.5.sp,
-                        )
-                    }
-                }
-            }
-
-            "memory_write", "memory_get" -> {
-                // iOS ToolPreviewThumbnail: header = action name, body = last
-                // lines of memory content. memory_write takes content from
-                // toolArgs (the text being saved); memory_get takes it from
-                // block.content (the search result), prefixed with the
-                // queried keywords. Mirrors ToolDetailSheet's resolution
-                // (ChatScreen.kt:4581) so the thumbnail isn't an empty pink
-                // icon while the rest of the UI shows real text.
-                val memContent = if (block.toolName == "memory_write") {
-                    args.optString("content", "")
-                        .ifEmpty { extractPartialJsonString("content", block.toolArgs) ?: "" }
-                        .ifEmpty { block.content }
-                } else {
-                    block.content
-                }
-                val keywords = args.optString("keywords", "")
-                    .ifEmpty { extractPartialJsonString("keywords", block.toolArgs) ?: "" }
-                val displayText = if (block.toolName == "memory_get" && keywords.isNotEmpty()) {
-                    "Keywords: $keywords\n$memContent"
-                } else memContent
-                Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
-                    Text(
-                        text = block.toolName,
-                        fontSize = 7.sp,
-                        lineHeight = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        color = ToolMemoryAccent.copy(alpha = 0.75f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (displayText.isNotEmpty()) {
-                        Text(
-                            text = displayText.lines().takeLast(12).joinToString("\n"),
                             fontSize = 5.5.sp,
                             fontFamily = FontFamily.Monospace,
                             color = toolAccent.copy(alpha = 0.85f),

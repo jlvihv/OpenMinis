@@ -11,8 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * [T-soul-md] Persistent personality / identity file mirroring iOS
  * SoulStore (`src/ios/Agent/Session/SoulStore.swift`, commit 6370d5a).
  *
- * SOUL.md lives next to GLOBAL.md and the daily memory logs under
- * `<filesDir>/minis-global/memory/`. Format: YAML frontmatter delimited
+ * SOUL.md lives under `<filesDir>/minis-global/soul/`.
+ * Format: YAML frontmatter delimited
  * by `---` followed by a Markdown body. The body becomes Layer 1 of the
  * system prompt; `name` + `emoji` drive the chat assistant bubble header.
  *
@@ -211,10 +211,28 @@ object SoulStore {
 
     private const val TAG = "SoulStore"
     private const val FILE_NAME = "SOUL.md"
-    private const val MEMORY_SUBDIR = "minis-global/memory"
+    private const val SOUL_SUBDIR = "minis-global/soul"
+
+    @Synchronized
+    private fun soulDirectory(context: Context): File {
+        val directory = File(context.filesDir, SOUL_SUBDIR).apply { mkdirs() }
+        // Preserve existing personas from installations before memory removal.
+        val legacy = File(context.filesDir, "minis-global/memory")
+        for (name in listOf(FILE_NAME, SoulIcon.SIDECAR_NAME)) {
+            val target = File(directory, name)
+            val source = File(legacy, name)
+            if (!target.exists() && source.isFile) {
+                if (!source.renameTo(target)) {
+                    source.copyTo(target)
+                    source.delete()
+                }
+            }
+        }
+        return directory
+    }
 
     fun fileLocation(context: Context): File =
-        File(File(context.filesDir, MEMORY_SUBDIR), FILE_NAME)
+        File(soulDirectory(context), FILE_NAME)
 
     /**
      * [T-android-soul-icon-sidecar] The PNG holding the avatar's bytes, beside
@@ -234,12 +252,12 @@ object SoulStore {
      *
      * Two objections were recorded against this when the inline form was
      * chosen, and both have since been checked and do not hold:
-     *   - Backup: `BackupExporter.exportMemory` walks the memory directory and
+     *   - Backup: `BackupExporter.exportSoul` walks the persona directory and
      *     copies every file it finds, so a sibling PNG IS backed up.
      *   - Sync: Android has no SOUL sync path at all (SoulV2 is iOS/iCloud).
      */
     fun iconFileLocation(context: Context): File =
-        File(File(context.filesDir, MEMORY_SUBDIR), SoulIcon.SIDECAR_NAME)
+        File(soulDirectory(context), SoulIcon.SIDECAR_NAME)
 
     // -- Body length rules (language-aware) ----------------------------
     //

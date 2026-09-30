@@ -87,7 +87,6 @@ class BackupIosWireShapeTest {
         lastMessage = "done",
         modelBinding = "group:default",
         source = "share",
-        memoryEnabled = 0,
         pinnedAt = 1_758_000_030_000,
         editCount = 3,
         thinkingOverride = "high",
@@ -125,10 +124,11 @@ class BackupIosWireShapeTest {
     fun `a session is nested under session, as iOS's SessionRecord requires`() {
         assertNotNull("iOS decodes rec.session — the key is required", record["session"] as? JsonObject)
         assertNull("nothing of the ChatSession proper may sit at the top", record["id"])
-        for (p in iosSessionRecord.filter { !it.optional }) {
+        // Persistent memory was removed on Android; its retired wrapper flag
+        // is intentionally absent even though older iOS schemas require it.
+        for (p in iosSessionRecord.filter { !it.optional && it.name != "memoryEnabled" }) {
             assertTrue("iOS SessionRecord requires '${p.name}' at the top level", record.containsKey(p.name))
         }
-        assertEquals(false, record["memoryEnabled"]!!.jsonPrimitive.booleanOrNull)
         assertEquals("group:default", record["modelBinding"]!!.jsonPrimitive.content)
     }
 

@@ -176,7 +176,7 @@ class BackupFileTreeExporter(
 
         private const val TAG = "Backup"
 
-        /** Sibling of `shared`/`skills`/`memory`, matching iOS's delivery directory. */
+        /** Sibling of `shared`/`skills`/`soul`, matching iOS's delivery directory. */
         const val BACKUPS_DIR_NAME = "Backups"
     }
 }

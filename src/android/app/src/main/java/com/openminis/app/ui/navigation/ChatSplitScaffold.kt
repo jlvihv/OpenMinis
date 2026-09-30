@@ -846,7 +846,6 @@ fun ChatSplitScaffoldRoute(
     navController: androidx.navigation.NavHostController,
     chatRepository: com.openminis.app.data.repository.ChatRepository,
     providerRepository: com.openminis.app.data.repository.ProviderRepository,
-    memoryRepository: com.openminis.app.data.repository.MemoryRepository?,
     skillRepository: com.openminis.app.data.repository.SkillRepository?,
     mcpRepository: com.openminis.app.data.repository.MCPRepository?,
 ) {
@@ -888,7 +887,6 @@ fun ChatSplitScaffoldRoute(
                 sessionId = sessionId,
                 chatRepository = chatRepository,
                 providerRepository = providerRepository,
-                memoryRepository = memoryRepository,
                 skillRepository = skillRepository,
                 mcpRepository = mcpRepository,
                 // Back inside the pair is the pane navigator's job (it knows

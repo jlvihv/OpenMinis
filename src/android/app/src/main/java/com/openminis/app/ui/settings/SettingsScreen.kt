@@ -83,14 +83,13 @@ fun SettingsScreen(
     onEnvVarsClick: () -> Unit = {},
     onSkillsClick: () -> Unit = {},
     onTerminalClick: () -> Unit = {},
-    onMemoryClick: () -> Unit = {},
-    /** [T-p2-agent-settings] Settings › Agents (delegation on/off), below Memory. */
+    /** [T-p2-agent-settings] Settings › Agents (delegation on/off). */
     onAgentsClick: () -> Unit = {},
     onAgentToolsClick: () -> Unit = {},
     // [T-mcp-integration-android] MCP Integrations page, listed directly below
-    // Memory. Default no-op for callers that haven't wired the route yet.
+    // Default no-op for callers that haven't wired the route yet.
     onMcpClick: () -> Unit = {},
-    // [T-soul-md] Soul settings page lives between Skills and Memory in the
+    // [T-soul-md] Soul settings page lives below Skills in the
     // Agent Runtime section; default no-op for callers that haven't wired
     // the route yet.
     onSoulClick: () -> Unit = {},
@@ -101,7 +100,7 @@ fun SettingsScreen(
     // T219-2: Mount External Folders entry. Default no-op for any caller
     // that hasn't wired the route yet.
     onMountedFoldersClick: () -> Unit = {},
-    // T235: Shared Folders entry (Shared / Skills / Memory). Default no-op
+    // T235: Shared Folders entry (Shared / Skills). Default no-op
     // for back-compat with callers wired before T235.
     onSharedFoldersClick: () -> Unit = {},
     // T50: Background & Notifications screen (battery optimisation +
@@ -180,11 +179,11 @@ fun SettingsScreen(
             // -- Agent Runtime --
             // [T-android-settings-runtime-order] Row order matches iOS
             // (ContentView.swift, Section "Agent Runtime"): Agent Tools, Sub
-            // Agents, Skills, Soul, Memory, MCP, Environment Variables.
+            // Agents, Skills, Soul, MCP, Environment Variables.
             //
             // The order is not alphabetical or historical — it runs from what
             // the agent may DO (tools, and who it may hand work to) to what it
-            // is made OF (skills, identity, memory) and finally to what it
+            // is made OF (skills, identity) and finally to what it
             // connects to (MCP, env). Android had grown its own order simply by
             // appending each row as it landed, which put the two capability
             // switches in the middle of the identity rows.
@@ -211,7 +210,7 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.settings_skills_subtitle),
                     onClick = onSkillsClick,
                 )
-                // [T-soul-md] Between Skills and Memory, as on iOS.
+                // Personality settings.
                 SettingsItem(
                     icon = Icons.Outlined.AutoAwesome,
                     iconColor = Color(0xFFFF9500),
@@ -219,14 +218,7 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.settings_soul_subtitle),
                     onClick = onSoulClick,
                 )
-                SettingsItem(
-                    icon = Icons.Outlined.Psychology,
-                    iconColor = Color(0xFF5856D6),
-                    title = stringResource(R.string.settings_memory),
-                    subtitle = stringResource(R.string.settings_memory_subtitle),
-                    onClick = onMemoryClick,
-                )
-                // [T-mcp-integration-android] MCP Integrations — below Memory.
+                // [T-mcp-integration-android] MCP Integrations.
                 // [T-android-mcp-icon-distinct] Dashboard (2x2 block grid) instead of
                 // Extension so MCP no longer shares the Skills row's puzzle-piece icon —
                 // the grid reads as "multiple composed blocks/servers". teal unchanged.

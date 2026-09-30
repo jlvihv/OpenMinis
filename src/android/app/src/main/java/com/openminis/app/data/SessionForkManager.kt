@@ -7,7 +7,7 @@ import com.openminis.app.logging.AppLogger
 import java.io.File
 
 /**
- * Clone a session (or its skill/memory artifacts) into a fresh local session.
+ * Clone a session (or its skill artifacts) into a fresh local session.
  * Mirrors iOS `SessionForkManager`. Android MVP only implements the **local**
  * branch of the iOS API — `forkSession` (from iCloud-mirrored remote devices)
  * is deferred until we ship a cross-device sync layer; see spec §7.8.
@@ -40,9 +40,6 @@ class SessionForkManager(
      *     a default icon. iOS duplicateSession copies this too.
      *   - `modelBinding` — user-pinned model override; if the source session
      *     was pinned to a specific model, the copy should keep it pinned.
-     *   - `memoryEnabled` — user-toggled per-session; expectation is that
-     *     the copy inherits the source's memory setting rather than
-     *     defaulting to on.
      *
      * Deliberately NOT copied (the duplicate is a new session at creation
      * time, not a clone of the source's lifecycle):
@@ -75,15 +72,9 @@ class SessionForkManager(
         if (source.modelBinding != null) {
             chatRepository.updateSessionBinding(new.id, source.modelBinding, source.modelId)
         }
-        // Carry over the per-session memory toggle. Sessions default
-        // memoryEnabled=1, so we only need to push the disabled state through;
-        // the matching state is already in place from createSession.
-        if (source.memoryEnabled == 0) {
-            chatRepository.dao.updateMemoryEnabled(new.id, 0)
-        }
         // T239: carry over the per-session thinking-mode override so a
         // duplicate of a "tuned to MEDIUM" session opens at MEDIUM rather
-        // than reverting to the default (parity with memoryEnabled).
+        // than reverting to the default.
         source.thinkingOverride?.let { override ->
             chatRepository.dao.updateThinkingOverride(new.id, override)
         }
@@ -161,7 +152,7 @@ class SessionForkManager(
             TAG,
             "duplicated session $sessionId → ${new.id} (${messages.size} msgs, " +
                 "category=${source.category}, modelBinding=${source.modelBinding}, " +
-                "memoryEnabled=${source.memoryEnabled})",
+                ")",
         )
         return new.id
     }
@@ -179,26 +170,6 @@ class SessionForkManager(
         return repo.importFromContent(content, source) != null
     }
 
-    /**
-     * Persist a memory note (plain Markdown / text) under
-     * `<filesDir>/minis-global/memory/<fileName>`. Mirrors iOS
-     * `SessionForkManager.copyRemoteMemory` which writes under
-     * `minisMemoryPersistentDir`. Overwrites if the file already exists.
-     */
-    fun copyMemory(fileName: String, content: String): Boolean {
-        if (fileName.contains("/") || fileName.contains("..")) {
-            AppLogger.warning(TAG, "copyMemory: rejecting unsafe fileName '$fileName'")
-            return false
-        }
-        val dir = File(filesDir, "minis-global/memory").apply { mkdirs() }
-        return try {
-            File(dir, fileName).writeText(content)
-            true
-        } catch (e: Exception) {
-            AppLogger.warning(TAG, "copyMemory: write failed: ${e.message}")
-            false
-        }
-    }
 }
 
 /** Convenience: default-wire against application context. */

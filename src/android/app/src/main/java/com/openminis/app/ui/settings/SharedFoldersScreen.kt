@@ -201,14 +201,6 @@ internal object SharedFolderRegistry {
             icon = Icons.Outlined.AutoAwesome,
             iconColor = Color(0xFFAF52DE),
         ),
-        SharedFolderEntry(
-            id = "memory",
-            nameRes = R.string.shared_folder_name_memory,
-            linuxPath = "/var/minis/memory",
-            writable = false,
-            icon = Icons.Outlined.Psychology,
-            iconColor = Color(0xFFFF2D55),
-        ),
     )
 
     fun find(id: String): SharedFolderEntry? = entries.firstOrNull { it.id == id }

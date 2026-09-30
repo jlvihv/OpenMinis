@@ -18,28 +18,6 @@
     <string name="enabled">Omogućeno</string>
     <string name="select_model">Odaberi model</string>
 
-    <!-- Session Memory Sheet -->
-    <string name="session_memory_title">Memorije u sesiji</string>
-    <string name="memory_section_auto_injected">Automatski umetnuto</string>
-    <string name="memory_section_auto_injected_footer">Učitava se u sistemski prompt na početku svakog Agentovog koraka.</string>
-    <string name="memory_section_tool_activity">Aktivnost alata</string>
-    <string name="memory_section_tool_activity_footer">Čitanja i upisi memorije koje je Agent izvršio tijekom ove sesije.</string>
-    <string name="memory_section_written_content">Zapisani sadržaj</string>
-    <string name="memory_section_tool_result">Rezultat alata</string>
-    <string name="memory_section_keywords">Ključne riječi</string>
-    <string name="memory_action_edit">Uredi</string>
-    <string name="memory_action_save">Spremi</string>
-    <string name="memory_action_revoke">Opozovi</string>
-    <string name="memory_action_back">Natrag</string>
-    <string name="memory_revoke_dialog_title">Opozovi memoriju</string>
-    <string name="memory_revoke_dialog_message">Ukloniti ovaj zapis memorije iz dnevnog zapisa? Radnja se ne može poništiti.</string>
-    <string name="memory_revoke_result_removed">Uklonjeno iz %1$s.md</string>
-    <string name="memory_revoke_result_not_found">Zapis nije pronađen u nedavnim dnevnim zapisima.</string>
-    <string name="memory_revoke_result_io_error">Greška pri pisanju datoteke: %1$s</string>
-    <string name="memory_save_toast">Spremljeno</string>
-    <string name="memory_save_error">Spremanje nije uspjelo: %1$s</string>
-    <string name="memory_global_footer">Trajne upute i postavke koje Agent vidi u svakoj sesiji. Agent ne može mijenjati ovu datoteku.</string>
-
     <!-- Check Update -->
     <string name="check_update_section_header">Ažuriranje aplikacije</string>
     <string name="check_update_current_version">Trenutna verzija: %1$s</string>
@@ -170,8 +148,6 @@
     <string name="settings_section_agent_runtime">Okruženje Agenta</string>
     <string name="settings_skills">Vještine</string>
     <string name="settings_skills_subtitle">Upravljajte vještinama i uputama Minis Agenta</string>
-    <string name="settings_memory">Memorija</string>
-    <string name="settings_memory_subtitle">Trajno znanje kroz sesije</string>
     <!-- [T-mcp-integration-android] MCP Integrations settings entry + management screen -->
     <string name="settings_mcp">MCP integracije</string>
     <string name="settings_mcp_subtitle">Povežite Model Context Protocol poslužitelje</string>
@@ -338,7 +314,7 @@
 
     <!-- T172 — chat sheets i18n (MoveToSessionSheet / OffloadPermissionDialog /
          SessionSkillsSheet / SpeechLanguagePickerSheet / StandardChatSheet /
-         TokenUsageSheet / SessionMemorySheet) -->
+         TokenUsageSheet) -->
     <string name="move_to_sheet_title">Premjesti u…</string>
     <string name="move_to_sheet_empty">Nema drugih dostupnih sesija.</string>
     <string name="move_to_sheet_untitled">Razgovor bez naslova</string>
@@ -395,8 +371,6 @@
     <string name="common_off">Isključeno</string>
     <string name="common_yes">Da</string>
     <string name="common_no">Ne</string>
-    <string name="memory_file_empty">Prazno</string>
-
     <!-- T172 — components / onboarding / preview i18n -->
     <string name="common_close">Zatvori</string>
     <string name="common_skip">Preskoči</string>
@@ -618,7 +592,7 @@
     <string name="terminal_hide_keyboard">Sakrij</string>
 
     <!-- T172 — settings detail screen i18n keys (Appearance, EnvVars, Logs,
-         Memory, Permissions, Skills, MinisSkillsBrowser, Storage, Usage,
+         Permissions, Skills, MinisSkillsBrowser, Storage, Usage,
          MirrorSettings, RootfsManagement). Background uses pre-existing
          T127 battery_opt_* / rom_autostart_* keys. -->
     <string name="common_back">Natrag</string>
@@ -758,18 +732,6 @@
     <string name="log_error_reading">Greška pri čitanju zapisa: %1$s</string>
     <string name="log_share_chooser">Podijeli zapis</string>
     <string name="log_share_all_chooser">Podijeli zapise</string>
-    <string name="memory_title">Memorija</string>
-    <string name="settings_memory_global_header">Zadano</string>
-    <string name="settings_memory_global_footer">Prekidači po sesiji (postavljeni naredbom /memory ili u listu Memorija sesije) nadjačavaju ovu zadanu postavku. Postojeće sesije nisu zahvaćene kad promijenite ovaj prekidač.</string>
-    <string name="settings_memory_global_enabled_title">Memorija omogućena prema zadanom</string>
-    <string name="settings_memory_global_enabled_subtitle">Kad je isključeno, nove sesije prema zadanom preskaču GLOBAL.md i dnevnu memoriju</string>
-    <string name="memory_empty_title">Nema datoteka memorije</string>
-    <string name="memory_empty_description">Datoteke memorije pohranjuju trajno znanje kroz sesije. Uredite GLOBAL.md da dodate upute vidljive Agentu.</string>
-    <string name="memory_section_files">Datoteke</string>
-    <string name="memory_section_footer">GLOBAL.md sadrži trajne upute vidljive Agentu. Dnevni zapisi stvaraju se automatski tijekom razgovora.</string>
-    <string name="memory_delete_confirm_title">Izbrisati %1$s?</string>
-    <string name="memory_delete_confirm_text">Ovo će trajno ukloniti ovaj zapis memorije.</string>
-    <string name="memory_editor_placeholder">Unesite sadržaj…</string>
     <string name="perm_title">Dopuštenja</string>
     <string name="perm_reset_all">Poništi sve</string>
     <string name="perm_reset_confirm_title">Poništiti sva dopuštenja?</string>
@@ -1341,14 +1303,13 @@
     <string name="chat_clear_dialog_body">Ukloniti sve poruke iz ove sesije? Datoteke u radnom prostoru, privici i offloadi ostaju sačuvani.</string>
     <string name="chat_clear_dialog_confirm">Očisti</string>
 
-    <!-- T235 — Shared Folders (fixed: Shared / Skills / Memory) -->
+    <!-- T235 — Shared Folders (fixed: Shared / Skills) -->
     <string name="settings_shared_folders">Dijeljene mape</string>
-    <string name="settings_shared_folders_subtitle">Pregledajte /var/minis shared, skills i memory</string>
+    <string name="settings_shared_folders_subtitle">Pregledajte /var/minis shared i skills</string>
     <string name="shared_folders_title">Dijeljene mape</string>
-    <string name="shared_folders_info_banner">Ovi su direktoriji vidljivi unutar Linux sandboxa. Skills i Memory održavaju alati Minis Agenta — nemojte ih ručno uređivati.</string>
+    <string name="shared_folders_info_banner">Ovi su direktoriji vidljivi unutar Linux sandboxa. Skills održavaju alati Minis Agenta — nemojte ih ručno uređivati.</string>
     <string name="shared_folder_name_shared">Dijeljeno</string>
     <string name="shared_folder_name_skills">Vještine</string>
-    <string name="shared_folder_name_memory">Memorija</string>
     <string name="shared_folder_detail_title">Detalji mape</string>
     <string name="shared_folder_browse_files">Pregledaj datoteke</string>
 
@@ -1366,7 +1327,6 @@
     <string name="backup_category_chats">Razgovori</string>
     <string name="backup_category_shared_files">Dijeljene datoteke</string>
     <string name="backup_category_skills">Vještine</string>
-    <string name="backup_category_memory">Memorija &amp; Soul</string>
     <string name="backup_category_providers">Pružatelji</string>
     <string name="backup_category_mcp">MCP poslužitelji</string>
     <string name="backup_category_env_vars">Varijable okruženja</string>
@@ -1584,8 +1544,6 @@
 
     <!-- T241: slash command panel + Choose Model sheet -->
     <string name="slash_compact_subtitle">Sažmi povijest razgovora u sažetak</string>
-    <string name="slash_memory_writes_on">Zapisivanje uključeno — dodirnite za promjenu</string>
-    <string name="slash_memory_writes_off">Zapisivanje isključeno — dodirnite za promjenu</string>
     <string name="slash_thinking_subtitle">Razmišljanje %1$s — dodirnite za promjenu</string>
     <string name="slash_thinking_unsupported">Trenutni model to ne podržava</string>
     <string name="slash_clear_subtitle">Očisti sve poruke u ovoj sesiji</string>

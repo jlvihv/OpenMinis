@@ -267,7 +267,6 @@ import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
@@ -553,7 +552,6 @@ internal fun FallbackInfoBlock(block: AssistantBlock, onRevert: (() -> Unit)? = 
         // pre-date the dedicated compactor) keep the squeeze for backward
         // visual continuity if any old sessions still hold them.
         "compact" -> Icons.Default.CloseFullscreen
-        "memory" -> Icons.Default.Psychology
         "thinking" -> Icons.Default.Lightbulb
         else -> Icons.Default.Info
     }

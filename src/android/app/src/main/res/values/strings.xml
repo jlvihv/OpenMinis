@@ -19,28 +19,6 @@
     <string name="enabled">Enabled</string>
     <string name="select_model">Select Model</string>
 
-    <!-- Session Memory Sheet -->
-    <string name="session_memory_title">Memories in Session</string>
-    <string name="memory_section_auto_injected">Auto-Injected</string>
-    <string name="memory_section_auto_injected_footer">Loaded into the system prompt at the start of each Agent turn.</string>
-    <string name="memory_section_tool_activity">Tool Activity</string>
-    <string name="memory_section_tool_activity_footer">Memory reads and writes performed by the Agent during this session.</string>
-    <string name="memory_section_written_content">Written Content</string>
-    <string name="memory_section_tool_result">Tool Result</string>
-    <string name="memory_section_keywords">Keywords</string>
-    <string name="memory_action_edit">Edit</string>
-    <string name="memory_action_save">Save</string>
-    <string name="memory_action_revoke">Revoke</string>
-    <string name="memory_action_back">Back</string>
-    <string name="memory_revoke_dialog_title">Revoke Memory</string>
-    <string name="memory_revoke_dialog_message">Remove this memory entry from the daily log? This cannot be undone.</string>
-    <string name="memory_revoke_result_removed">Removed from %1$s.md</string>
-    <string name="memory_revoke_result_not_found">Entry not found in recent daily logs.</string>
-    <string name="memory_revoke_result_io_error">Error writing file: %1$s</string>
-    <string name="memory_save_toast">Saved</string>
-    <string name="memory_save_error">Save failed: %1$s</string>
-    <string name="memory_global_footer">Persistent instructions and preferences visible to the Agent in every session. The Agent cannot modify this file.</string>
-
     <!-- Check Update -->
     <string name="check_update_section_header">App Update</string>
     <string name="check_update_current_version">Current version: %1$s</string>
@@ -185,8 +163,6 @@
     <string name="settings_section_agent_runtime">Agent Runtime</string>
     <string name="settings_skills">Skills</string>
     <string name="settings_skills_subtitle">Manage Minis Agent skills and instructions</string>
-    <string name="settings_memory">Memory</string>
-    <string name="settings_memory_subtitle">Persistent knowledge across sessions</string>
     <!-- [T-mcp-integration-android] MCP Integrations settings entry + management screen -->
     <string name="settings_mcp">MCP Integrations</string>
     <string name="settings_mcp_subtitle">Connect Model Context Protocol servers</string>
@@ -353,7 +329,7 @@
 
     <!-- T172 — chat sheets i18n (MoveToSessionSheet / OffloadPermissionDialog /
          SessionSkillsSheet / SpeechLanguagePickerSheet / StandardChatSheet /
-         TokenUsageSheet / SessionMemorySheet) -->
+         TokenUsageSheet) -->
     <string name="move_to_sheet_title">Move to…</string>
     <string name="move_to_sheet_empty">No other sessions available.</string>
     <string name="move_to_sheet_untitled">Untitled chat</string>
@@ -413,8 +389,6 @@
     <string name="common_off">Off</string>
     <string name="common_yes">Yes</string>
     <string name="common_no">No</string>
-    <string name="memory_file_empty">Empty</string>
-
     <!-- T172 — components / onboarding / preview i18n -->
     <string name="common_close">Close</string>
     <string name="common_skip">Skip</string>
@@ -641,7 +615,7 @@
     <string name="terminal_hide_keyboard">Hide</string>
 
     <!-- T172 — settings detail screen i18n keys (Appearance, EnvVars, Logs,
-         Memory, Permissions, Skills, MinisSkillsBrowser, Storage, Usage,
+         Permissions, Skills, MinisSkillsBrowser, Storage, Usage,
          MirrorSettings, RootfsManagement). Background uses pre-existing
          T127 battery_opt_* / rom_autostart_* keys. -->
     <string name="common_back">Back</string>
@@ -785,18 +759,6 @@
     <string name="log_error_reading">Error reading log: %1$s</string>
     <string name="log_share_chooser">Share Log</string>
     <string name="log_share_all_chooser">Share Logs</string>
-    <string name="memory_title">Memory</string>
-    <string name="settings_memory_global_header">Default</string>
-    <string name="settings_memory_global_footer">Per-session toggles (set via the /memory slash command or the Session Memory sheet) override this default. Existing sessions are not affected when you flip this switch.</string>
-    <string name="settings_memory_global_enabled_title">Memory enabled by default</string>
-    <string name="settings_memory_global_enabled_subtitle">When off, new sessions skip GLOBAL.md and daily memory by default</string>
-    <string name="memory_empty_title">No Memory Files</string>
-    <string name="memory_empty_description">Memory files store persistent knowledge across sessions. Edit GLOBAL.md to add instructions visible to the Agent.</string>
-    <string name="memory_section_files">Files</string>
-    <string name="memory_section_footer">GLOBAL.md contains persistent instructions visible to the Agent. Daily logs are created automatically during conversations.</string>
-    <string name="memory_delete_confirm_title">Delete %1$s?</string>
-    <string name="memory_delete_confirm_text">This will permanently remove this memory log.</string>
-    <string name="memory_editor_placeholder">Enter content…</string>
     <string name="perm_title">Permissions</string>
     <string name="perm_reset_all">Reset All</string>
     <string name="perm_reset_confirm_title">Reset All Permissions?</string>
@@ -1411,14 +1373,13 @@
     <string name="chat_clear_dialog_body">Remove all messages from this session? Files in workspace, attachments, and offloads are kept.</string>
     <string name="chat_clear_dialog_confirm">Clear</string>
 
-    <!-- T235 — Shared Folders (fixed: Shared / Skills / Memory) -->
+    <!-- T235 — Shared Folders (fixed: Shared / Skills) -->
     <string name="settings_shared_folders">Shared Folders</string>
-    <string name="settings_shared_folders_subtitle">Browse /var/minis shared, skills, and memory</string>
+    <string name="settings_shared_folders_subtitle">Browse /var/minis shared and skills</string>
     <string name="shared_folders_title">Shared Folders</string>
-    <string name="shared_folders_info_banner">These directories are visible inside the Linux sandbox. Skills and Memory are maintained by Minis Agent tools — do not edit manually.</string>
+    <string name="shared_folders_info_banner">These directories are visible inside the Linux sandbox. Skills are maintained by Minis Agent tools — do not edit manually.</string>
     <string name="shared_folder_name_shared">Shared</string>
     <string name="shared_folder_name_skills">Skills</string>
-    <string name="shared_folder_name_memory">Memory</string>
     <string name="shared_folder_detail_title">Folder Details</string>
     <string name="shared_folder_browse_files">Browse Files</string>
 
@@ -1436,7 +1397,6 @@
     <string name="backup_category_chats">Chats</string>
     <string name="backup_category_shared_files">Shared Files</string>
     <string name="backup_category_skills">Skills</string>
-    <string name="backup_category_memory">Memory &amp; Soul</string>
     <string name="backup_category_providers">Providers</string>
     <string name="backup_category_mcp">MCP Servers</string>
     <string name="backup_category_env_vars">Environment Variables</string>
@@ -1693,8 +1653,6 @@
 
     <!-- T241: slash command panel + Choose Model sheet -->
     <string name="slash_compact_subtitle">Compress conversation history into summary</string>
-    <string name="slash_memory_writes_on">Writes on — tap to toggle</string>
-    <string name="slash_memory_writes_off">Writes off — tap to toggle</string>
     <string name="slash_thinking_subtitle">Thinking %1$s — tap to toggle</string>
     <string name="slash_thinking_unsupported">Not supported by current model</string>
     <string name="slash_clear_subtitle">Clear all messages in this session</string>

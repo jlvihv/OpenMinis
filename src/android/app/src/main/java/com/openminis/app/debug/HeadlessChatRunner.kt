@@ -85,7 +85,6 @@ internal object HeadlessChatRunner {
                 chatRepository = app.chatRepository,
                 providerRepository = app.providerRepository,
                 appContext = app.applicationContext,
-                memoryRepository = app.memoryRepository,
                 skillRepository = app.skillRepository,
                 mcpRepository = app.mcpRepository,
             ),

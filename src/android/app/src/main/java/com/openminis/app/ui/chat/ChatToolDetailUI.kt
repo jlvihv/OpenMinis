@@ -268,7 +268,6 @@ import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
@@ -1025,34 +1024,6 @@ internal fun ToolDetailSheet(
                         }
                     }
 
-                    // ── Memory: pink editor card (iOS: memoryEditorContent) ──
-                    "memory_write", "memory_get" -> {
-                        // memory_write: content comes from tool args.
-                        // memory_get: content comes from the tool's result text.
-                        val memContent = if (block.toolName == "memory_write") {
-                            toolArgsObj.optString("content", "")
-                                .ifEmpty { extractPartialJsonString("content", block.toolArgs) ?: "" }
-                                .ifEmpty { block.content }
-                        } else {
-                            block.content
-                        }
-                        val keywords = toolArgsObj.optString("keywords", "")
-                            .ifEmpty { extractPartialJsonString("keywords", block.toolArgs) ?: "" }
-                        val prefix = if (keywords.isNotEmpty() && block.toolName == "memory_get")
-                            "Keywords: $keywords\n\n" else ""
-                        EditorCard(
-                            title = block.toolName,
-                            icon = Icons.Default.Psychology,
-                            iconTint = ToolMemoryAccent.copy(alpha = 0.6f),
-                            titleColor = ToolMemoryAccent,
-                            sizeColor = ToolMemoryAccent.copy(alpha = 0.5f),
-                            bodyText = prefix + memContent,
-                            bodyColor = ToolMemoryAccent.copy(alpha = 0.85f),
-                            isStreaming = isLive,
-                            scrollState = outputScrollState,
-                        )
-                    }
-
                     // ── read_image: inline image preview + metadata (iOS parity) ──
                     "read_image" -> {
                         val imgPath = block.imageFilePath
@@ -1400,7 +1371,7 @@ internal fun extractPartialJsonString(key: String, json: String): String? {
 
 // ─── [T-android-tool-result-lazy-render] ────────────────────────────────────
 // Opening a tool-result detail (ToolDetailSheet) with a large payload — a big
-// memory_get / file read — janked: the body was a single Text laid out at once
+// file read — janked: the body was a single Text laid out at once
 // inside a verticalScroll Column (which, like a ScrollView, does NOT virtualize),
 // so the whole 70KB+ string was composed + measured on open. Mirrors iOS
 // commit 9d81ba18 (ToolLiveSheet lazy-reveal).
@@ -1637,7 +1608,7 @@ private fun EditorCard(
                 androidx.compose.foundation.text.selection.SelectionContainer {
                     // [T-android-tool-result-lazy-render] Reveal large bodies
                     // incrementally instead of laying the whole string out on
-                    // open (a 70KB memory_get janked the sheet for seconds).
+                    // open (a 70KB result janked the sheet for seconds).
                     LazyRevealToolText(
                         bodyText = bodyText,
                         color = bodyColor,

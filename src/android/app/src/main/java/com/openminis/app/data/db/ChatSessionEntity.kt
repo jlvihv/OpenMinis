@@ -42,7 +42,6 @@ data class ChatSessionEntity(
     @ColumnInfo(name = "model_binding") val modelBinding: String? = null,
     // iOS parity fields:
     @ColumnInfo(name = "source") val source: String? = null,             // e.g. "shortcut", "share"
-    @ColumnInfo(name = "memory_enabled") val memoryEnabled: Int = 1,     // 1=on, 0=off
     @ColumnInfo(name = "pinned_at") val pinnedAt: Long? = null,          // milliseconds, null=not pinned
     @ColumnInfo(name = "edit_count") val editCount: Int = 0,             // message edit counter
     // T239: per-session thinking-mode override. null = unset (use the

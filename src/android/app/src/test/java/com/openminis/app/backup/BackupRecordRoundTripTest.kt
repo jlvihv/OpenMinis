@@ -83,7 +83,7 @@ class BackupRecordRoundTripTest {
         val s = sessionLike()
         for (key in listOf(
             "id", "title", "modelId", "createdAt", "updatedAt", "lastMessage",
-            "pinnedAt", "folderId", "memoryEnabled", "modelBinding",
+            "pinnedAt", "folderId", "modelBinding",
         )) {
             assertTrue("missing wire key '$key'", key in s)
         }

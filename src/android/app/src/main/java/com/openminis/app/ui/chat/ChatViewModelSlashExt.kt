@@ -3,7 +3,7 @@ package com.openminis.app.ui.chat
 // [T-android-split-chat] Slash-menu STATE methods (filter / open / dismiss /
 // menu-state) extracted from ChatViewModel as extension functions. The action
 // dispatcher executeSlashCommand stays in the class (entangled with compact/
-// thinking/memory). 7 slash-state fields flipped private->internal. Verbatim.
+// thinking). 7 slash-state fields flipped private->internal. Verbatim.
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -42,7 +42,6 @@ import com.openminis.app.data.model.ModelGroup
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.R
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
@@ -54,7 +53,6 @@ import com.openminis.app.tools.AgentTools
 import com.openminis.app.tools.FileEditTool
 import com.openminis.app.tools.FileReadTool
 import com.openminis.app.tools.FileWriteTool
-import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
@@ -106,12 +104,6 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
         when (cmd.id) {
             "compact" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_compact_subtitle),
-            )
-            "memory" -> cmd.copy(
-                subtitle = context.getString(
-                    if (_memoryEnabled.value) R.string.slash_memory_writes_on
-                    else R.string.slash_memory_writes_off,
-                ),
             )
             "thinking" -> cmd.copy(
                 subtitle = if (!currentModelSupportsReasoning) {

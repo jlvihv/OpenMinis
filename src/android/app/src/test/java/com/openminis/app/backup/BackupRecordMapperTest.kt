@@ -34,7 +34,7 @@ class BackupRecordMapperTest {
         id = "S-1", title = "Trip", modelId = "claude-sonnet-5",
         createdAt = at(0), updatedAt = at(60), category = "travel",
         lastMessage = "ok", modelBinding = "group:g1", source = "share",
-        memoryEnabled = 0, pinnedAt = at(30), editCount = 4,
+        pinnedAt = at(30), editCount = 4,
         thinkingOverride = "high", folderId = "F-1",
         parentSessionId = "P-1", parentToolUseId = "toolu_1",
     )
@@ -74,7 +74,6 @@ class BackupRecordMapperTest {
         val e = applied(BackupRecordMapper.session(ios, null))
         assertEquals("S-2", e.id)
         assertEquals("F-9", e.folderId)
-        assertEquals("the wrapper's memoryEnabled applies", 0, e.memoryEnabled)
         assertEquals("group:g1", e.modelBinding)
         assertEquals(0, e.editCount)
         assertNull(e.thinkingOverride)
@@ -88,19 +87,6 @@ class BackupRecordMapperTest {
     }
 
     // -- Sessions: defaults -------------------------------------------------------
-
-    @Test
-    fun `memory stays ON unless the record explicitly says false`() {
-        fun mem(v: String?) = applied(
-            BackupRecordMapper.session(
-                json("""{"id":"S","updatedAt":"1"${v?.let { ""","memoryEnabled":$it""" } ?: ""}}"""), null,
-            ),
-        ).memoryEnabled
-        assertEquals("absent -> on", 1, mem(null))
-        assertEquals("null -> on", 1, mem("null"))
-        assertEquals(1, mem("true"))
-        assertEquals(0, mem("false"))
-    }
 
     @Test
     fun `a missing modelId keeps the local one rather than blanking it`() {

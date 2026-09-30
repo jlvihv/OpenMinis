@@ -1852,7 +1852,7 @@ internal fun categoryNameRes(cat: BackupCategory): Int = when (cat) {
     BackupCategory.CHATS -> R.string.backup_category_chats
     BackupCategory.SHARED_FILES -> R.string.backup_category_shared_files
     BackupCategory.SKILLS -> R.string.backup_category_skills
-    BackupCategory.MEMORY -> R.string.backup_category_memory
+    BackupCategory.SOUL -> R.string.settings_soul
     BackupCategory.PROVIDERS -> R.string.backup_category_providers
     BackupCategory.MCP_SERVERS -> R.string.backup_category_mcp
     BackupCategory.ENVIRONMENT_VARIABLES -> R.string.backup_category_env_vars
@@ -1868,7 +1868,7 @@ private fun categoryIcon(cat: BackupCategory): ImageVector = when (cat) {
     BackupCategory.CHATS -> Icons.Outlined.Forum                 // bubble.left.and.bubble.right
     BackupCategory.SHARED_FILES -> Icons.Outlined.Description    // doc.fill
     BackupCategory.SKILLS -> Icons.Outlined.Extension            // puzzlepiece.fill
-    BackupCategory.MEMORY -> Icons.Outlined.Psychology           // brain.head.profile
+    BackupCategory.SOUL -> Icons.Outlined.Psychology           // brain.head.profile
     BackupCategory.PROVIDERS -> Icons.Outlined.Link              // link
     BackupCategory.MCP_SERVERS -> Icons.Outlined.Layers          // square.stack.3d.up.fill
     BackupCategory.ENVIRONMENT_VARIABLES -> Icons.Outlined.Terminal // terminal.fill
@@ -1880,7 +1880,7 @@ private fun categoryTint(cat: BackupCategory): Color = when (cat) {
     BackupCategory.CHATS -> Color(0xFF007AFF)                 // blue
     BackupCategory.SHARED_FILES -> Color(0xFF5856D6)         // indigo
     BackupCategory.SKILLS -> Color(0xFFFF9500)              // orange
-    BackupCategory.MEMORY -> Color(0xFFFF2D55)             // pink
+    BackupCategory.SOUL -> Color(0xFFFF2D55)             // pink
     BackupCategory.PROVIDERS -> Color(0xFF30B0C7)         // teal
     BackupCategory.MCP_SERVERS -> Color(0xFF32ADE6)      // cyan
     BackupCategory.ENVIRONMENT_VARIABLES -> Color(0xFFA2845E) // brown

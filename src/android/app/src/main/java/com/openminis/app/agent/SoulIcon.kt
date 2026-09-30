@@ -217,7 +217,7 @@ object SoulIcon {
         "/var/minis/workspace",
         "/var/minis/offloads",
         "/var/minis/shared",
-        "/var/minis/memory",
+        "/var/minis/soul",
         "/var/minis/skills",
     )
 

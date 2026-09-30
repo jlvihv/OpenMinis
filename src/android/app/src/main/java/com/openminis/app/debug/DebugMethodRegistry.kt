@@ -603,7 +603,7 @@ object DebugMethodRegistry {
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
             ),
-            returns = "{id, title, modelId, modelName, source, isRunning, memoryEnabled, category, messageCount, createdAt, updatedAt}",
+            returns = "{id, title, modelId, modelName, source, isRunning, category, messageCount, createdAt, updatedAt}",
             example = ex("sessionId" to "6D0F…"),
         ),
         MethodSpec(

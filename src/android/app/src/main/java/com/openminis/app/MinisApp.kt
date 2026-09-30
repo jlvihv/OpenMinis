@@ -21,7 +21,6 @@ import com.openminis.app.data.repository.BackgroundSettingsRepository
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.EnvVarRepository
 import com.openminis.app.data.MountedFoldersStore
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.data.repository.WebAppShortcutRepository
 import com.openminis.app.data.repository.MCPRepository
@@ -155,8 +154,6 @@ class MinisApp : Application(), ImageLoaderFactory {
     lateinit var skillRepository: SkillRepository
         private set
     lateinit var mcpRepository: MCPRepository
-        private set
-    lateinit var memoryRepository: MemoryRepository
         private set
     lateinit var webAppShortcutRepository: WebAppShortcutRepository
         private set
@@ -538,7 +535,6 @@ class MinisApp : Application(), ImageLoaderFactory {
             }
         )
         mcpRepository = MCPRepository(this)
-        memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
         webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
 
         // T-android-safemode-lateinit-crash: every repository the UI layer
@@ -629,7 +625,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // DNS servers after Wi-Fi ↔ cellular swaps or VPN toggles.
         networkMonitor.start(this)
 
-        // Register global /var/minis/{memory,skills,shared} bind mounts up-front
+        // Register global /var/minis/{soul,skills,shared} bind mounts up-front
         // so direct file I/O tools (file_read) resolve these paths even before
         // PRoot has booted or any shell has started.
         PRootKernel.registerGlobalBindMounts(this)

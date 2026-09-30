@@ -298,7 +298,6 @@ import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.agent.jobs.AgentJobRegistry
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
@@ -308,8 +307,6 @@ import com.openminis.app.ui.components.MinisTextButton
 internal val ToolCheckColor = Color(0xFF34C759) // iOS .green
 internal val ToolErrorColor = Color(0xFFFF3B30) // iOS .red
 internal val ToolCancelColor = Color(0xFFFFCC00) // iOS .yellow
-// Memory tool accent — matches iOS `.pink` on SF Symbols.
-internal val ToolMemoryAccent = Color(0xFFFF2D55)
 // Sparkle gradient colors (iOS uses linear gradient)
 internal val SparkleColor1 = Color(0xFFB8B096) // rgb(0.72, 0.69, 0.59)
 internal val SparkleColor2 = Color(0xFF99998C) // rgb(0.6, 0.6, 0.55)
@@ -513,7 +510,6 @@ fun ChatScreen(
     sessionId: String,
     chatRepository: ChatRepository,
     providerRepository: ProviderRepository,
-    memoryRepository: MemoryRepository? = null,
     skillRepository: com.openminis.app.data.repository.SkillRepository? = null,
     mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
     onBack: () -> Unit,
@@ -579,7 +575,6 @@ fun ChatScreen(
             chatRepository = chatRepository,
             providerRepository = providerRepository,
             appContext = context.applicationContext,
-            memoryRepository = memoryRepository,
             skillRepository = skillRepository,
             mcpRepository = mcpRepository,
         ),
@@ -614,8 +609,6 @@ fun ChatScreen(
     // attachment row.
     val pastedTexts by viewModel.pastedTexts.collectAsState()
     val showBrowserSheet by viewModel.showBrowserSheet.collectAsState()
-    val showMemorySheet by viewModel.showMemorySheet.collectAsState()
-    val memoryToolRecords by viewModel.memoryToolRecords.collectAsState()
     val providerName by viewModel.providerName.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -755,7 +748,7 @@ fun ChatScreen(
             // eviction and made `minis-config session.*` report no session.
             ChatViewModelStore.clearActiveSession(sessionId)
             // T-android-new-chat-empty-residue: drop sessions materialised by
-            // a settings toggle (ensureSession via /memory, /thinking, etc.)
+            // a settings toggle (ensureSession via /thinking, etc.)
             // but never sent a real message. VM guards on streaming + DB count
             // so an in-flight agent or non-empty session is left alone.
             // Skip cleanup on configuration changes (e.g. rotation) — the
@@ -3020,13 +3013,6 @@ fun ChatScreen(
                             expanded = showChatMenu,
                             onDismissRequest = { showChatMenu = false },
                         ) {
-                            // [T-android-memory-enabled-minisconfig] Gate the
-                            // "Memories in Session" item below on the session's
-                            // live memoryEnabled — when memory is off the entry
-                            // disappears, consistent with the per-session gating
-                            // of the memory_get / memory_write tools and the
-                            // system-prompt injection.
-                            val menuMemoryEnabled by viewModel.memoryEnabled.collectAsState()
                             // [T-android-menu-icons-ios] Every row's icon goes
                             // through MenuItemIcon (one size, Outlined only) and
                             // follows the iOS SF Symbol for the same item, so the
@@ -3119,19 +3105,6 @@ fun ChatScreen(
                                     },
                                     leadingIcon = {
                                         MenuItemIcon(Icons.Outlined.Handyman)
-                                    },
-                                )
-                            }
-                            // Session Memory (iOS parity)
-                            if (memoryRepository != null && menuMemoryEnabled) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.session_memory_title)) },
-                                    onClick = {
-                                        showChatMenu = false
-                                        viewModel.toggleMemorySheet()
-                                    },
-                                    leadingIcon = {
-                                        MenuItemIcon(Icons.Outlined.Psychology)
                                     },
                                 )
                             }
@@ -4876,14 +4849,12 @@ fun ChatScreen(
                 val filteredSlashCommands = remember(
                     showSlashMenu,
                     viewModel.slashFilter.collectAsState().value,
-                    viewModel.memoryEnabled.collectAsState().value,
                     viewModel.thinkingLevel.collectAsState().value,
                 ) { viewModel.filteredSlashCommands() }
 
                 if (showSlashMenu && filteredSlashCommands.isNotEmpty()) {
                     val thinkingLevelState by viewModel.thinkingLevel.collectAsState()
                     val thinkingSupported = viewModel.currentModelSupportsReasoning
-                    val memoryOnState by viewModel.memoryEnabled.collectAsState()
                     androidx.compose.ui.window.Popup(
                         popupPositionProvider = remember {
                             object : androidx.compose.ui.window.PopupPositionProvider {
@@ -5064,14 +5035,6 @@ fun ChatScreen(
                                             color = subtitleColor,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                    if (cmd.id == "memory") {
-                                        Icon(
-                                            imageVector = if (memoryOnState) Icons.Default.CheckCircle else Icons.Default.Block,
-                                            contentDescription = null,
-                                            tint = if (memoryOnState) ChatColors.sendButton else ChatColors.secondaryText,
-                                            modifier = Modifier.size(18.dp),
                                         )
                                     }
                                     if (isThinking && thinkingSupported) {
@@ -7092,17 +7055,6 @@ fun ChatScreen(
         TokenUsageSheet(
             viewModel = viewModel,
             onDismiss = { showTokenUsageSheet = false },
-        )
-    }
-
-    // Memory bottom sheet
-    if (showMemorySheet && memoryRepository != null) {
-        SessionMemorySheet(
-            memoryRepository = memoryRepository,
-            toolRecords = memoryToolRecords,
-            onDismiss = { viewModel.dismissMemorySheet() },
-            onRevokeRecord = { record -> viewModel.revokeMemoryRecord(record) },
-            onSaveRecord = { record, newContent -> viewModel.replaceMemoryRecord(record, newContent) },
         )
     }
 

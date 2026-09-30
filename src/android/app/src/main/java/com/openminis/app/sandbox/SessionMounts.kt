@@ -17,7 +17,7 @@ import java.io.File
  * global map — including the interactive terminal, which replayed it
  * verbatim and so showed a random session's files. The per-session mounts
  * now live only in the argv of the shell that owns them; the global map keeps
- * only what is genuinely global (`memory`, `skills`, `shared`, `mcp-servers`,
+ * only what is genuinely global (`soul`, `skills`, `shared`, `mcp-servers`,
  * `mounts/<name>`).
  *
  * A directory that cannot be created is left OUT of the mounts, with an error
@@ -33,7 +33,7 @@ object SessionMounts {
     val SESSION_SUBDIRS = listOf("attachments", "offloads", "workspace", "browser")
 
     /** Subdirs under `minis-global/`, shared by every session. */
-    val GLOBAL_SUBDIRS = listOf("memory", "skills", "shared", "mcp-servers")
+    val GLOBAL_SUBDIRS = listOf("soul", "skills", "shared", "mcp-servers")
 
     /**
      * Soft ceiling on the bytes the `-b` arguments add to PRoot's argv. The

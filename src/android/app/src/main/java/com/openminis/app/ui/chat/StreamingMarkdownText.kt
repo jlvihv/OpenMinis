@@ -3043,7 +3043,7 @@ internal fun resolveMdMediaFile(context: Context, url: String, sessionId: String
             }
         }
     }
-    // Also probe `minis-global/<subdir>` for shared/memory/skills buckets.
+    // Also probe `minis-global/<subdir>` for shared/soul/skills buckets.
     val globalCandidate = File(context.filesDir, "minis-global/$subdir/$basename")
     if (globalCandidate.exists() && globalCandidate.isFile) {
         android.util.Log.d("MdStream", "resolveMdMediaFile url=$url -> global=${globalCandidate.absolutePath}")

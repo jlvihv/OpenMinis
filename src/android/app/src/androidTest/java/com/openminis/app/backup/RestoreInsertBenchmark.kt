@@ -53,7 +53,7 @@ class RestoreInsertBenchmark {
     private fun session(i: Int) = ChatSessionEntity(
         id = "s$i", title = "t$i", modelId = "m",
         createdAt = 1L, updatedAt = 1L, category = null, lastMessage = null,
-        modelBinding = null, source = null, memoryEnabled = 1, pinnedAt = null,
+        modelBinding = null, source = null, pinnedAt = null,
         editCount = 0, thinkingOverride = null, folderId = null,
         parentSessionId = null, parentToolUseId = null,
     )

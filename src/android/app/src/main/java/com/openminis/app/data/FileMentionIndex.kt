@@ -21,7 +21,7 @@ import java.util.UUID
  *
  * ### Layers
  *   1. **Session roots** — `workspace/<sid>` + `attachments/<sid>`.
- *   2. **Shared roots** — `shared/`, `skills/`, `memory/`.
+ *   2. **Shared roots** — `shared/`, `skills/`.
  *   3. **Mount roots** — each entry in [mountsProvider] (e.g. SAF-attached
  *      folders). Each mount always gets a self-entry so `@<mountName>` works.
  *
@@ -50,7 +50,7 @@ class FileMentionIndex(
      * (lower wins) AND drives `rankBoost`'s scope tiebreaker on top of the
      * name-match score. The case order here mirrors the iOS counterpart in
      * `FileMentionIndex.swift`:
-     *   skills > attachments > mount > shared > workspace > memory.
+     *   skills > attachments > mount > shared > workspace.
      *
      * `rankBoost` is added to the per-name score with a max delta (600) that
      * is smaller than the gap between adjacent name-match tiers (1000), so a
@@ -63,7 +63,6 @@ class FileMentionIndex(
         MOUNT("mount", 2, 400),
         SHARED("shared", 3, 300),
         WORKSPACE("workspace", 4, 200),
-        MEMORY("memory", 5, 100),
     }
 
     data class MountEntry(val name: String, val root: File)
@@ -135,7 +134,6 @@ class FileMentionIndex(
                 layers = listOf(
                     File(filesDir, "shared") to Scope.SHARED,
                     File(filesDir, "skills") to Scope.SKILLS,
-                    File(filesDir, "memory") to Scope.MEMORY,
                 ),
                 linuxRootFor = { scope -> "/var/minis/${scope.displayLabel}" },
             ).let { newBatch ->
