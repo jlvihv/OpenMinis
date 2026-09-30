@@ -107,7 +107,7 @@ internal class FreshProcessShell(
         // process and lets EOF end the loop naturally.
         val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
         val readEof = java.util.concurrent.atomic.AtomicBoolean(false)
-        val watchdog = kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        val watchdog = com.openminis.app.util.processCoroutineScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(timeout)
             // [T-android-mcp-detached-daemon-hang] Do NOT gate this on
             // `process.isAlive`.
@@ -158,7 +158,7 @@ internal class FreshProcessShell(
         // proot (and the daemon) alone.
         val lastReadAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
         val closedOnStatus = java.util.concurrent.atomic.AtomicBoolean(false)
-        val monitor = kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        val monitor = com.openminis.app.util.processCoroutineScope.launch(Dispatchers.IO) {
             while (!statusFile.exists()) {
                 if (readEof.get()) return@launch
                 kotlinx.coroutines.delay(STATUS_POLL_MS)

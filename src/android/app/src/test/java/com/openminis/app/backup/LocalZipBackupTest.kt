@@ -9,7 +9,7 @@ class LocalZipBackupTest {
     @Test fun `local backup is a standard zip`() {
         assertEquals("zip", BackupFormat.FILE_EXTENSION)
         assertEquals("application/zip", BackupFormat.MIME_TYPE)
-        val dir = createTempDir(prefix = "local-backup-")
+        val dir = kotlin.io.path.createTempDirectory("local-backup-").toFile()
         try {
             val input = File(dir, "input").apply { mkdirs() }
             File(input, "manifest.json").writeText("{}")

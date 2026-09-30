@@ -57,11 +57,11 @@ class ExhaustedCompactionAbsenceTest {
     @Test
     fun `the notice strings did not come back in any locale`() {
         val root = ProductionSources.mainRoot()!!
-        val res = File(root.parentFile.parentFile.parentFile.parentFile, "res") // src/main/res
+        val res = File(root.toPath().parent.parent.parent.parent.toFile(), "res") // src/main/res
         assertTrue("res dir not found at ${res.absolutePath}", res.isDirectory)
         val offenders = res.walkTopDown()
             .filter { it.isFile && it.name == "strings.xml" && it.readText().contains("compact_last_resort") }
-            .map { it.parentFile.name }.toList()
+            .map { it.toPath().parent.fileName.toString() }.toList()
         assertTrue("compact_last_resort strings present in: $offenders", offenders.isEmpty())
     }
 

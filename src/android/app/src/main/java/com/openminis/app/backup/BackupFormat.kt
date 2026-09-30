@@ -61,6 +61,7 @@ object Iso8601MillisSerializer : KSerializer<Long> {
  * as `Date?`). null round-trips as JSON null; otherwise identical rules —
  * writes ISO-8601, reads ISO strings or legacy epoch-millis numbers.
  */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 object Iso8601MillisNullableSerializer : KSerializer<Long?> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("Iso8601MillisNullable", PrimitiveKind.STRING)

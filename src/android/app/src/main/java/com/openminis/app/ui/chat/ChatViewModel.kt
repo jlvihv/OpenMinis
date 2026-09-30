@@ -11361,7 +11361,7 @@ class ChatViewModel(
                                 }
                     }
                     val next = nextCandidate?.provider
-                    if (next != null && nextCandidate != null) {
+                    if (next != null) {
                         val reason = when {
                             isRateLimit -> "Rate limited"
                             actual is com.openminis.app.data.model.LLMError.ProviderError -> actual.detail
@@ -16427,7 +16427,7 @@ class ChatViewModel(
                         // rather than aborting the message: losing one pasted
                         // block is recoverable, failing to build the request is
                         // not.
-                        if (PastedMedia.isPastedRef(mime, v.optString("originalFileName", null))) {
+                        if (PastedMedia.isPastedRef(mime, v.optString("originalFileName").takeUnless { v.isNull("originalFileName") })) {
                             val pf = java.io.File(mediaStore.mediaBaseDir, rel)
                             val body = try {
                                 if (pf.exists()) pf.readText(Charsets.UTF_8) else null

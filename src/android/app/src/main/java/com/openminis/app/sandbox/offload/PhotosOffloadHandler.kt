@@ -975,9 +975,7 @@ class PhotosOffloadHandler(private val context: Context) : NativeOffloadHandler 
                 } else contentUri
                 val coords = try {
                     context.contentResolver.openInputStream(uriToRead)?.use { input ->
-                        val exif = ExifInterface(input)
-                        val ll = FloatArray(2)
-                        if (exif.getLatLong(ll)) doubleArrayOf(ll[0].toDouble(), ll[1].toDouble()) else null
+                        ExifInterface(input).latLong
                     }
                 } catch (_: Throwable) { null } ?: continue
 

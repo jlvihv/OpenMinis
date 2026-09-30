@@ -283,7 +283,7 @@ private fun MCPFormTab(
     val context = LocalContext.current
     val isEdit = editServer != null
     // [T-mcp-server-export-android] Clipboard for "Copy JSON".
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val clipboard = com.openminis.app.ui.components.rememberTextClipboard()
     // [T-mcp-env-var-picker-android] App env var keys for the STDIO env picker.
     val appEnvEntries by (envVarRepository?.entries
         ?.collectAsState() ?: remember { mutableStateOf(emptyList<com.openminis.app.data.repository.EnvVarRepository.EnvVarEntry>()) })

@@ -85,7 +85,7 @@ fun <T> SectionDropdown(
                 readOnly = true,
                 enabled = enabled,
                 modifier = Modifier
-                    .menuAnchor()
+                    .menuAnchor(androidx.compose.material3.MenuAnchorType.PrimaryNotEditable, enabled)
                     .fillMaxWidth()
                     .heightIn(min = SectionDesign.RowMinHeight),
                 textStyle = mergedTextStyle.copy(color = MaterialTheme.colorScheme.onSurface),
@@ -109,7 +109,7 @@ fun <T> SectionDropdown(
                             )
                         },
                         container = {
-                            OutlinedTextFieldDefaults.ContainerBox(
+                            OutlinedTextFieldDefaults.Container(
                                 enabled = enabled,
                                 isError = false,
                                 interactionSource = interactionSource,

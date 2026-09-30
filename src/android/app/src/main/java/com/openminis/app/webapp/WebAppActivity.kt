@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import com.openminis.app.util.makeSystemBarsTransparent
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -113,8 +114,7 @@ class WebAppActivity : ComponentActivity() {
         // transparent so the WebView truly bleeds edge-to-edge instead of
         // sitting under an opaque status-bar strip.
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        window.makeSystemBarsTransparent()
         WindowInsetsControllerCompat(window, window.decorView).apply {
             // Default to light (white) icons since arbitrary WebApp content
             // could be either light or dark — the dark scrim behind the
@@ -480,6 +480,7 @@ class WebAppActivity : ComponentActivity() {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
+    @Suppress("DEPRECATION") // Explicitly disable legacy file-origin access on older WebViews.
     private fun configureWebView(webView: WebView) {
         webView.settings.apply {
             javaScriptEnabled = true

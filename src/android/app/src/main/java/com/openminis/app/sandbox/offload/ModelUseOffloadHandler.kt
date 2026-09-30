@@ -1235,7 +1235,7 @@ class ModelUseOffloadHandler(
                     "minis-model-use run: cannot resolve --output '$outputPath'\n",
                 )
             val outputIsMedia = isImageExt(outputExt)
-            if (firstMedia != null && outputIsMedia) {
+            if (outputIsMedia) {
                 hostFile.parentFile?.mkdirs()
                 hostFile.writeBytes(firstMedia.data)
                 logModelUseWrite(outputPath, hostFile, sessionId)

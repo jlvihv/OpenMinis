@@ -120,7 +120,14 @@ class VoiceActivityDetector(private val context: Context, private val listener: 
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(size * 4, 8192))
             recorder = rec
             check(rec.state == AudioRecord.STATE_INITIALIZED)
-            rec.startRecording()
+            try {
+                rec.startRecording()
+            } catch (e: Exception) {
+                if (MicInUse.captureFailure(context, rec.audioSessionId) == RecognitionError.MIC_IN_USE) {
+                    listener.onMicInUse(e.message ?: "Microphone in use")
+                }
+                throw e
+            }
             synchronized(lock) { pcm.reset() }
             isRunning = true
             CoroutineScope(Dispatchers.IO).launch {

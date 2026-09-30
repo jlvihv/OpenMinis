@@ -88,7 +88,7 @@ class TtsLocaleResolverTest {
         val l = TtsLocaleResolver.resolve(
             "你好，今天过得怎么样？",
             appLanguageTag = null,
-            systemLocale = Locale(""),
+            systemLocale = Locale.ROOT,
         )
         assertEquals("zh", l.language)
     }
@@ -145,7 +145,7 @@ class TtsLocaleResolverTest {
         // no app language -> script
         assertEquals(
             "ko",
-            TtsLocaleResolver.resolve("안녕하세요", appLanguageTag = "", systemLocale = Locale("")).language,
+            TtsLocaleResolver.resolve("안녕하세요", appLanguageTag = "", systemLocale = Locale.ROOT).language,
         )
         // no app language, no script -> system
         assertEquals(
@@ -155,7 +155,7 @@ class TtsLocaleResolverTest {
         // nothing at all -> US
         assertEquals(
             Locale.US,
-            TtsLocaleResolver.resolve("Hello", appLanguageTag = null, systemLocale = Locale("")),
+            TtsLocaleResolver.resolve("Hello", appLanguageTag = null, systemLocale = Locale.ROOT),
         )
     }
 
@@ -193,7 +193,7 @@ class TtsLocaleResolverTest {
         // A system locale with no language at all must not be handed to the engine.
         assertEquals(
             Locale.US,
-            TtsLocaleResolver.resolve("Hello", appLanguageTag = null, systemLocale = Locale(""))
+            TtsLocaleResolver.resolve("Hello", appLanguageTag = null, systemLocale = Locale.ROOT)
         )
     }
 
@@ -239,14 +239,14 @@ class TtsLocaleResolverTest {
     @Test
     fun `candidates degrade from region-qualified to bare language`() {
         assertEquals(
-            listOf(Locale("pt", "BR"), Locale("pt")),
-            TtsLocaleResolver.candidates(Locale("pt", "BR")),
+            listOf(Locale.forLanguageTag("pt-BR"), Locale.forLanguageTag("pt")),
+            TtsLocaleResolver.candidates(Locale.forLanguageTag("pt-BR")),
         )
     }
 
     /** A bare language offers exactly one candidate — no pointless retry. */
     @Test
     fun `a bare language yields a single candidate`() {
-        assertEquals(listOf(Locale("es")), TtsLocaleResolver.candidates(Locale("es")))
+        assertEquals(listOf(Locale.forLanguageTag("es")), TtsLocaleResolver.candidates(Locale.forLanguageTag("es")))
     }
 }

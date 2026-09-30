@@ -243,7 +243,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -670,7 +670,7 @@ private fun CompactSummarySheet(
     onDismiss: () -> Unit,
     onRevert: (() -> Unit)? = null,
 ) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val clipboard = rememberTextClipboard()
     var copied by remember { mutableStateOf(false) }
     var showRevertConfirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()

@@ -8,7 +8,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import com.openminis.app.util.processCoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -552,7 +552,7 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
                 // Give the loopback callback up to 1.5s to land —
                 // covers the race where xAI's redirect arrives a beat
                 // after the Custom Tab dismisses.
-                GlobalScope.launch {
+                processCoroutineScope.launch {
                     delay(1500)
                     val server = loginCallbackServer ?: return@launch
                     Log.w(TAG, "App resumed without OAuth callback — treating as user dismissal, stopping server")

@@ -2443,7 +2443,6 @@ class ProviderRepository(private val context: Context) {
                     // picker never offers an embedding or internal model that
                     // would fail on first send.
                     ProviderType.githubCopilot -> {
-                        if (context == null) emptyList() else {
                             // [T-android-copilot-model-capabilities] Carry the
                             // window/output/vision/reasoning fields Copilot
                             // already reports. Dropping them left every Copilot
@@ -2487,7 +2486,6 @@ class ProviderRepository(private val context: Context) {
                                         } else listOf("text"),
                                     )
                                 }
-                        }
                     }
                     // [T-android-provider-type-parity] No models endpoint to
                     // query for a type this build cannot drive; the instance

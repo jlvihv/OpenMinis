@@ -126,21 +126,20 @@ object TtsLocaleResolver {
         if (KANA.containsMatchIn(text)) return Locale.JAPANESE
         if (HANGUL.containsMatchIn(text)) return Locale.KOREAN
         if (HAN.containsMatchIn(text)) return Locale.SIMPLIFIED_CHINESE
-        if (CYRILLIC.containsMatchIn(text)) return Locale("ru")
-        if (GREEK.containsMatchIn(text)) return Locale("el")
-        if (THAI.containsMatchIn(text)) return Locale("th")
-        if (HEBREW.containsMatchIn(text)) return Locale("he")
-        if (ARABIC.containsMatchIn(text)) return Locale("ar")
-        if (DEVANAGARI.containsMatchIn(text)) return Locale("hi")
+        if (CYRILLIC.containsMatchIn(text)) return Locale.forLanguageTag("ru")
+        if (GREEK.containsMatchIn(text)) return Locale.forLanguageTag("el")
+        if (THAI.containsMatchIn(text)) return Locale.forLanguageTag("th")
+        if (HEBREW.containsMatchIn(text)) return Locale.forLanguageTag("he")
+        if (ARABIC.containsMatchIn(text)) return Locale.forLanguageTag("ar")
+        if (DEVANAGARI.containsMatchIn(text)) return Locale.forLanguageTag("hi")
         return null
     }
 
     /**
      * Parse a tag the way the Appearance picker stores it.
      *
-     * Mirrors `LocaleWrap.parseLocale`: bare codes (`es`, `de`) go through the
-     * `Locale(code)` constructor, anything with a separator (`zh-Hant`,
-     * `pt-BR`) through `forLanguageTag`.
+     * Mirrors `LocaleWrap.parseLocale`: bare codes and region/script tags all
+     * use `Locale.forLanguageTag`, normalising underscores to hyphens.
      *
      * Indonesian is deliberately NOT special-cased. Android normalises the tag
      * to the legacy `in` internally while the JVM reports `id` (and maps
@@ -153,11 +152,7 @@ object TtsLocaleResolver {
         val code = tag?.trim().orEmpty()
         if (code.isEmpty()) return null
         return runCatching {
-            if ('-' in code || '_' in code) {
-                Locale.forLanguageTag(code.replace('_', '-'))
-            } else {
-                Locale(code)
-            }
+            Locale.forLanguageTag(code.replace('_', '-'))
         }.getOrNull()?.takeIf { it.language.isNotBlank() }
     }
 
@@ -175,7 +170,7 @@ object TtsLocaleResolver {
         val out = LinkedHashSet<Locale>()
         out.add(locale)
         if (locale.country.isNotBlank() || locale.variant.isNotBlank()) {
-            out.add(Locale(locale.language))
+            out.add(Locale.forLanguageTag(locale.language))
         }
         return out.toList()
     }

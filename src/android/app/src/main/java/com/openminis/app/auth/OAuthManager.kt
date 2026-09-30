@@ -5,7 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import com.openminis.app.util.processCoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -222,7 +222,7 @@ abstract class OAuthManager(
                 onComplete(false)
                 return@OAuthCallbackServer
             }
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            processCoroutineScope.launch(Dispatchers.IO) {
                 // [T-android-oauth-foreground-exchange] See OAuthForegroundGate.
                 OAuthForegroundGate.awaitForeground(TAG)
                 val success = exchangeCode(code)

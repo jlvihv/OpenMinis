@@ -79,7 +79,7 @@ class MicInUseTest {
     @Test
     fun `the message exists in every language that has it on iOS, plus Traditional Chinese`() {
         for (dir in listOf("values", "values-zh", "values-zh-rTW", "values-hr")) {
-            val xml = java.io.File(ProductionSources.mainRoot()!!.parentFile.parentFile.parentFile.parentFile, "res/$dir/strings.xml").readText()
+            val xml = java.io.File(ProductionSources.mainRoot()!!.toPath().parent.parent.parent.parent.toFile(), "res/$dir/strings.xml").readText()
             assertTrue("$dir voice_mic_in_use", xml.contains("name=\"voice_mic_in_use\""))
             assertTrue("$dir voice_mic_unavailable", xml.contains("name=\"voice_mic_unavailable\""))
         }

@@ -65,7 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -424,7 +424,7 @@ private fun MdText(
     }
     val inlineCodeBg = currentMdColors().inlineCodeBg
     val urlClickHandler = LocalMarkdownUrlClickHandler.current
-    val clipboardManager = LocalClipboardManager.current
+    val clipboardManager = rememberTextClipboard()
     val haptics = LocalHapticFeedback.current
     val context = LocalContext.current
     val hasUrlAnnotation = remember(text) { text.getStringAnnotations("url", 0, text.length).isNotEmpty() }
@@ -2362,7 +2362,7 @@ private fun RenderBlock(block: MdBlock) {
         }
 
         is MdBlock.CodeBlock -> {
-            val clipboardManager = LocalClipboardManager.current
+            val clipboardManager = rememberTextClipboard()
             var copied by remember { mutableStateOf(false) }
             if (copied) {
                 LaunchedEffect(Unit) {

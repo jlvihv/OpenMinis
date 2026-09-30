@@ -54,7 +54,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -2105,7 +2105,7 @@ private fun SessionItemContent(
                     },
                     leadingIcon = {
                         Icon(
-                            if (isFiled) Icons.Default.DriveFileMove
+                            if (isFiled) Icons.AutoMirrored.Filled.DriveFileMove
                             else Icons.Default.Folder,
                             contentDescription = null,
                         )
@@ -2881,21 +2881,36 @@ private fun SessionRow(
             verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
             val titleText = session.title ?: "New Chat"
-            if (searchQuery.isNotBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (searchQuery.isNotBlank()) {
+                    Text(
+                        text = highlightedAnnotatedString(titleText, searchQuery),
+                        modifier = Modifier.weight(1f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Text(
+                        text = titleText,
+                        modifier = Modifier.weight(1f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
-                    text = highlightedAnnotatedString(titleText, searchQuery),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else {
-                Text(
-                    text = titleText,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    text = timeText,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.outline,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -2922,12 +2937,6 @@ private fun SessionRow(
             }
         }
 
-        // Relative timestamp
-        Text(
-            text = timeText,
-            fontSize = 13.sp,
-            color = MaterialTheme.colorScheme.outline,
-        )
     }
 }
 

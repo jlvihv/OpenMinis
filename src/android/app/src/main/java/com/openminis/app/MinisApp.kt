@@ -1055,6 +1055,7 @@ class MinisApp : Application(), ImageLoaderFactory {
      * healthy devices, and re-rendering formulas on every mild dip would trade a
      * real user-visible cost for little memory.
      */
+    @Suppress("DEPRECATION") // Older Android versions still deliver the legacy trim levels.
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
 

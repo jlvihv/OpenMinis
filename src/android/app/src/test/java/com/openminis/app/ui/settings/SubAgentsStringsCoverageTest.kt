@@ -17,7 +17,7 @@ import org.junit.Test
  */
 class SubAgentsStringsCoverageTest {
 
-    private val res = java.io.File(ProductionSources.mainRoot()!!.parentFile.parentFile.parentFile.parentFile, "res")
+    private val res = java.io.File(ProductionSources.mainRoot()!!.toPath().parent.parent.parent.parent.toFile(), "res")
 
     private fun strings(dir: String): Map<String, String> {
         val xml = java.io.File(res, "$dir/strings.xml").readText()

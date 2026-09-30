@@ -27,8 +27,8 @@ data class ScheduledRun(
     companion object {
         fun fromJson(o: JSONObject): ScheduledRun = ScheduledRun(
             firedAt = o.optLong("firedAt"),
-            sessionId = if (o.has("sessionId")) o.optString("sessionId", null) else null,
-            preview = if (o.has("preview")) o.optString("preview", null) else null,
+            sessionId = if (o.has("sessionId")) o.optString("sessionId").takeUnless { o.isNull("sessionId") } else null,
+            preview = if (o.has("preview")) o.optString("preview").takeUnless { o.isNull("preview") } else null,
             ok = o.optBoolean("ok", true),
         )
     }
@@ -366,9 +366,9 @@ data class ScheduledTask(
             customDays = o.optString("customDays", "")
                 .split(',').mapNotNull { it.trim().toIntOrNull() }.toSet(),
             prompt = o.optString("prompt", ""),
-            targetMode = ScheduledTargetMode.decode(o.optString("targetMode", null)),
-            modelId = if (o.has("modelId")) o.optString("modelId", null) else null,
-            modelBinding = if (o.has("modelBinding")) o.optString("modelBinding", null) else null,
+            targetMode = ScheduledTargetMode.decode(o.optString("targetMode").takeUnless { o.isNull("targetMode") }),
+            modelId = if (o.has("modelId")) o.optString("modelId").takeUnless { o.isNull("modelId") } else null,
+            modelBinding = if (o.has("modelBinding")) o.optString("modelBinding").takeUnless { o.isNull("modelBinding") } else null,
             thinkingLevel = o.optString("thinkingLevel", "").takeIf { it.isNotEmpty() }
                 ?.let { ThinkingLevel.parseOrNull(it) },
             prefillToolCall = PrefilledToolCall.fromJson(o.optJSONObject("prefillToolCall")),
@@ -378,9 +378,9 @@ data class ScheduledTask(
             endDateMs = if (o.has("endDateMs")) o.optLong("endDateMs") else null,
             lastFiredAt = if (o.has("lastFiredAt")) o.optLong("lastFiredAt") else null,
             lastResultPreview = if (o.has("lastResultPreview"))
-                o.optString("lastResultPreview", null) else null,
+                o.optString("lastResultPreview").takeUnless { o.isNull("lastResultPreview") } else null,
             lastResultSessionId = if (o.has("lastResultSessionId"))
-                o.optString("lastResultSessionId", null) else null,
+                o.optString("lastResultSessionId").takeUnless { o.isNull("lastResultSessionId") } else null,
             runHistory = o.optJSONArray("runHistory")?.let { arr ->
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -397,7 +397,7 @@ data class ScheduledTask(
             delaySec = if (o.has("delaySec")) o.optLong("delaySec") else null,
             intervalSec = if (o.has("intervalSec")) o.optLong("intervalSec") else null,
             maxFires = if (o.has("maxFires")) o.optInt("maxFires") else null,
-            onCompletionOf = if (o.has("onCompletionOf")) o.optString("onCompletionOf", null) else null,
+            onCompletionOf = if (o.has("onCompletionOf")) o.optString("onCompletionOf").takeUnless { o.isNull("onCompletionOf") } else null,
             anchorMs = if (o.has("anchorMs")) o.optLong("anchorMs") else null,
             triggeredCount = if (o.has("triggeredCount")) o.optInt("triggeredCount") else null,
         )

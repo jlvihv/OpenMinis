@@ -80,6 +80,8 @@ android {
 
     packaging {
         jniLibs {
+            // Match extractNativeLibs=true: PRoot loads/executables need extracted libraries.
+            useLegacyPackaging = true
             // The vendored ARM32 PRoot loader has 4 KB ELF LOAD segments.
             // Our rootfs is aarch64; keep this optional loader out of the APK
             // until it can be rebuilt with 16 KB alignment.
@@ -277,7 +279,7 @@ dependencies {
     //
     // 1.2.0, not the newer 1.3.0: 1.3.0 hard-requires compileSdk 37 AND
     // Android Gradle Plugin 9.1.0, and this module is on compileSdk 36 /
-    // AGP 8.7.3 — it fails at configuration time, not with a warning. Moving
+    // AGP 8.10.1 — it fails at configuration time, not with a warning. Moving
     // either is a separate, much larger change. 1.2.0 is stable and carries
     // NavigableListDetailPaneScaffold, which is all this needs.
     //

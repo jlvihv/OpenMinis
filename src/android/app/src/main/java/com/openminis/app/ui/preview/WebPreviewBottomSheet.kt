@@ -26,7 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddToHomeScreen
+import androidx.compose.material.icons.automirrored.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.ExpandMore
@@ -413,7 +413,7 @@ internal fun WebPreviewToolbar(
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text(stringResource(R.string.webpreview_pin_to_home)) },
                         leadingIcon = {
-                            Icon(Icons.Default.AddToHomeScreen, contentDescription = null)
+                            Icon(Icons.AutoMirrored.Filled.AddToHomeScreen, contentDescription = null)
                         },
                         onClick = {
                             menuOpen = false

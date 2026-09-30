@@ -66,10 +66,6 @@ object LocaleWrap {
      */
     private fun parseLocale(code: String): Locale? {
         if (code.isBlank()) return null
-        return if ('-' in code || '_' in code) {
-            Locale.forLanguageTag(code.replace('_', '-'))
-        } else {
-            Locale(code)
-        }
+        return Locale.forLanguageTag(code.replace('_', '-'))
     }
 }

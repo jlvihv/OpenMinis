@@ -343,7 +343,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
             obj.put("scrollable", n.isScrollable)
             obj.put("editable", n.isEditable)
             obj.put("checkable", n.isCheckable)
-            obj.put("checked", n.isChecked)
+            obj.put("checked", nodeIsChecked(n))
             obj.put("focusable", n.isFocusable)
             obj.put("focused", n.isFocused)
             obj.put("selected", n.isSelected)
@@ -397,7 +397,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
         if (args.hasFlag("clickable") && !n.isClickable) return false
         if (args.hasFlag("editable") && !n.isEditable) return false
         if (args.hasFlag("scrollable") && !n.isScrollable) return false
-        if (args.hasFlag("checked") && !n.isChecked) return false
+        if (args.hasFlag("checked") && !nodeIsChecked(n)) return false
         if (args.hasFlag("enabled") && !n.isEnabled) return false
         return true
     }
@@ -1186,13 +1186,22 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
                 .put("type", node.className?.toString() ?: "")
                 .put("label", node.contentDescription?.toString() ?: node.hintText?.toString() ?: "")
             if (node.isEditable) obj.put("value", node.text?.toString() ?: "")
-            if (node.isCheckable) obj.put("checked", node.isChecked)
+            if (node.isCheckable) obj.put("checked", nodeIsChecked(node))
             arr.put(obj)
         }
         for (i in 0 until node.childCount) collectFormFields(node.getChild(i), maxDepth, depth + 1, arr, registry)
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
+
+    /** API 36 adds tri-state checked values; preserve the CLI's boolean contract. */
+    @Suppress("DEPRECATION") // isChecked is required on Android 8–15.
+    private fun nodeIsChecked(node: AccessibilityNodeInfo): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= 36) {
+            node.checked == AccessibilityNodeInfo.CHECKED_STATE_TRUE
+        } else {
+            node.isChecked
+        }
 
     private class NotRunning(msg: String) : RuntimeException(msg)
 

@@ -11,7 +11,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Velocity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -119,12 +118,18 @@ class IosBounceOverscrollEffect(
      *  `Modifier.overscroll(effect)` to render the rubber band — we move the
      *  laid-out content vertically without resizing it, which preserves the
      *  inner scrollable's measured size. */
-    override val effectModifier: Modifier = Modifier.layout { measurable, constraints ->
-        val placeable = measurable.measure(constraints)
-        layout(placeable.width, placeable.height) {
-            placeable.placeRelative(0, offset.value.toInt())
+    override val node: androidx.compose.ui.node.DelegatableNode =
+        object : Modifier.Node(), androidx.compose.ui.node.LayoutModifierNode {
+            override fun androidx.compose.ui.layout.MeasureScope.measure(
+                measurable: androidx.compose.ui.layout.Measurable,
+                constraints: androidx.compose.ui.unit.Constraints,
+            ): androidx.compose.ui.layout.MeasureResult {
+                val placeable = measurable.measure(constraints)
+                return layout(placeable.width, placeable.height) {
+                    placeable.placeRelative(0, offset.value.toInt())
+                }
+            }
         }
-    }
 }
 
 /**

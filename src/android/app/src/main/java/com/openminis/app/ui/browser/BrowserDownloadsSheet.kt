@@ -18,7 +18,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -213,7 +213,7 @@ private fun DownloadRow(
             BrowserTabPool.DownloadState.COMPLETED -> {
                 IconButton(onClick = onOpen) {
                     Icon(
-                        Icons.Default.OpenInNew,
+                        Icons.AutoMirrored.Filled.OpenInNew,
                         contentDescription = stringResource(R.string.browser_downloads_open),
                         tint = MaterialTheme.colorScheme.primary,
                     )

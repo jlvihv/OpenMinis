@@ -34,7 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -64,7 +64,7 @@ fun EnvironmentVariablesScreen(
     // sheet so the user only has to paste the value.
     var prefill by remember { mutableStateOf<DeepLinkCoordinator.EnvVarCreate?>(null) }
     val visibleKeys = remember { mutableStateOf(setOf<String>()) }
-    val clipboardManager = LocalClipboardManager.current
+    val clipboardManager = rememberTextClipboard()
 
     LaunchedEffect(Unit) {
         DeepLinkCoordinator.consumePendingEnvVarCreate()?.let {

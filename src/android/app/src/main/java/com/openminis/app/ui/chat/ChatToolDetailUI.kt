@@ -244,7 +244,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -359,7 +359,7 @@ internal fun ToolDetailSheet(
                 //    browser (or any chooser) and continue from there.
                 //  - everything else → still copies the tool output to
                 //    clipboard.
-                val clipboardManager = LocalClipboardManager.current
+                val clipboardManager = rememberTextClipboard()
                 val actionContext = LocalContext.current
                 var copyDone by remember { mutableStateOf(false) }
                 val isShellTool = block.toolName == "shell_execute"
@@ -914,7 +914,7 @@ internal fun ToolDetailSheet(
                                         )
                                     }
                                     if (resolvedUrl.isNotEmpty()) {
-                                        val clipboardManager = LocalClipboardManager.current
+                                        val clipboardManager = rememberTextClipboard()
                                         // iOS CopyableURLCapsule: Color(white: 0.85) fill,
                                         // Color(white: 0.35) text — distinct pill against sheet bg.
                                         Text(

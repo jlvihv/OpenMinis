@@ -24,7 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
@@ -200,7 +200,7 @@ private fun providerIcon(type: ProviderType): Pair<ImageVector, Color> = when (t
     ProviderType.openAI -> Icons.Default.Hub to Color(0xFF4CAF50)           // green
     ProviderType.anthropic -> Icons.Default.AutoAwesome to Color(0xFFAB47BC) // purple
     ProviderType.gemini -> Icons.Default.Diamond to Color(0xFF42A5F5)        // blue
-    ProviderType.openRouter -> Icons.Default.AltRoute to Color(0xFF00BCD4)    // cyan
+    ProviderType.openRouter -> Icons.AutoMirrored.Filled.AltRoute to Color(0xFF00BCD4)    // cyan
     ProviderType.xAI -> Icons.Default.FlashOn to Color(0xFFFF7043)           // orange — Grok visual cue
     // [T-kimi-oauth] Indigo — matches iOS's Kimi accent.
     ProviderType.kimiCode -> Icons.Default.Terminal to Color(0xFF5C6BC0)

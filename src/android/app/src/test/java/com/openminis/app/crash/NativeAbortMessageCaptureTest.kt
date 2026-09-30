@@ -27,7 +27,7 @@ class NativeAbortMessageCaptureTest {
         val javaRoot = ProductionSources.mainRoot()
             ?: error("production source root not found")
         // .../src/main/java/com/openminis/app -> .../src/main/cpp
-        val cpp = File(javaRoot.parentFile.parentFile.parentFile.parentFile, "cpp/crash_handler.cpp")
+        val cpp = File(javaRoot.toPath().parent.parent.parent.parent.toFile(), "cpp/crash_handler.cpp")
         require(cpp.isFile) { "crash_handler.cpp missing: ${cpp.absolutePath}" }
         cpp.readText()
     }

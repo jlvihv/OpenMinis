@@ -22,6 +22,7 @@ import org.junit.Test
  * within PROCESS_BUDGET; the rest queue without losing their own timeout, a
  * start failure re-queues, and a queued command's result carries a note.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class GlobalShellThrottleTest {
 
     /** Models /proc: running commands add to [live]; [baseline] is anything else. */

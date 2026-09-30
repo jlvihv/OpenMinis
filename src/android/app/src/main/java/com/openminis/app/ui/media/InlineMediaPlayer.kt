@@ -1,5 +1,7 @@
 package com.openminis.app.ui.media
 
+import com.openminis.app.util.makeSystemBarsTransparent
+
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
@@ -358,8 +360,7 @@ private fun FullscreenVideoContent(file: File, onDismiss: () -> Unit) {
                     android.view.WindowManager.LayoutParams.MATCH_PARENT,
                 )
                 window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK))
-                window.statusBarColor = android.graphics.Color.TRANSPARENT
-                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                window.makeSystemBarsTransparent()
             } catch (_: Throwable) {}
             val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
             originalLightStatusBars = controller.isAppearanceLightStatusBars

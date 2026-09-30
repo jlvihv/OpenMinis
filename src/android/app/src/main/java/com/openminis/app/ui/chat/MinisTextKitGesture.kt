@@ -46,7 +46,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.positionOnScreen
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -1003,7 +1003,7 @@ fun MinisSelectionToolbarHost(
             atCursor = menuPoint != null,
         )
     }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberTextClipboard()
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val context = androidx.compose.ui.platform.LocalContext.current
     Popup(

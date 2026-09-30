@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 fun rememberReopenOnResume(onReopen: () -> Unit): () -> Unit {
     var pending by rememberSaveable { mutableStateOf(false) }
     val latestOnReopen by rememberUpdatedState(onReopen)
-    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     DisposableEffect(owner) {
         val observer = LifecycleEventObserver { _, event ->

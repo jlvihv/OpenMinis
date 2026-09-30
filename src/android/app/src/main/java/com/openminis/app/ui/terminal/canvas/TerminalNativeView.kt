@@ -81,7 +81,9 @@ class TerminalNativeView @JvmOverloads constructor(
 
     private val basePaint = Paint().apply {
         this.typeface = this@TerminalNativeView.typeface
-        textSize = 13f * resources.displayMetrics.scaledDensity
+        textSize = android.util.TypedValue.applyDimension(
+            android.util.TypedValue.COMPLEX_UNIT_SP, 13f, resources.displayMetrics,
+        )
         isAntiAlias = true
         isSubpixelText = true
     }
@@ -124,7 +126,9 @@ class TerminalNativeView @JvmOverloads constructor(
     }
 
     fun setFontSizeSp(sp: Float) {
-        basePaint.textSize = sp * resources.displayMetrics.scaledDensity
+        basePaint.textSize = android.util.TypedValue.applyDimension(
+            android.util.TypedValue.COMPLEX_UNIT_SP, sp, resources.displayMetrics,
+        )
         recomputeMetrics()
         requestLayout()
         invalidate()

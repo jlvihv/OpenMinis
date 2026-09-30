@@ -243,7 +243,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.platform.LocalClipboardManager
+import com.openminis.app.ui.components.rememberTextClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -587,7 +587,7 @@ internal fun BoundsTrackedBlock(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun InlineErrorBanner(error: String, onRetry: (() -> Unit)? = null) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberTextClipboard()
     Row(
         modifier = Modifier
             .fillMaxWidth()

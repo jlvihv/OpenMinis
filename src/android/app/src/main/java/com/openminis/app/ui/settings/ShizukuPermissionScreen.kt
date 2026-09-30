@@ -7,7 +7,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.Launch
+import androidx.compose.material.icons.automirrored.filled.Launch
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
@@ -249,7 +249,7 @@ private data class ShizukuCapability(
 private val ShizukuCapabilities: List<ShizukuCapability> = listOf(
     ShizukuCapability("package", R.string.shizuku_cap_package_desc, Icons.Default.Apps),
     ShizukuCapability("permission", R.string.shizuku_cap_permission_desc, Icons.Default.Lock),
-    ShizukuCapability("activity", R.string.shizuku_cap_activity_desc, Icons.Default.Launch),
+    ShizukuCapability("activity", R.string.shizuku_cap_activity_desc, Icons.AutoMirrored.Filled.Launch),
     ShizukuCapability("display", R.string.shizuku_cap_display_desc, Icons.Default.Fullscreen),
     ShizukuCapability("settings", R.string.shizuku_cap_settings_desc, Icons.Default.Settings),
     ShizukuCapability("user", R.string.shizuku_cap_user_desc, Icons.Default.Person),

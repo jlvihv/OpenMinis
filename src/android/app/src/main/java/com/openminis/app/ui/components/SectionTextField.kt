@@ -176,7 +176,7 @@ fun SectionTextField(
                     colors = colors,
                     contentPadding = contentPadding,
                     container = {
-                        OutlinedTextFieldDefaults.ContainerBox(
+                        OutlinedTextFieldDefaults.Container(
                             enabled = enabled,
                             isError = isError,
                             interactionSource = interactionSource,
