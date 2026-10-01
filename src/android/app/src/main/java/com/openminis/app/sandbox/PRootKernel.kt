@@ -2,11 +2,8 @@ package com.openminis.app.sandbox
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.storage.StorageManager
-import android.provider.DocumentsContract
 import android.util.Log
 import kotlinx.coroutines.sync.withLock
 import com.openminis.app.data.FileMentionIndex
@@ -310,10 +307,7 @@ object PRootKernel {
      * a mount. Idempotent — call from boot + after every CRUD on the
      * store.
      *
-     * Mounts whose tree URI doesn't decode to a POSIX path readable by
-     * us (cloud-only providers, `Android/data/<otherPkg>` under strict
-     * scoped storage, etc.) are skipped silently — surfacing an error
-     * is the responsibility of the picker UI in T219-2.
+     * Phone storage is bound only while enabled and authorized.
      */
     fun applyMountedFoldersSnapshot(context: Context) {
         val store = mountedFoldersStore
@@ -322,8 +316,7 @@ object PRootKernel {
         } else {
             store.entries.value
                 .mapNotNull { entry ->
-                    val host = (if (entry.isSharedStorage) MountedFoldersStore.sharedStorageRoot(context)
-                        else resolveTreeUriToHostPath(entry.treeUri, context)) ?: return@mapNotNull null
+                    val host = MountedFoldersStore.sharedStorageRoot(context) ?: return@mapNotNull null
                     "$MOUNTS_LINUX_PREFIX${entry.name}" to host
                 }
                 .toMap()
@@ -368,7 +361,7 @@ object PRootKernel {
             Log.w(
                 TAG,
                 "applyMountedFoldersSnapshot: ${entryCount - desired.size} mount(s) dropped — host path " +
-                    "unresolved or unreadable (see resolveTreeUriToHostPath warnings above)",
+                    "unresolved or unreadable (check shared-storage permission)",
             )
         }
     }
@@ -416,100 +409,18 @@ object PRootKernel {
      * uses honest "Locked / Unlocked" wording. Defense-in-depth via a
      * shell-level wrapper is tracked as T219-4 follow-up (optional).
      */
-    fun isLinuxPathUnderReadOnlyMount(linuxPath: String): Boolean {
-        if (!linuxPath.startsWith(MOUNTS_LINUX_PREFIX)) return false
-        val store = mountedFoldersStore ?: return false
-        val rest = linuxPath.removePrefix(MOUNTS_LINUX_PREFIX)
-        val name = rest.substringBefore('/')
-        if (name.isEmpty()) return false
-        val entry = store.entries.value.firstOrNull { it.name == name } ?: return false
-        return !entry.effectiveWritable
-    }
+    fun isLinuxPathUnderReadOnlyMount(linuxPath: String): Boolean =
+        mountedFoldersStore?.let { MountedFolderCoordinator.isLinuxPathUnderReadOnlyMount(linuxPath, it) } ?: false
 
     /**
-     * Snapshot of mount roots for the @-mention index. Skips entries
-     * whose tree URI doesn't resolve to a POSIX path on this device.
+     * Phone shared-storage root for the @-mention index, when authorized.
      */
     fun mountEntriesForIndex(context: Context): List<FileMentionIndex.MountEntry> {
         val store = mountedFoldersStore ?: return emptyList()
         return store.entries.value.mapNotNull { entry ->
-            val host = (if (entry.isSharedStorage) MountedFoldersStore.sharedStorageRoot(context)
-                else resolveTreeUriToHostPath(entry.treeUri, context)) ?: return@mapNotNull null
+            val host = MountedFoldersStore.sharedStorageRoot(context) ?: return@mapNotNull null
             FileMentionIndex.MountEntry(name = entry.name, root = File(host))
         }
-    }
-
-    /**
-     * Decode a SAF tree URI (the `content://com.android.externalstorage.documents/tree/<volume>:<rel>`
-     * form returned by `ACTION_OPEN_DOCUMENT_TREE`) into an absolute POSIX
-     * path on the host filesystem so PRoot's `-b` flag can bind it. This
-     * is "Option A" from the T219 spec: the dominant Obsidian-vault /
-     * Downloads / DCIM use cases all live under `/storage/emulated/0` or
-     * a removable volume's mount directory and are openable directly by
-     * our app uid.
-     *
-     * Returns null when:
-     *   - the URI is from a non-`externalstorage` provider (Drive,
-     *     Dropbox, OneDrive — those have no POSIX path),
-     *   - the volume id can't be resolved (rare — likely a removed
-     *     SD card),
-     *   - the resolved path doesn't exist or isn't readable by us
-     *     (e.g. another app's `Android/data/<pkg>` under strict scoped
-     *     storage).
-     *
-     * Workers A's later `MountedFolderCoordinator` will likely hoist
-     * this exact algorithm into the data layer with a `resolvedHostPath`
-     * cache field on `MountedFoldersStore.Entry`. Kept inline here so
-     * T219-3 can ship before A finishes.
-     */
-    private fun resolveTreeUriToHostPath(treeUriString: String, context: Context): String? = try {
-        val treeUri = Uri.parse(treeUriString)
-        if (treeUri.authority != "com.android.externalstorage.documents") {
-            null
-        } else {
-            val docId = DocumentsContract.getTreeDocumentId(treeUri)
-            val parts = docId.split(':', limit = 2)
-            val volumeId = parts.getOrNull(0).orEmpty()
-            val relPath = parts.getOrNull(1).orEmpty()
-            val volumeRoot = resolveVolumeRoot(volumeId, context)
-            if (volumeRoot == null) {
-                Log.w(TAG, "resolveTreeUriToHostPath: unknown volume '$volumeId' for $treeUriString")
-                null
-            } else {
-                val candidate = if (relPath.isEmpty()) File(volumeRoot) else File(volumeRoot, relPath)
-                // Diagnose the common "mounted folder reads empty" failure: the
-                // resolved host dir exists but the app process (raw POSIX, via
-                // proot) can't readdir it because the ROM only grants the
-                // /mnt/runtime/default FUSE view. list() returning null == EACCES.
-                if (candidate.exists() && candidate.canRead()) {
-                    val childCount = candidate.list()?.size
-                    if (childCount == null) {
-                        Log.w(
-                            TAG,
-                            "resolveTreeUriToHostPath: host=${candidate.absolutePath} canRead=true " +
-                                "but list() returned null (readdir EACCES / scoped-storage filtered) — " +
-                                "mount will appear empty. ${storageAccessDiag(context)}",
-                        )
-                    } else {
-                        Log.i(
-                            TAG,
-                            "resolveTreeUriToHostPath: host=${candidate.absolutePath} readable childCount=$childCount",
-                        )
-                    }
-                    candidate.absolutePath
-                } else {
-                    Log.w(
-                        TAG,
-                        "resolveTreeUriToHostPath: host=${candidate.absolutePath} " +
-                            "exists=${candidate.exists()} canRead=${candidate.canRead()} — bind skipped",
-                    )
-                    null
-                }
-            }
-        }
-    } catch (t: Throwable) {
-        Log.w(TAG, "resolveTreeUriToHostPath failed for $treeUriString: ${t.message}")
-        null
     }
 
     /**
@@ -542,23 +453,6 @@ object PRootKernel {
                 "sdk=$sdk legacyStorageGranted=$granted legacyExtStorageOptIn=$legacyOptIn"
             }
         }
-    }
-
-    private fun resolveVolumeRoot(volumeId: String, context: Context): String? {
-        if (volumeId.equals("primary", ignoreCase = true) || volumeId.isEmpty()) {
-            return Environment.getExternalStorageDirectory()?.absolutePath
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager ?: return null
-            for (volume in sm.storageVolumes) {
-                if (volume.uuid?.equals(volumeId, ignoreCase = true) == true) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        return volume.directory?.absolutePath
-                    }
-                }
-            }
-        }
-        return null
     }
 
     /**

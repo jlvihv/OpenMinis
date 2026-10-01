@@ -55,7 +55,6 @@ import com.openminis.app.ui.settings.StorageManagementScreen
 import com.openminis.app.ui.settings.SkillFileViewerScreen
 import com.openminis.app.ui.settings.UsageStatsScreen
 import com.openminis.app.ui.settings.MinisSkillsBrowserScreen
-import com.openminis.app.ui.settings.MountDetailScreen
 import com.openminis.app.ui.settings.MountedFoldersScreen
 import com.openminis.app.ui.settings.SharedFolderDetailScreen
 import com.openminis.app.ui.settings.SharedFoldersScreen
@@ -182,8 +181,6 @@ object Routes {
     const val ONBOARDING_MODELS = "onboarding_models"
     /** T219-2: Mount external folders settings + detail. */
     const val MOUNTED_FOLDERS = "mounted_folders"
-    const val MOUNTED_FOLDERS_DETAIL = "mounted_folders_detail/{mountId}"
-    fun mountedFoldersDetail(mountId: String) = "mounted_folders_detail/$mountId"
     /** T235: Shared folders (Shared / Skills) — fixed list. */
     const val SHARED_FOLDERS = "shared_folders"
     const val SHARED_FOLDERS_DETAIL = "shared_folders_detail/{folderId}"
@@ -689,40 +686,16 @@ fun AppNavigation(
             MountedFoldersScreen(
                 store = mountedFoldersStore,
                 onBack = { navController.safePopBackStack() },
-                onMountClick = { mountId ->
-                    navController.safeNavigate(Routes.mountedFoldersDetail(mountId))
-                },
-            )
-        }
-
-        composable(
-            route = Routes.MOUNTED_FOLDERS_DETAIL,
-            arguments = listOf(navArgument("mountId") { type = NavType.StringType }),
-        ) { backStackEntry ->
-            val mountId = backStackEntry.arguments?.getString("mountId") ?: return@composable
-            val context = androidx.compose.ui.platform.LocalContext.current
-            MountDetailScreen(
-                store = mountedFoldersStore,
-                mountId = mountId,
-                onBack = { navController.safePopBackStack() },
                 onBrowseFiles = {
-                    val entry = mountedFoldersStore.entries.value.firstOrNull { it.id == mountId }
-                    val hostPath = entry?.resolvedHostPath
-                    if (hostPath != null) {
+                    val host = mountedFoldersStore.entries.value.firstOrNull()?.resolvedHostPath
+                    if (host != null) {
                         FilePreviewHolder.fileBrowserViewModel = FileBrowserViewModel(
-                            rootPath = java.io.File(hostPath),
-                            rootLabel = entry.name,
+                            rootPath = java.io.File(host),
+                            rootLabel = "phone",
+                            linuxRootPath = com.openminis.app.data.MountedFoldersStore.LINUX_PATH,
+                            appContext = context.applicationContext,
                         )
                         navController.safeNavigate(Routes.FILE_BROWSER)
-                    } else {
-                        // resolvedHostPath null = SAF tree from a non-externalstorage
-                        // provider (cloud / Drive). Picker normally rejects these at
-                        // add time, so this is a defensive fallback.
-                        android.widget.Toast.makeText(
-                            context,
-                            "Mount path unavailable",
-                            android.widget.Toast.LENGTH_SHORT,
-                        ).show()
                     }
                 },
             )

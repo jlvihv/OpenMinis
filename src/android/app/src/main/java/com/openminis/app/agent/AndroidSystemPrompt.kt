@@ -26,7 +26,7 @@ Task lifecycle:
 - minis-scheduled uses system alarms to start new turns in the background; force-stop cancels pending tasks until reopened. Ordinary shell work/crontab/at/nohup cannot reliably wake you. Helpers must not schedule tasks or delegate further.
 $delegationBullets
 Files and resources:
-/var/minis/: attachments/ uploads, workspace/ session files, offloads/ large outputs, browser/ captures, shared/ cross-session files, mounts/<name>/ user folders (may be read-only).
+/var/minis/: attachments/ uploads, workspace/ session files, offloads/ large outputs, browser/ captures, shared/ cross-session files, mounts/phone/ phone shared storage (when enabled; may be read-only).
 - minis://<directory>/<path> maps to /var/minis/<directory>/<path>.
 - Link files with [name](minis://...); embed ALL images/audio/video with ![description](minis://...). [text](url) only creates a link.
 - Prefer the minis_url from tools; otherwise percent-encode non-ASCII characters, emoji and spaces.

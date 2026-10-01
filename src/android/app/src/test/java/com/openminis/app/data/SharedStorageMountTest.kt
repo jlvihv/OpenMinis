@@ -1,35 +1,37 @@
 package com.openminis.app.data
 
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
 
 class SharedStorageMountTest {
-    private val json = Json { encodeDefaults = true }
-
-    @Test fun existingSafMountsRemainCompatible() {
-        val entry = json.decodeFromString<MountedFoldersStore.Entry>(
-            """{"name":"docs","sourceDisplayName":"Documents","treeUri":"content://example/tree/docs"}"""
+    @Test fun legacyFolderGrantsNeverBecomeWholeStorageGrants() {
+        val settings = MountedFoldersStore.decodeSettings(
+            """[{"name":"docs","treeUri":"content://example/tree/docs","userAllowWrite":true}]"""
         )
-        assertFalse(entry.isSharedStorage)
-        assertTrue(entry.effectiveWritable)
+        assertFalse(settings.enabled)
     }
 
-    @Test fun sharedStorageChoiceAndReadOnlyIntentSurviveReload() {
-        val entry = MountedFoldersStore.Entry(name = "phone", sourceDisplayName = "/storage/emulated/0",
-            treeUri = "", isSharedStorage = true, resolvedHostPath = "/storage/emulated/0",
-            isWritable = true, userAllowWrite = false)
-        val restored = json.decodeFromString<MountedFoldersStore.Entry>(json.encodeToString(entry))
-        assertTrue(restored.isSharedStorage)
-        assertEquals(entry.id, restored.id)
-        assertFalse(restored.effectiveWritable)
-        assertEquals(entry.resolvedHostPath, restored.resolvedHostPath)
+    @Test fun existingSharedStorageChoiceSurvivesMigration() {
+        val settings = MountedFoldersStore.decodeSettings(
+            """[{"name":"phone-2","isSharedStorage":true,"userAllowWrite":false}]"""
+        )
+        assertTrue(settings.enabled)
+        assertFalse(settings.allowWrite)
     }
 
-    @Test fun sharedStorageNameDoesNotClashWithPickedFolders() {
-        assertEquals("phone", MountedFoldersStore.sharedStorageMountName(emptyList()))
-        assertEquals("phone-2", MountedFoldersStore.sharedStorageMountName(listOf("PHONE")))
-        assertEquals("phone-3", MountedFoldersStore.sharedStorageMountName(listOf("phone", "Phone-2")))
+    @Test fun newSettingsSurviveReload() {
+        val settings = MountedFoldersStore.decodeSettings("""{"enabled":true,"allowWrite":false}""")
+        assertTrue(settings.enabled)
+        assertFalse(settings.allowWrite)
+        assertFalse(MountedFoldersStore.decodeSettings("[]").enabled)
+    }
+
+    @Test fun onlyOneFixedPathAndReadOnlyIntent() {
+        val entry = MountedFoldersStore.Entry("/storage/emulated/0", isWritable = true, userAllowWrite = false)
+        assertEquals("phone", entry.name)
+        assertEquals("phone", entry.id)
+        assertEquals("/var/minis/mounts/phone", MountedFoldersStore.LINUX_PATH)
+        assertFalse(entry.effectiveWritable)
+        assertFalse(entry.copy(isWritable = false, userAllowWrite = true).effectiveWritable)
     }
 }

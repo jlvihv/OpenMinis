@@ -2090,5 +2090,6 @@
     <string name="mount_shared_storage_message">将共享存储挂载到 %1$s，让 AI 整理下载、照片和文档。其他应用的私有数据及安卓受保护目录仍不可访问。可随时取消挂载。</string>
     <string name="mount_shared_storage_confirm">挂载</string>
     <string name="mount_shared_storage_grant">授权文件访问</string>
-    <string name="mount_shared_storage_failed">无法访问共享存储，请检查文件访问权限和可用挂载数量。</string>
+    <string name="mount_shared_storage_subtitle">管理 AI 对手机文件的访问</string>
+    <string name="mount_shared_storage_failed">无法访问共享存储或保存设置，请检查文件访问权限。</string>
 </resources>

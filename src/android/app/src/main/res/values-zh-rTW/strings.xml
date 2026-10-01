@@ -2065,5 +2065,6 @@
     <string name="mount_shared_storage_message">將共用儲存空間掛載到 %1$s，讓 AI 整理下載、照片和文件。其他應用程式的私人資料及 Android 受保護目錄仍無法存取。可隨時取消掛載。</string>
     <string name="mount_shared_storage_confirm">掛載</string>
     <string name="mount_shared_storage_grant">授權檔案存取</string>
-    <string name="mount_shared_storage_failed">無法存取共用儲存空間，請檢查檔案存取權限及可用掛載數量。</string>
+    <string name="mount_shared_storage_subtitle">管理 AI 對手機檔案的存取</string>
+    <string name="mount_shared_storage_failed">無法存取共用儲存空間或儲存設定，請檢查檔案存取權限。</string>
 </resources>

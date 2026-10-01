@@ -2281,5 +2281,6 @@
     <string name="mount_shared_storage_message">Expose shared storage under %1$s so AI can organize downloads, photos and documents. Other apps\' private data and protected Android folders remain inaccessible. You can unmount it at any time.</string>
     <string name="mount_shared_storage_confirm">Mount</string>
     <string name="mount_shared_storage_grant">Grant file access</string>
-    <string name="mount_shared_storage_failed">Cannot access shared storage. Check file access permission and available mount slots.</string>
+    <string name="mount_shared_storage_subtitle">Manage AI access to phone files</string>
+    <string name="mount_shared_storage_failed">Cannot access shared storage or save settings. Check file access permission.</string>
 </resources>

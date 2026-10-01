@@ -128,8 +128,5 @@ object SessionMounts {
     }
 
     private fun externalMountsSnapshot(): List<Pair<String, String>> =
-        PRootKernel.mountedFoldersStore?.entries?.value.orEmpty().mapNotNull { entry ->
-            val host = entry.resolvedHostPath ?: return@mapNotNull null
-            "/var/minis/mounts/${entry.name}" to host
-        }
+        PRootKernel.mountedFoldersStore?.let { MountedFolderCoordinator.bindMountSpecs(it) } ?: emptyList()
 }

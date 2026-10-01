@@ -258,8 +258,8 @@ fun SettingsScreen(
                 SettingsItem(
                     icon = Icons.Outlined.FolderShared,
                     iconColor = Color(0xFFFF9500),
-                    title = stringResource(R.string.settings_mount_external_folders),
-                    subtitle = stringResource(R.string.settings_mount_external_folders_subtitle),
+                    title = stringResource(R.string.mount_shared_storage),
+                    subtitle = stringResource(R.string.mount_shared_storage_subtitle),
                     onClick = onMountedFoldersClick,
                 )
                 SettingsItem(
