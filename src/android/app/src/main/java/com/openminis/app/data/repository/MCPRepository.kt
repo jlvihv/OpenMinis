@@ -436,19 +436,19 @@ class MCPRepository(private val context: Context) {
      * [MAX_MCPS_IN_PROMPT] sorted by recent-add (createdAt desc — Android has
      * no server-side use tracking; the CLI owns invocation). Notes are
      * truncated at [MAX_NOTE_LENGTH] to match the skill description cap.
-     * Returns null when the session has no enabled servers. Format per the
-     * feature design doc §6a.
+     * Always includes CLI discovery guidance, even with no enabled servers.
      */
     fun mcpPromptFragment(sessionId: String): String? {
         val enabled = _servers.value
             .filter { isEnabledForSession(it.id, sessionId) }
             .sortedByDescending { it.createdAt }
-        if (enabled.isEmpty()) return null
-
         val selected = enabled.take(MAX_MCPS_IN_PROMPT)
 
         return buildString {
-            append("Available MCP Servers (use minis-mcp-cli to discover and call):\n")
+            append("Manage and use MCP servers via Shell: run `minis-mcp-cli --help` for commands and options.\n")
+            append("Use \$\$NAME in config values to reference existing App environment variables; do not hardcode secrets.\n")
+            if (selected.isEmpty()) return@buildString
+            append("Available MCP Servers:\n")
             for (s in selected) {
                 var note = s.note ?: ""
                 if (note.length > MAX_NOTE_LENGTH) note = note.substring(0, MAX_NOTE_LENGTH) + "…"
@@ -456,13 +456,6 @@ class MCPRepository(private val context: Context) {
                 if (note.isNotBlank()) append(": ").append(note)
                 append("\n")
             }
-            append("\n")
-            append("To use: run `minis-mcp-cli tools <server>` to see available tools,\n")
-            append("then `minis-mcp-cli call <server> <tool> [args]` to invoke.\n")
-            // [T-mcp-dollar-var-systemprompt-android] Document the $$VAR runtime
-            // env placeholder (mirrors iOS 5fa9e6a9). Agent-facing English — not
-            // localized; wording must match iOS verbatim.
-            append("When adding or modifying an MCP server config (via minis-mcp-cli add / the UI), use \$\$VARNAME in env/headers/url values as a placeholder resolved at runtime from the system/App environment variables — do not hardcode secrets; reference an existing App environment variable as \$\$NAME.")
         }
     }
 
