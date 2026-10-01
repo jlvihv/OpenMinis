@@ -60,7 +60,7 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
 
         return try {
             when (val sub = args.positional.firstOrNull() ?: "current") {
-                "current" -> current(args.getInt("timeout") ?: 8, args)
+                "current" -> current(args.getInt("timeout") ?: if (args.hasFlag("precise")) 60 else 8, args)
                 "geocode" -> handleGeocode(args)
                 "forward" -> handleForward(args)
                 else -> NativeOffloadResult(2, "android-location: unknown subcommand '$sub'\n$HELP")
@@ -112,7 +112,10 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
     // ── current ───────────────────────────────────────────────────
 
     private fun current(timeoutSec: Int, args: OffloadArgs): NativeOffloadResult {
-        if (!hasPermission()) {
+        val precise = args.hasFlag("precise")
+        if (timeoutSec !in 1..120) return NativeOffloadResult(2, "android-location: --timeout must be 1–120 seconds\n")
+        val permissionGranted = { if (precise) hasFinePermission() else hasPermission() }
+        if (!permissionGranted()) {
             AppLogger.warning(TAG, "ACCESS_FINE/COARSE_LOCATION not granted — routing through permission flow")
             val permissions = listOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
@@ -121,7 +124,7 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
             val result = runBlocking {
                 var r = OffloadPermissionManager.requestAndroidPermission(permissions)
                 if (r == OffloadPermissionManager.AndroidPermissionResult.DENIED &&
-                    OffloadPermissionManager.pollForPermissionGrant({ hasPermission() })
+                    OffloadPermissionManager.pollForPermissionGrant(permissionGranted)
                 ) {
                     AppLogger.info(TAG, "Location permission granted during post-DENY poll")
                     r = OffloadPermissionManager.AndroidPermissionResult.GRANTED
@@ -131,12 +134,12 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
                         OffloadPermissionManager.SettingsGateRequest(
                             id = Manifest.permission.ACCESS_FINE_LOCATION,
                             title = "Location permission needed",
-                            message = "Minis needs location permission to get your current location. Open Settings to allow it.",
+                            message = if (precise) "Enable precise location for Minis in system settings to request high-accuracy positioning." else "Minis needs location permission to get your current location. Open Settings to allow it.",
                             settingsAction = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                             requiresPackageUri = true,
                             positiveLabel = "Open Settings",
                         ),
-                        check = { hasPermission() },
+                        check = permissionGranted,
                     )
                 }
                 r
@@ -160,6 +163,12 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
             }
         }
 
+        if (!permissionGranted()) {
+            val body = JSONObject().put("error", "precise_permission_required")
+                .put("message", "Enable precise location for Minis; approximate permission is insufficient.").toString()
+            return NativeOffloadResult(77, OffloadOutput.formatBody(body, args) + "\n")
+        }
+
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             ?: return NativeOffloadResult(1, OffloadOutput.formatBody("""{"error":"service_unavailable","message":"LocationManager not available on this device"}""", args) + "\n")
 
@@ -175,6 +184,25 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
                 .put("message", "Location services are off on this device. Ask the user to enable Location in system settings.")
                 .put("enabled_providers", JSONArray(enabled))
                 .toString()
+            return NativeOffloadResult(1, OffloadOutput.formatBody(body, args) + "\n")
+        }
+
+        if (precise) {
+            val result = HighAccuracyLocation.request(context, lm, enabled, timeoutSec)
+            val fix = result.location
+            if (fix != null) {
+                val met = fix.accuracy <= 50f
+                val body = JSONObject(buildLocationJson(fix))
+                    .put("location_backend", result.backend)
+                    .put("target_accuracy_meters", 50)
+                    .put("target_accuracy_met", met)
+                    .put("status", if (met) "precise" else "best_available")
+                if (!met) body.put("warning", "Accuracy target not met within ${timeoutSec}s; this is the best fresh position, not a precise fix.")
+                return NativeOffloadResult(0, OffloadOutput.formatBody(body.toString(), args) + "\n")
+            }
+            val body = JSONObject().put("error", "precise_location_unavailable")
+                .put("message", "No fresh position within ${timeoutSec}s. Check location permissions and Google Location Accuracy; try outdoors.")
+                .put("location_backend", result.backend).put("timeout_seconds", timeoutSec).toString()
             return NativeOffloadResult(1, OffloadOutput.formatBody(body, args) + "\n")
         }
 
@@ -425,7 +453,7 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
 
 Usage:
   android-location                  Same as `current` (default subcommand)
-  android-location current [--timeout SEC]
+  android-location current [--precise] [--timeout SEC]
                                     Last-known or fresh fix + address
   android-location geocode --lat <lat> --lon <lon>
                                     Reverse-geocode to an address
@@ -437,7 +465,13 @@ Aliases:
   --lng                   Alias for --lon (apple-location naming)
 
 Requires ACCESS_FINE_LOCATION or ACCESS_COARSE_LOCATION. Default current
-timeout 8s. Forward / reverse geocoding requires a geocoder backend
+timeout 8s. --precise requests fresh high-accuracy fused positioning (GPS,
+Wi-Fi/cellular via Google Play services; system providers if unavailable).
+Requires precise permission. Target <= 50m, default timeout 60s. On timeout,
+returns the best fresh fix with target_accuracy_met=false if below target.
+Enable Google Location Accuracy for network assistance. No cached fallback.
+Timeout range: 1–120s; updates stop on completion.
+Forward / reverse geocoding requires a geocoder backend
 (Google Play Services or OEM equivalent).
 Errors return JSON: {"error":"...","message":"...","enabled_providers":[...]}.
 """

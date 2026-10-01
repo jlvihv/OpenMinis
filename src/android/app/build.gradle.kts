@@ -292,6 +292,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // High-accuracy fused positioning (GPS, Wi-Fi and cellular via Play services).
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
