@@ -60,6 +60,8 @@ class MountedFoldersStore(private val context: Context) {
          * UI / coordinator should treat such entries as inactive.
          */
         var resolvedHostPath: String? = null,
+        /** Direct shared-storage mount, authorized via All Files Access rather than SAF. */
+        val isSharedStorage: Boolean = false,
     ) {
         /** Final effective writable = OS-level `isWritable` AND user intent. */
         val effectiveWritable: Boolean get() = isWritable && userAllowWrite
@@ -140,6 +142,20 @@ class MountedFoldersStore(private val context: Context) {
         entry
     }
 
+    suspend fun addSharedStorage(userAllowWrite: Boolean = true): Entry? = mutex.withLock {
+        _entries.value.firstOrNull { it.isSharedStorage }?.let { return@withLock it }
+        if (_entries.value.size >= MAX_MOUNTS) return@withLock null
+        val root = sharedStorageRoot(context) ?: return@withLock null
+        val name = sharedStorageMountName(_entries.value.map { it.name })
+        val entry = Entry(name = name, sourceDisplayName = root, treeUri = "",
+            resolvedHostPath = root, isSharedStorage = true,
+            isWritable = probeWritable(root), userAllowWrite = userAllowWrite)
+        _entries.value = _entries.value + entry
+        saveToDisk(_entries.value)
+        onChange?.invoke()
+        entry
+    }
+
     /**
      * One-line storage-access diagnostic for the mount log. Distinguishes the
      * two reasons a folder can read but not write: on Android 11+ it's All Files
@@ -177,7 +193,7 @@ class MountedFoldersStore(private val context: Context) {
         if (after.size == before.size) return@withLock false
         // Release the persisted URI grant so the system stops listing
         // us under "apps with access" and the user can re-pick later.
-        before.firstOrNull { it.id == id }?.let { e ->
+        before.firstOrNull { it.id == id && !it.isSharedStorage }?.let { e ->
             runCatching {
                 context.contentResolver.releasePersistableUriPermission(
                     Uri.parse(e.treeUri),
@@ -229,8 +245,10 @@ class MountedFoldersStore(private val context: Context) {
     suspend fun refreshWritability() = mutex.withLock {
         val before = _entries.value
         val after = before.map { e ->
-            val probed = e.resolvedHostPath?.let { probeWritable(it) } ?: false
-            if (probed != e.isWritable) e.copy(isWritable = probed) else e
+            val host = if (e.isSharedStorage) sharedStorageRoot(context) else e.resolvedHostPath
+            val probed = host?.let { probeWritable(it) } ?: false
+            if (probed != e.isWritable || host != e.resolvedHostPath)
+                e.copy(isWritable = probed, resolvedHostPath = host) else e
         }
         if (after != before) {
             _entries.value = after
@@ -352,6 +370,24 @@ class MountedFoldersStore(private val context: Context) {
     }
 
     companion object {
+        @Suppress("DEPRECATION")
+        fun sharedStorageRoot(context: Context): String? {
+            val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager()
+            else context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!granted) return null
+            val root = Environment.getExternalStorageDirectory() ?: return null
+            return root.takeIf { it.isDirectory && it.canRead() }?.absolutePath
+        }
+
+        internal fun sharedStorageMountName(existing: List<String>): String {
+            val used = existing.map { it.lowercase(java.util.Locale.ROOT) }.toSet()
+            var name = "phone"
+            var suffix = 2
+            while (name in used) name = "phone-${suffix++}"
+            return name
+        }
+
         const val MAX_MOUNTS = 10
         private const val TAG = "MountedFolders"
         private const val EXTERNALSTORAGE_AUTHORITY = "com.android.externalstorage.documents"

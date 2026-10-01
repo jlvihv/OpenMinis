@@ -72,6 +72,11 @@ object OffloadPermissionManager {
         ToolPermissionInfo("clipboard", "Clipboard", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
         ToolPermissionInfo("contacts", "Contacts", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
         ToolPermissionInfo("photos", "Photos", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
+        ToolPermissionInfo("sms", "SMS (Read & Send)", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
+        ToolPermissionInfo("record", "Microphone Recording", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
+        ToolPermissionInfo("camera", "Camera Capture", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
+        ToolPermissionInfo("share", "System Sharing", PermissionCategory.PRIVACY, PermissionLevel.BYPASS),
+        ToolPermissionInfo("control", "Device Controls", PermissionCategory.SYSTEM, PermissionLevel.BYPASS),
         // Media — no personal data, hidden from Settings.
         ToolPermissionInfo("speak", "Text-to-Speech", PermissionCategory.MEDIA, PermissionLevel.BYPASS, showInSettings = false),
         ToolPermissionInfo("media_player", "Media Player", PermissionCategory.MEDIA, PermissionLevel.BYPASS, showInSettings = false),

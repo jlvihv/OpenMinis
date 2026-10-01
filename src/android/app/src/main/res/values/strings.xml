@@ -2277,4 +2277,9 @@
     <string name="rootfs_dns_effective_system">In effect: system DNS</string>
     <string name="rootfs_dns_effective_custom">In effect: %1$s</string>
     <string name="model_selection_sub_model">Lightweight agent model</string>
+    <string name="mount_shared_storage">Mount phone shared storage</string>
+    <string name="mount_shared_storage_message">Expose shared storage under %1$s so AI can organize downloads, photos and documents. Other apps\' private data and protected Android folders remain inaccessible. You can unmount it at any time.</string>
+    <string name="mount_shared_storage_confirm">Mount</string>
+    <string name="mount_shared_storage_grant">Grant file access</string>
+    <string name="mount_shared_storage_failed">Cannot access shared storage. Check file access permission and available mount slots.</string>
 </resources>

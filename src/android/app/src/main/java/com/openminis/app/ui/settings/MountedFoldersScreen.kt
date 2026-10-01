@@ -37,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -98,6 +99,9 @@ fun MountedFoldersScreen(
     var pendingPickedUri by remember { mutableStateOf<Uri?>(null) }
     var pendingDefaultName by remember { mutableStateOf("") }
     var addError by remember { mutableStateOf<String?>(null) }
+    var showSharedStorage by remember { mutableStateOf(false) }
+    var sharedStorageAllowWrite by remember { mutableStateOf(true) }
+    val sharedStorageEntry = entries.firstOrNull { it.isSharedStorage }
 
     // [T-android-mount-picker-landing] Shown once before handing off to the
     // system picker, explaining that Android forbids mounting the storage root.
@@ -113,6 +117,7 @@ fun MountedFoldersScreen(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasAllFilesAccess = checkAllFilesAccess(context)
+                scope.launch { store.refreshWritability() }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -155,6 +160,21 @@ fun MountedFoldersScreen(
         }
         pendingPickedUri = uri
         pendingDefaultName = defaultMountName(uri)
+    }
+
+    val requestStorageAccess: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                context.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${context.packageName}")))
+            }.onFailure {
+                runCatching { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:${context.packageName}"))) }
+            }
+        } else {
+            legacyStorageLauncher.launch(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE))
+        }
     }
 
     Scaffold(
@@ -203,41 +223,16 @@ fun MountedFoldersScreen(
                 .padding(padding),
         ) {
             InfoBanner()
+            OutlinedButton(
+                onClick = {
+                    sharedStorageEntry?.let { onMountClick(it.id) } ?: run { showSharedStorage = true }
+                },
+                enabled = !isAtCapacity || sharedStorageEntry != null,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            ) { Text(stringResource(R.string.mount_shared_storage)) }
 
             if (!hasAllFilesAccess) {
-                AllFilesAccessBanner(onClick = {
-                    when {
-                        // Android 11+: special All Files Access page.
-                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                        }.onFailure {
-                            // Some OEMs (HarmonyOS/EMUI) don't host the per-app page —
-                            // fall back to the app details screen.
-                            runCatching {
-                                context.startActivity(
-                                    Intent(
-                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                        Uri.parse("package:${context.packageName}"),
-                                    ),
-                                )
-                            }
-                        }
-                        // Android 10: request the legacy storage runtime permissions
-                        // (READ for readdir, WRITE for the badge + agent writes).
-                        Build.VERSION.SDK_INT == Build.VERSION_CODES.Q ->
-                            legacyStorageLauncher.launch(
-                                arrayOf(
-                                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                                ),
-                            )
-                    }
-                })
+                AllFilesAccessBanner(onClick = requestStorageAccess)
             }
 
             if (entries.isEmpty()) {
@@ -298,6 +293,40 @@ fun MountedFoldersScreen(
                 }
             }
         }
+    }
+
+    if (showSharedStorage) {
+        AlertDialog(
+            onDismissRequest = { showSharedStorage = false },
+            title = { Text(stringResource(R.string.mount_shared_storage)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.mount_shared_storage_message,
+                        "/var/minis/mounts/${MountedFoldersStore.sharedStorageMountName(entries.map { it.name })}"))
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.mount_add_allow_writes), Modifier.weight(1f))
+                        Switch(checked = sharedStorageAllowWrite, onCheckedChange = { sharedStorageAllowWrite = it })
+                    }
+                }
+            },
+            confirmButton = {
+                MinisTextButton(onClick = {
+                    if (!hasAllFilesAccess) requestStorageAccess()
+                    else scope.launch {
+                        val entry = store.addSharedStorage(sharedStorageAllowWrite)
+                        showSharedStorage = false
+                        if (entry == null) addError = context.getString(R.string.mount_shared_storage_failed)
+                        else onMountClick(entry.id)
+                    }
+                }) {
+                    Text(stringResource(if (hasAllFilesAccess) R.string.mount_shared_storage_confirm else R.string.mount_shared_storage_grant))
+                }
+            },
+            dismissButton = {
+                MinisTextButton(onClick = { showSharedStorage = false }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
     }
 
     val pickedUri = pendingPickedUri
@@ -471,10 +500,8 @@ private fun AllFilesAccessBanner(onClick: () -> Unit) {
 private fun checkAllFilesAccess(context: android.content.Context): Boolean {
     return when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
-        Build.VERSION.SDK_INT == Build.VERSION_CODES.Q ->
-            context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
-        else -> true
+        else -> context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 }
 

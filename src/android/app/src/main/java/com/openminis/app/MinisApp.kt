@@ -669,6 +669,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         NativeOffloadServer.register("android-clipboard", ClipboardOffloadHandler(this))
         NativeOffloadServer.register("android-contacts", ContactsOffloadHandler(this))
         NativeOffloadServer.register("android-device", DeviceOffloadHandler(this))
+        for (tool in listOf("sms", "record", "camera", "share", "control")) {
+            NativeOffloadServer.register("android-$tool", com.openminis.app.sandbox.offload.PhoneToolsOffloadHandler(this, tool))
+        }
         NativeOffloadServer.register("android-location", LocationOffloadHandler(this))
         NativeOffloadServer.register("android-notification", NotificationOffloadHandler(this))
         NativeOffloadServer.register("android-open", OpenOffloadHandler(this))

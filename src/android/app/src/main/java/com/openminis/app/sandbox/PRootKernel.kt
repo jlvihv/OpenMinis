@@ -322,7 +322,8 @@ object PRootKernel {
         } else {
             store.entries.value
                 .mapNotNull { entry ->
-                    val host = resolveTreeUriToHostPath(entry.treeUri, context) ?: return@mapNotNull null
+                    val host = (if (entry.isSharedStorage) MountedFoldersStore.sharedStorageRoot(context)
+                        else resolveTreeUriToHostPath(entry.treeUri, context)) ?: return@mapNotNull null
                     "$MOUNTS_LINUX_PREFIX${entry.name}" to host
                 }
                 .toMap()
@@ -432,7 +433,8 @@ object PRootKernel {
     fun mountEntriesForIndex(context: Context): List<FileMentionIndex.MountEntry> {
         val store = mountedFoldersStore ?: return emptyList()
         return store.entries.value.mapNotNull { entry ->
-            val host = resolveTreeUriToHostPath(entry.treeUri, context) ?: return@mapNotNull null
+            val host = (if (entry.isSharedStorage) MountedFoldersStore.sharedStorageRoot(context)
+                else resolveTreeUriToHostPath(entry.treeUri, context)) ?: return@mapNotNull null
             FileMentionIndex.MountEntry(name = entry.name, root = File(host))
         }
     }

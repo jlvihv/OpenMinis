@@ -2086,4 +2086,9 @@
     <string name="rootfs_dns_effective_system">当前生效：系统 DNS</string>
     <string name="rootfs_dns_effective_custom">当前生效：%1$s</string>
     <string name="model_selection_sub_model">轻量辅助模型</string>
+    <string name="mount_shared_storage">挂载手机共享存储</string>
+    <string name="mount_shared_storage_message">将共享存储挂载到 %1$s，让 AI 整理下载、照片和文档。其他应用的私有数据及安卓受保护目录仍不可访问。可随时取消挂载。</string>
+    <string name="mount_shared_storage_confirm">挂载</string>
+    <string name="mount_shared_storage_grant">授权文件访问</string>
+    <string name="mount_shared_storage_failed">无法访问共享存储，请检查文件访问权限和可用挂载数量。</string>
 </resources>
