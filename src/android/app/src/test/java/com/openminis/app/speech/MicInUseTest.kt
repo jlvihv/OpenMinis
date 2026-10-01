@@ -44,11 +44,12 @@ class MicInUseTest {
     }
 
     @Test
-    fun `the panel shows translated text for capture failures, never the engine's English`() {
-        val panel = ProductionSources.read("ui/chat/voice/InlineVoiceInputPanel.kt")
-        val handler = panel.substringAfter("fun onRecognitionError(").substringBefore("fun failureSink(")
-        assertTrue(handler.contains("RecognitionError.MIC_IN_USE ->\n                transcribeError = panelContext.getString(R.string.voice_mic_in_use)"))
-        assertTrue(handler.contains("RecognitionError.AUDIO_ERROR ->\n                transcribeError = panelContext.getString(R.string.voice_mic_unavailable)"))
+    fun `both voice entries show translated capture failures, never the engine's English`() {
+        val source = ProductionSources.read("ui/chat/voice/HoldToSpeakModifier.kt")
+        val handler = source.substringAfter("fun reportError(").substringBefore("DisposableEffect(Unit)")
+        assertTrue(handler.contains("RecognitionError.MIC_IN_USE -> context.getString(R.string.voice_mic_in_use)"))
+        assertTrue(handler.contains("RecognitionError.AUDIO_ERROR -> context.getString(R.string.voice_mic_unavailable)"))
+        assertEquals(2, Regex("if \\(take == generation\\) reportError").findAll(source).count())
     }
 
     @Test

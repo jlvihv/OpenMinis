@@ -24,6 +24,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.verticalDrag
 import androidx.compose.ui.input.pointer.pointerInput
+import com.openminis.app.ui.chat.voice.holdToSpeak
+import com.openminis.app.ui.chat.voice.holdVoiceOverlay
+import com.openminis.app.ui.chat.voice.HoldVoiceState
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -1960,6 +1963,16 @@ fun ChatScreen(
     // users who had scrolled up to read history and then opened the keyboard
     // to send a follow-up — auto-follow then yanked them away from where
     // they were reading.
+    val composerImeVisible = WindowInsets.isImeVisible
+    var composerImeWasVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(composerImeVisible) {
+        // Only clear on a visible → hidden transition. Initial false must
+        // not steal focus while the keyboard is still opening.
+        if (composerImeWasVisible && !composerImeVisible && inputFocused) {
+            focusManager.clearFocus(force = true)
+        }
+        composerImeWasVisible = composerImeVisible
+    }
     val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
     LaunchedEffect(imeBottomPx) {
         if (userScrolledAway && isNearBottom.value) userScrolledAway = false
@@ -2447,38 +2460,11 @@ fun ChatScreen(
             }
     }
 
-    // Auto-focus input on new sessions so keyboard pops up immediately.
-    //
-    // T176: theme switch (Activity recreate) re-enters this LE before the
-    // composer's `Modifier.focusRequester(inputFocusRequester)` has been
-    // attached for the new composition. requestFocus() then throws
-    // `FocusRequester is not initialized` and the process crashes. Guard
-    // with try/catch — we lose nothing if the focus call is a no-op on
-    // the recreated activity (the user wasn't typing anyway), and the
-    // common new-session path still works because the 300 ms delay lets
-    // the Modifier attach.
-    // [T-android-draft-placeholder-row] Keyed on sessionId, not Unit. In the
-    // two-pane layout the detail pane is NOT recreated when the user starts
-    // another new chat — only the pane's content key changes — so a
-    // `LaunchedEffect(Unit)` would fire for the first draft of the screen's
-    // life and never again, leaving every subsequent New Chat unfocused.
-    // [T-android-no-keyboard-on-open] An existing chat opens without focus
-    // (see ChatSplitScaffold's focusable detail pane) - except with a
-    // hardware keyboard, where focusing the composer raises no soft keyboard
-    // and lets the user type straight away, as it did before.
+    // Opening any conversation starts unfocused, including a new draft in
+    // the reused tablet detail pane. Focus is requested only by user actions.
     LaunchedEffect(sessionId) {
-        if (sessionId.startsWith("__new__") || hasHardwareKeyboard) {
-            // Small delay to let the layout settle before requesting focus
-            kotlinx.coroutines.delay(300)
-            try {
-                inputFocusRequester.requestFocus()
-            } catch (e: IllegalStateException) {
-                AppLogger.debug(
-                    tagScroll,
-                    "auto-focus skipped: FocusRequester not attached (likely activity recreate / theme switch): ${e.message}",
-                )
-            }
-        }
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
     }
 
     // Show top-level error in snackbar (only for errors without an assistant message)
@@ -3254,12 +3240,37 @@ fun ChatScreen(
         // [T-android-scroll-fab-content-inset] The chat pane's own width, used
         // below to inset the scroll buttons to the capped content column.
         var chatPaneWidthPx by remember { mutableStateOf(0) }
+        var chatPaneOrigin by remember { mutableStateOf(Offset.Zero) }
+        var composerWindowBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+        var holdVoiceState by remember { mutableStateOf(HoldVoiceState()) }
+        val holdVoiceActive = holdVoiceState.active
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .imePadding()
-                .onGloballyPositioned { chatPaneWidthPx = it.size.width },
+                .onGloballyPositioned {
+                    chatPaneWidthPx = it.size.width
+                    chatPaneOrigin = it.positionInWindow()
+                }
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial,
+                        )
+                        val bounds = composerWindowBounds
+                        if (inputFocused && bounds != null &&
+                            !bounds.contains(down.position + chatPaneOrigin)
+                        ) {
+                            keyboardController?.hide()
+                            focusManager.clearFocus(force = true)
+                        }
+                        // Observe only; links, message selection and scrolling
+                        // must still receive the original pointer events.
+                    }
+                }
+                .holdVoiceOverlay(holdVoiceState),
         ) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -5279,6 +5290,10 @@ fun ChatScreen(
                 // coordinate space without disturbing the bar's own layout.
                 Box(modifier = Modifier
                     .fillMaxWidth()
+                    .onGloballyPositioned { composerWindowBounds = it.boundsInWindow() }
+                    // Keep the held pointer's target mounted, but replace all
+                    // composer visuals with the draw-only bottom voice overlay.
+                    .graphicsLayer { alpha = if (holdVoiceActive) 0f else 1f }
                     .pointerInput(Unit) {
                         val slop = viewConfiguration.touchSlop
                         awaitEachGesture {
@@ -5706,49 +5721,7 @@ fun ChatScreen(
                     // InlineVoiceInputView). The legacy in-composer waveform
                     // branch below only serves captures started OUTSIDE the
                     // panel (none today, kept as a safety net).
-                    if (com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
-                        com.openminis.app.ui.chat.voice.InlineVoiceInputPanel(
-                            providerRepository = providerRepository,
-                            inputText = inputText,
-                            onInputTextChange = { text ->
-                                viewModel.setInputText(text)
-                                viewModel.updateSlashMenuState(text)
-                            },
-                            onAutoSend = { text -> performSendOrEnqueue(text) },
-                            onExitVoice = {
-                                if (com.openminis.app.speech.SpeechRecognitionManager.state.value !=
-                                    com.openminis.app.speech.RecognitionState.IDLE
-                                ) {
-                                    com.openminis.app.speech.SpeechRecognitionManager.stopRecording()
-                                }
-                                com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive = false
-                                ComposerInputModePrefs.save(context, voice = false)
-                                voiceUsedSinceClear = false
-                            },
-                            ensureMicPermission = { ensureMicPermissionFlow() },
-                            // [T-android-correction-context-wiring] Feed AI
-                            // correction the live conversation context. Reads the
-                            // FULL message list (not the windowed uiMessages) so
-                            // older turns still contribute rare-term grounding;
-                            // evaluated lazily at correction time.
-                            conversationContextProvider = { screen ->
-                                com.openminis.app.speech.correction.VoiceCorrection
-                                    .buildConversationContext(context, viewModel.messages.value, screen)
-                            },
-                            // [T-android-voice-viewport-context] What is on
-                            // screen when correction starts (the list renders
-                            // with reverseLayout = true).
-                            captureScreen = {
-                                captureVoiceScreenSnapshot(listState, voiceScreenItems.items, reverseLayout = true)
-                            },
-                            // [T-android-context-usage-hint] Same generation
-                            // stream the composer uses; the panel gives it a
-                            // timed slot rather than the composer's
-                            // focus-driven lifecycle.
-                            contextUsageHint = contextUsageHint,
-                            onEditProvider = onEditProviderClick,
-                        )
-                    } else if (recIsRecording) {
+                    if (recIsRecording && !holdVoiceActive) {
                         val levels by com.openminis.app.speech.SpeechRecognitionManager
                             .audioLevels.collectAsState()
                         val partial by com.openminis.app.speech.SpeechRecognitionManager
@@ -6067,6 +6040,15 @@ fun ChatScreen(
                                 )
                             },
                             modifier = Modifier
+                                .holdToSpeak(
+                                    providerRepository = providerRepository,
+                                    enabled = !inputFocused &&
+                                        viewModel.editingMessageId.collectAsState().value == null,
+                                    draft = { viewModel.inputText.value },
+                                    ensurePermission = { ensureMicPermissionFlow() },
+                                    onActiveChange = { holdVoiceState = it },
+                                    onSend = { text -> performSendOrEnqueue(text) },
+                                )
                                 .fillMaxWidth()
                                 .heightIn(min = 25.dp)
                                 .focusRequester(inputFocusRequester)
@@ -6204,6 +6186,7 @@ fun ChatScreen(
                                         performEnterSend()
                                     } else false
                                 },
+                            readOnly = holdVoiceActive,
                             textStyle = mergedTextStyle,
                             cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
                             maxLines = 6,
@@ -6444,78 +6427,10 @@ fun ChatScreen(
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // Right: Mic button — only renders when a speech engine
-                        // is actually available on this device (handles the
-                        // AOSP / HarmonyOS / GMS-free case).
-                        val sttAvailable by com.openminis.app.speech.SpeechRecognitionManager
-                            .isAvailable.collectAsState()
-                        val sttState by com.openminis.app.speech.SpeechRecognitionManager
-                            .state.collectAsState()
-                        val sttLocale by com.openminis.app.speech.SpeechRecognitionManager
-                            .locale.collectAsState()
-                        var showLangSheet by remember { mutableStateOf(false) }
-                        // While recording, a tappable 2-letter language pill
-                        // appears to the left of the mic button. Outside a
-                        // session the mic button's own badge stays hidden and
-                        // the pill is not rendered — matches iOS.
-                        if (sttAvailable && !com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
-                            (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
-                                sttState == com.openminis.app.speech.RecognitionState.STARTING)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(ChatColors.inputIconBg, CircleShape)
-                                    .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
-                                    .clip(CircleShape)
-                                    .clickable { showLangSheet = true },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = sttLocale.language.uppercase().take(2),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = ChatColors.primaryText,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                        }
-                        if (showLangSheet) {
-                            SpeechLanguagePickerSheet(onDismiss = { showLangSheet = false })
-                        }
                         // Extracted so the app-icon "voice chat" quick action
                         // (DeepLinkCoordinator.ChatAction.START_VOICE) can
                         // fire the same flow on first compose without
                         // duplicating the 3-stage permission dance.
-                        val triggerVoiceInput: () -> Unit = lambda@{
-                            // [T-android-voice-panel] The mic button now toggles
-                            // the INLINE VOICE PANEL (mirrors iOS MicButton →
-                            // voiceInputActive). Capture start/stop lives inside
-                            // the panel; this button only enters/exits the mode.
-                            if (com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
-                                // Exit voice → keyboard. Keep the transcript: the
-                                // composer mirrors it (iOS keyboard-text-carry).
-                                if (com.openminis.app.speech.SpeechRecognitionManager.state.value !=
-                                    com.openminis.app.speech.RecognitionState.IDLE
-                                ) {
-                                    com.openminis.app.speech.SpeechRecognitionManager.stopRecording()
-                                }
-                                com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive = false
-                                ComposerInputModePrefs.save(context, voice = false)
-                                voiceUsedSinceClear = false
-                            } else {
-                                // [T-android-voice-entry-always-available]
-                                // Entering voice mode is an explicit retry — give
-                                // every engine a fresh start so a past transient
-                                // failure (mic was busy, permission since granted,
-                                // provider since configured) doesn't keep the
-                                // feature dead for the rest of the process.
-                                com.openminis.app.speech.SpeechRecognitionManager
-                                    .clearDegradationAndRefresh()
-                                voiceUsedSinceClear = true
-                                com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive = true
-                            }
-                        }
 
                         // App-icon quick action: when the user launched via
                         // `minis://action/voice_chat`, auto-fire the mic on
@@ -6544,9 +6459,6 @@ fun ChatScreen(
                                 com.openminis.app.deeplink.DeepLinkCoordinator
                                     .consumePendingChatAction()
                                 com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
-                                if (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
-                                    triggerVoiceInput()
-                                }
                             }
                         }
 
@@ -6745,34 +6657,6 @@ fun ChatScreen(
 
                         }
 
-                        // [T-android-voice-entry-always-available] The voice /
-                        // keyboard toggle is ALWAYS shown. It used to be gated on
-                        // `sttAvailable`, a runtime probe — so when the active
-                        // engine degraded mid-session the button disappeared while
-                        // `isVoiceActive` stayed true, leaving the user inside the
-                        // voice panel with no way back to the keyboard (the toggle
-                        // IS this button). Gating an escape hatch on the health of
-                        // the thing you're escaping from is the bug.
-                        //
-                        // Existence now depends only on a structural fact —
-                        // microphone hardware. "No speech service", "engine
-                        // degraded" and "no ASR provider configured" are all
-                        // RECOVERABLE states, explained inside the panel with a
-                        // link to the relevant settings rather than by silently
-                        // removing the control.
-                        if (com.openminis.app.speech.SpeechRecognitionManager.hasMicrophoneHardware) {
-                            MicButton(
-                                isRecording = !com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
-                                    (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
-                                        sttState == com.openminis.app.speech.RecognitionState.STARTING),
-                                localeBadge = null,
-                                onClick = { triggerVoiceInput() },
-                                onLongClick = { showLangSheet = true },
-                                isVoiceActive = com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive,
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
 
                         // Right: 3-state Send / Enqueue / Stop button (mirrors iOS sendButton).
                         //   • streaming + hasText  → SEND (routes through viewModel.sendMessage,
@@ -6794,7 +6678,7 @@ fun ChatScreen(
                         // even though the composer may still be empty; the tap
                         // finishes recognition and then sends or enqueues.
                         val voiceOwesText = com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
-                            (sttState != com.openminis.app.speech.RecognitionState.IDLE ||
+                            (recSttState != com.openminis.app.speech.RecognitionState.IDLE ||
                                 com.openminis.app.ui.chat.voice.VoiceSendGate.isFinishingForSend)
                         val hasContent = hasText || attachments.isNotEmpty() || voiceOwesText
                         // [T-android-showstop-subagent] "Is this conversation
@@ -7278,7 +7162,7 @@ fun ChatScreen(
 // [T-android-split-chat] ToolDetailSheet + helpers (extractShellCommand,
 // extractPartialJsonString, chunkToolOutput, initialRevealChunks,
 // LazyRevealToolText, EditorCard) moved verbatim to ChatToolDetailUI.kt.
-// [T-android-split-chat] AttachmentChip / InputCircleButton / MicButton /
+// [T-android-split-chat] AttachmentChip / InputCircleButton /
 // ToolPreviewThumbnail / FloatingToolStatusBar / ThinkingLevelPicker moved
 // verbatim to ChatComposerWidgets.kt.
 

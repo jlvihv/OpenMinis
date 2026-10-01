@@ -1,0 +1,8 @@
+<resources>
+    <string name="hold_voice_release_send">松开发送 · 上滑取消</string>
+    <string name="hold_voice_release_cancel">松开取消</string>
+    <string name="hold_voice_processing">正在识别…</string>
+    <string name="hold_voice_retry">语音识别失败，请重试</string>
+    <string name="hold_voice_empty">未识别到语音，请重试</string>
+    <string name="hold_voice_assistant_listening">正在聆听 · 停顿后发送 · 返回取消</string>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <string name="hold_voice_release_send">Release to send · Slide up to cancel</string>
+    <string name="hold_voice_release_cancel">Release to cancel</string>
+    <string name="hold_voice_processing">Recognizing…</string>
+    <string name="hold_voice_retry">Speech recognition failed. Please try again.</string>
+    <string name="hold_voice_empty">No speech recognized. Please try again.</string>
+    <string name="hold_voice_assistant_listening">Listening · Pause to send · Back to cancel</string>
+</resources>
