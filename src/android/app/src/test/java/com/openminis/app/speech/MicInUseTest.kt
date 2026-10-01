@@ -49,7 +49,8 @@ class MicInUseTest {
         val handler = source.substringAfter("fun reportError(").substringBefore("DisposableEffect(Unit)")
         assertTrue(handler.contains("RecognitionError.MIC_IN_USE -> context.getString(R.string.voice_mic_in_use)"))
         assertTrue(handler.contains("RecognitionError.AUDIO_ERROR -> context.getString(R.string.voice_mic_unavailable)"))
-        assertEquals(2, Regex("if \\(take == generation\\) reportError").findAll(source).count())
+        assertTrue("both entries use the same capture pipeline", source.contains("quickTurn = assistantMode"))
+        assertTrue(source.contains("if (take == session.generation) reportError(error, message)"))
     }
 
     @Test

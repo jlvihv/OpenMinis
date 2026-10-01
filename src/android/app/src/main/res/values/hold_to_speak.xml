@@ -4,5 +4,6 @@
     <string name="hold_voice_processing">Recognizing…</string>
     <string name="hold_voice_retry">Speech recognition failed. Please try again.</string>
     <string name="hold_voice_empty">No speech recognized. Please try again.</string>
-    <string name="hold_voice_assistant_listening">Listening · Pause to send · Back to cancel</string>
+    <string name="hold_voice_assistant_listening">Listening · Tap to send · Back to cancel</string>
+    <string name="hold_voice_send_now">Tap to send</string>
 </resources>

@@ -25,7 +25,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.verticalDrag
 import androidx.compose.ui.input.pointer.pointerInput
 import com.openminis.app.ui.chat.voice.holdToSpeak
-import com.openminis.app.ui.chat.voice.holdVoiceOverlay
+import com.openminis.app.ui.chat.voice.HoldVoiceOverlay
 import com.openminis.app.ui.chat.voice.HoldVoiceState
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.animation.scaleIn
@@ -1089,16 +1089,13 @@ fun ChatScreen(
         if (granted) launchCamera()
     }
 
-    // App-icon quick action: when the user launched via
-    // `minis://action/camera_chat`, auto-open the camera on first compose.
-    // Consumed exactly once so re-entering the chat later does NOT re-trigger.
-    // Voice variant lives next to the MicButton because it needs sttAvailable
-    // — camera is always available so it can fire from the top-level scope.
-    LaunchedEffect(sessionId) {
-        val pending = com.openminis.app.deeplink.DeepLinkCoordinator
-            .pendingChatAction.value
-        if (pending == com.openminis.app.deeplink.DeepLinkCoordinator
-                .ChatAction.OPEN_CAMERA
+    // React to targeted one-shot requests even when this screen is already
+    // mounted; an outgoing chat must never consume the next chat's action.
+    val pendingChatAction by com.openminis.app.deeplink.DeepLinkCoordinator.pendingChatAction.collectAsState()
+    LaunchedEffect(sessionId, pendingChatAction) {
+        val pending = pendingChatAction
+        if (pending?.sessionId == sessionId && pending.action ==
+            com.openminis.app.deeplink.DeepLinkCoordinator.ChatAction.OPEN_CAMERA
         ) {
             com.openminis.app.deeplink.DeepLinkCoordinator
                 .consumePendingChatAction()
@@ -1108,6 +1105,18 @@ fun ChatScreen(
             ) == PackageManager.PERMISSION_GRANTED
             if (granted) launchCamera()
             else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    LaunchedEffect(sessionId, pendingChatAction) {
+        val pending = pendingChatAction
+        if (pending?.sessionId == sessionId && pending.action ==
+            com.openminis.app.deeplink.DeepLinkCoordinator.ChatAction.START_VOICE
+        ) {
+            com.openminis.app.deeplink.DeepLinkCoordinator.consumePendingChatAction()
+            if (com.openminis.app.speech.SpeechRecognitionManager.hasMicrophoneHardware) {
+                com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
+            }
         }
     }
 
@@ -2573,9 +2582,9 @@ fun ChatScreen(
     // matching session; opens fullscreen HTML preview backed by a fresh
     // holder. Pending state is left untouched when a different chat is on
     // screen so the right ChatScreen instance still consumes it later.
-    LaunchedEffect(sessionId) {
-        val pending = com.openminis.app.deeplink.DeepLinkCoordinator
-            .pendingHtmlPreview.value ?: return@LaunchedEffect
+    val pendingHtmlPreview by com.openminis.app.deeplink.DeepLinkCoordinator.pendingHtmlPreview.collectAsState()
+    LaunchedEffect(sessionId, pendingHtmlPreview) {
+        val pending = pendingHtmlPreview ?: return@LaunchedEffect
         if (pending.sessionId != sessionId) return@LaunchedEffect
         com.openminis.app.deeplink.DeepLinkCoordinator.consumePendingHtmlPreview()
         val absPath = "/var/minis" + pending.resourcePath
@@ -3269,8 +3278,7 @@ fun ChatScreen(
                         // Observe only; links, message selection and scrolling
                         // must still receive the original pointer events.
                     }
-                }
-                .holdVoiceOverlay(holdVoiceState),
+                },
         ) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -6427,41 +6435,6 @@ fun ChatScreen(
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // Extracted so the app-icon "voice chat" quick action
-                        // (DeepLinkCoordinator.ChatAction.START_VOICE) can
-                        // fire the same flow on first compose without
-                        // duplicating the 3-stage permission dance.
-
-                        // App-icon quick action: when the user launched via
-                        // `minis://action/voice_chat`, auto-fire the mic on
-                        // first compose. Consumed exactly once so re-entering
-                        // the chat later does NOT re-trigger.
-                        //
-                        // [T-android-voice-entry-always-available] Gated on the
-                        // STRUCTURAL check, not the sttAvailable runtime probe.
-                        // The probe is false on ROMs without a system speech
-                        // service (ColorOS et al.), which made this shortcut a
-                        // silent no-op there — while the mic button itself had
-                        // already moved to hasMicrophoneHardware. Entering the
-                        // panel without a live engine is fine: the panel owns
-                        // the "no engine → here's how to configure one" story.
-                        LaunchedEffect(Unit) {
-                            if (!com.openminis.app.speech.SpeechRecognitionManager
-                                    .hasMicrophoneHardware
-                            ) {
-                                return@LaunchedEffect
-                            }
-                            val pending = com.openminis.app.deeplink.DeepLinkCoordinator
-                                .pendingChatAction.value
-                            if (pending == com.openminis.app.deeplink.DeepLinkCoordinator
-                                    .ChatAction.START_VOICE
-                            ) {
-                                com.openminis.app.deeplink.DeepLinkCoordinator
-                                    .consumePendingChatAction()
-                                com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
-                            }
-                        }
-
                         // [T-android-remove-auto-enter-voice] Auto-enter-voice on
                         // cold launch / new chat removed (was ec95451a). The
                         // composer now always starts in text mode; voice is only
@@ -6908,6 +6881,7 @@ fun ChatScreen(
                 )
             }
         }
+        HoldVoiceOverlay(holdVoiceState, Modifier.matchParentSize())
         // Top gradient fade: messages fade into the Scaffold background.
         Box(
             modifier = Modifier

@@ -43,11 +43,14 @@ import androidx.compose.material3.adaptive.layout.ThreePaneScaffoldDestinationIt
 import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -271,6 +274,9 @@ private fun chatPaneScaffoldDirective(twoPane: Boolean, listPaneWidth: Dp): Pane
 @Composable
 fun ChatSplitScaffold(
     initialSessionId: String?,
+    requestedSessionId: String? = null,
+    onSessionRequestHandled: (String) -> Unit = {},
+    onSessionChanged: (String?) -> Unit = {},
     listPane: @Composable (
         selectedSessionId: String?,
         /**
@@ -303,6 +309,8 @@ fun ChatSplitScaffold(
     ) -> Unit,
 ) {
     val twoPane = shouldUseTwoPane()
+    val currentRequestHandled by rememberUpdatedState(onSessionRequestHandled)
+    val currentSessionChanged by rememberUpdatedState(onSessionChanged)
 
     // [T-android-tablet-split-resizable] User-chosen list-pane width, restored
     // from prefs and re-clamped on read: the stored value predates nothing
@@ -333,6 +341,7 @@ fun ChatSplitScaffold(
     // See the long note at its former position further down for why the
     // selection is hoisted here at all.
     var selectedSessionId by rememberSaveable { mutableStateOf(initialSessionId) }
+    val detailStateHolder = rememberSaveableStateHolder()
 
     // [T-android-tablet-sidebar-collapse] Whether the list pane is hidden.
     //
@@ -431,6 +440,28 @@ fun ChatSplitScaffold(
         val currentSessionId = navigator.currentDestination
             ?.takeIf { it.pane == ListDetailPaneScaffoldRole.Detail }
             ?.contentKey
+
+        // Keep this composable call unconditional: adding/removing it before
+        // the adaptive scaffold changes its animation composition identity.
+        val resolvedSessionId = com.openminis.app.ui.chat.ChatViewModelStore
+            .rememberPersistedId(currentSessionId.orEmpty())
+        val persistedSessionId = resolvedSessionId.takeIf { currentSessionId != null }
+        // One pane navigator owns all list/detail transitions, including Back.
+        // Publish the persisted id after a draft is promoted, so process-death
+        // recovery and foreground-service presence follow the real session.
+        LaunchedEffect(navigator.currentDestination, persistedSessionId) {
+            selectedSessionId = currentSessionId
+            currentSessionChanged(persistedSessionId)
+        }
+        LaunchedEffect(requestedSessionId, navigator) {
+            val requested = requestedSessionId ?: return@LaunchedEffect
+            if (navigator.currentDestination?.contentKey != requested) {
+                selectedSessionId = requested
+                navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, requested)
+            }
+            currentSessionChanged(requested)
+            currentRequestHandled(requested)
+        }
 
         // [T-android-new-chat-shortcut] Open a fresh draft in the detail pane.
         // Hoisted out of the detailPane call below so the keyboard shortcut and
@@ -575,8 +606,7 @@ fun ChatSplitScaffold(
                     // the soft keyboard came up every time a chat was opened.
                     // A focusable container here is that first child instead,
                     // and it has no text input. Tapping the composer focuses
-                    // it as before; ChatScreen still focuses it on its own
-                    // for a new chat and when a hardware keyboard is attached.
+                    // it as before; opening a chat never requests text focus.
                     Box(Modifier.weight(1f).focusable()) {
                 if (sessionId == null) {
                     // [T-android-tablet-sidebar-collapse] The placeholder gets
@@ -598,12 +628,12 @@ fun ChatSplitScaffold(
                         sidebarCollapsed = listCollapsed,
                     )
                 } else {
+                    // Isolate transient jobs/focus by session, while retaining
+                    // saveable scroll/composer state when switching chats.
+                    detailStateHolder.SaveableStateProvider(sessionId) {
                     detailPane(
                         sessionId,
-                        {
-                            selectedSessionId = null
-                            scope.launch { navigator.navigateBack() }
-                        },
+                        { scope.launch { navigator.navigateBack() } },
                         // "New Chat" swaps the DETAIL pane to a fresh draft and
                         // leaves the list pane standing. Routing this through
                         // the outer NavHost instead would push a whole new
@@ -634,6 +664,7 @@ fun ChatSplitScaffold(
                         },
                         listCollapsed,
                     )
+                    }
                 }
                     }
                 }
@@ -835,22 +866,34 @@ fun isDraftSessionId(id: String?): Boolean = id?.startsWith("__new__") == true
 /**
  * [T-android-tablet-split] Route-level wiring for [ChatSplitScaffold].
  *
- * Both `Routes.SESSION_LIST` and `Routes.CHAT` render this; they differ only in
- * [initialSessionId]. Every callback that leaves the chat/list pair is routed
- * through [navController] exactly as it was before this change — see the
- * navigation-boundary note on [ChatSplitScaffold].
+ * Only the SESSION_LIST root renders this. External session entry points
+ * write a one-shot request to its SavedStateHandle; selection and Back live
+ * entirely in the pane navigator. Settings/terminal remain outer destinations.
  */
 @Composable
 fun ChatSplitScaffoldRoute(
     initialSessionId: String?,
+    rootEntry: androidx.navigation.NavBackStackEntry,
     navController: androidx.navigation.NavHostController,
     chatRepository: com.openminis.app.data.repository.ChatRepository,
     providerRepository: com.openminis.app.data.repository.ProviderRepository,
     skillRepository: com.openminis.app.data.repository.SkillRepository?,
     mcpRepository: com.openminis.app.data.repository.MCPRepository?,
 ) {
+    val requestedSessionId by remember(rootEntry) {
+        rootEntry.savedStateHandle.getStateFlow<String?>(ChatNavigation.PENDING_SESSION, null)
+    }.collectAsState()
     ChatSplitScaffold(
-        initialSessionId = initialSessionId,
+        initialSessionId = requestedSessionId ?: initialSessionId,
+        requestedSessionId = requestedSessionId,
+        onSessionRequestHandled = { handled ->
+            if (rootEntry.savedStateHandle.get<String>(ChatNavigation.PENDING_SESSION) == handled) {
+                rootEntry.savedStateHandle[ChatNavigation.PENDING_SESSION] = null
+            }
+        },
+        onSessionChanged = { sessionId ->
+            rootEntry.savedStateHandle[ChatNavigation.SELECTED_SESSION] = sessionId
+        },
         listPane = { selectedSessionId, draftPlaceholderId, onSessionSelected ->
             com.openminis.app.ui.sessions.SessionListScreen(
                 chatRepository = chatRepository,
@@ -902,10 +945,7 @@ fun ChatSplitScaffoldRoute(
                 // looks for "get me back to the list".
                 onToggleSidebar = onToggleSidebar,
                 sidebarCollapsed = sidebarCollapsed,
-                // Draft handling: the pane navigator gets a fresh `__new__…`
-                // key, so the list keeps its scroll position and simply stops
-                // highlighting a row (no persisted id matches a draft) — the
-                // two-pane equivalent of the old popUpTo(SESSION_LIST) push.
+                // Drafts replace the detail selection while retaining the list.
                 onNewChat = onNewChatInPane,
                 // Everything below leaves the list/detail pair entirely and so
                 // stays on the OUTER NavHost as a full-screen push.
@@ -922,13 +962,7 @@ fun ChatSplitScaffoldRoute(
                 onOpenAgentTranscript = { childId ->
                     navController.safeNavigate(Routes.agentTranscript(childId))
                 },
-                // Move-to targets another chat, which is still inside the
-                // list/detail pair — so it swaps the detail pane rather than
-                // pushing. (The old popUpTo(SESSION_LIST) existed to avoid
-                // stacking chats on the back stack; the pane navigator has no
-                // such stack to pollute.) The target may be a `__new__…` draft
-                // from the Move-to sheet's New Chat row, which works here for
-                // the same reason onNewChat does.
+                // Move-to, including a fresh draft, changes only pane selection.
                 onMoveToSession = { targetId -> onMoveToInPane(targetId) },
                 onBrowseChatFiles = { navController.safeNavigate(Routes.chatFiles(sessionId)) },
                 onBrowseChatFolder = { path -> navController.safeNavigate(Routes.chatFiles(sessionId, path)) },

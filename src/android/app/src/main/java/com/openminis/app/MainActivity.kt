@@ -39,7 +39,11 @@ import com.openminis.app.logging.AppLogger
 import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.ui.navigation.AppNavigation
 import com.openminis.app.ui.navigation.Routes
-import com.openminis.app.ui.navigation.safeNavigate
+import com.openminis.app.ui.navigation.ChatNavigation
+import com.openminis.app.ui.navigation.initialChatTarget
+import com.openminis.app.ui.navigation.newDraftSessionId
+import com.openminis.app.ui.navigation.openChat
+import kotlinx.coroutines.flow.collectLatest
 import com.openminis.app.ui.NewerDatabaseGuidanceScreen
 import com.openminis.app.ui.settings.KEY_FONT_APP_BASE
 import com.openminis.app.ui.settings.KEY_KEEP_SCREEN_AWAKE
@@ -493,17 +497,13 @@ class MainActivity : ComponentActivity() {
         // Non-null and fully initialized — proven by the guard above.
         val app = requireNotNull(application as? MinisApp)
 
-        // Parse deep link from launch intent. A real deep-link in the
-        // launch intent always wins over a saved-state restore (the
-        // user explicitly tapped a link). Otherwise, if we were killed
-        // while inside a chat, synthesise an OpenSession deep-link so
-        // the navigation stack lands on that chat instead of the
-        // sessions list. T166.
-        val explicitDeepLink = if (intent?.action == Intent.ACTION_ASSIST) {
-            com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
-            DeepLinkAction.NewVoiceChat
-        } else {
-            DeepLinkHandler.parse(intent?.data)
+        // A launch intent is one-shot, not a new action on every rotation or
+        // theme recreation. Restore the selected session on recreation; actual
+        // warm deep links/assistant invocations are handled by onNewIntent.
+        val explicitDeepLink = when {
+            savedInstanceState != null -> DeepLinkAction.Unknown
+            intent?.action == Intent.ACTION_ASSIST -> DeepLinkAction.NewVoiceChat
+            else -> DeepLinkHandler.parse(intent?.data)
         }
         val launchDeepLink = if (explicitDeepLink !is DeepLinkAction.Unknown) {
             explicitDeepLink
@@ -560,7 +560,12 @@ class MainActivity : ComponentActivity() {
             }
 
             MinisTheme(darkTheme = darkTheme, fontScale = fontScale) {
-                val navController = rememberNavController().also { this.navController = it }
+                // Do not restore the retired two-host graph after upgrading.
+                // This stable saveable namespace also preserves the new graph
+                // normally across later recreation/process-death restores.
+                val navController = androidx.compose.runtime.key("single-chat-root-v1") {
+                    rememberNavController()
+                }.also { this.navController = it }
 
                 // T166: drive `SessionActivityTracker.setPresent` /
                 // `setAbsent` from the nav back-stack so the foreground
@@ -572,22 +577,13 @@ class MainActivity : ComponentActivity() {
                 // docs/parity/android-keep-alive-audit.md).
                 DisposableEffect(navController) {
                     val job = lifecycleScope.launch {
-                        navController.currentBackStackEntryFlow.collect { entry ->
-                            // [T-android-hang-caller-attribution] Let a stall
-                            // sample name the screen it happened on.
+                        navController.currentBackStackEntryFlow.collectLatest { entry ->
                             com.openminis.app.diagnostics.HangDetector.noteScreen(entry.destination.route)
-                            val isChatRoute = entry.destination.route == Routes.CHAT
-                            val sid = entry.arguments?.getString("sessionId").takeIf { isChatRoute }
-                            val previous = currentChatSessionId
-                            if (sid != previous) {
-                                if (previous != null) {
-                                    SessionActivityTracker.setAbsent(previous)
-                                }
-                                if (sid != null) {
-                                    SessionActivityTracker.setPresent(sid)
-                                }
-                                currentChatSessionId = sid
-                            }
+                            if (entry.destination.route == Routes.SESSION_LIST) {
+                                // Track the pane selection, not an outer chat route.
+                                entry.savedStateHandle.getStateFlow<String?>(ChatNavigation.SELECTED_SESSION, null)
+                                    .collect { updateChatPresence(it) }
+                            } else updateChatPresence(null)
                         }
                     }
                     onDispose { job.cancel() }
@@ -623,6 +619,13 @@ class MainActivity : ComponentActivity() {
      * through this path — which is exactly what we want; the state is
      * cheap and re-read is idempotent.
      */
+    private fun updateChatPresence(sessionId: String?) {
+        if (sessionId == currentChatSessionId) return
+        currentChatSessionId?.let { SessionActivityTracker.setAbsent(it) }
+        sessionId?.let { SessionActivityTracker.setPresent(it) }
+        currentChatSessionId = sessionId
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         currentChatSessionId?.let {
@@ -655,11 +658,9 @@ class MainActivity : ComponentActivity() {
         val mode = getAppearancePrefs(this).getInt(KEY_LAUNCH_SESSION, 0)
         if (mode != 2) return
         val nav = navController ?: return
-        val newRoute = Routes.chat("__new__${java.util.UUID.randomUUID()}")
-        AppLogger.info("LaunchSession", "resume → mode=NewChat, navigating to $newRoute")
-        nav.safeNavigate(newRoute) {
-            popUpTo(Routes.SESSION_LIST) { inclusive = false }
-        }
+        val sessionId = newDraftSessionId()
+        AppLogger.info("LaunchSession", "resume → mode=NewChat, opening $sessionId")
+        nav.openChat(sessionId)
     }
 
     /**
@@ -716,9 +717,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == Intent.ACTION_ASSIST) {
-            com.openminis.app.ui.chat.voice.VoiceModePrefs.pendingAssistantCapture = true
-        }
         // T51: warm-start share — ShareReceiverActivity re-launches with
         // FLAG_ACTIVITY_CLEAR_TOP, which delivers the new intent here when
         // MainActivity is already alive. Process the buffered share before
@@ -739,20 +737,7 @@ class MainActivity : ComponentActivity() {
             is DeepLinkAction.OpenTerminal -> {
                 nav.navigate(Routes.terminal(action.initCommand))
             }
-            is DeepLinkAction.OpenSession -> {
-                // T-double-chat-fix (secondary): mirror AppNavigation's
-                // OpenSession options so a runtime deep-link (notification /
-                // shortcut / onNewIntent) can't stack a duplicate chat on
-                // top of the same chat that's already showing.
-                nav.navigate(Routes.chat(action.sessionId)) {
-                    popUpTo(Routes.SESSION_LIST) {
-                        inclusive = false
-                        saveState = true
-                    }
-                    launchSingleTop = true
-                    restoreState = true
-                }
-            }
+            is DeepLinkAction.OpenSession -> nav.openChat(action.sessionId)
             is DeepLinkAction.CreateEnvironmentVariable -> {
                 DeepLinkCoordinator.setPendingEnvVarCreate(action.key, action.value, action.note)
                 nav.navigate(Routes.ENV_VARS)
@@ -770,27 +755,12 @@ class MainActivity : ComponentActivity() {
                     action.resourcePath,
                     action.title,
                 )
-                nav.navigate(Routes.chat(action.sessionId))
+                nav.openChat(action.sessionId)
             }
-            // App-icon quick actions (mirrors iOS QuickActionRouter). All
-            // three open a fresh draft chat; voice/camera additionally seed
-            // DeepLinkCoordinator.pendingChatAction so ChatScreen auto-fires
-            // the corresponding UI on first compose.
             is DeepLinkAction.NewChat,
             is DeepLinkAction.NewVoiceChat,
             is DeepLinkAction.NewCameraChat -> {
-                when (action) {
-                    is DeepLinkAction.NewVoiceChat -> DeepLinkCoordinator
-                        .setPendingChatAction(DeepLinkCoordinator.ChatAction.START_VOICE)
-                    is DeepLinkAction.NewCameraChat -> DeepLinkCoordinator
-                        .setPendingChatAction(DeepLinkCoordinator.ChatAction.OPEN_CAMERA)
-                    else -> {}
-                }
-                val newRoute = Routes.chat("__new__${java.util.UUID.randomUUID()}")
-                nav.navigate(newRoute) {
-                    popUpTo(Routes.SESSION_LIST) { inclusive = false }
-                    launchSingleTop = true
-                }
+                initialChatTarget(action)?.let { nav.openChat(it.sessionId, it.action) }
             }
             is DeepLinkAction.OpenAlarmList -> {
                 // T297: minis://views/alarm now opens the system Clock app

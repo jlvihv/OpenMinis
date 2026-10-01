@@ -31,8 +31,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.ProviderRepository
-import com.openminis.app.ui.chat.ChatScreen
-import com.openminis.app.ui.sessions.SessionListScreen
 import com.openminis.app.ui.settings.AboutScreen
 import com.openminis.app.ui.settings.AddAgentLoopModelsScreen
 import com.openminis.app.ui.settings.AddCustomModelScreen
@@ -82,7 +80,6 @@ private val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
 
 object Routes {
     const val SESSION_LIST = "sessions"
-    const val CHAT = "chat/{sessionId}"
     const val SETTINGS = "settings"
     const val PROVIDER_LIST = "providers"
     const val ADD_PROVIDER = "add_provider"
@@ -202,7 +199,6 @@ object Routes {
 
     fun logDetail(fileName: String) = "log_detail/$fileName"
     fun sessionStorageDetail(sessionId: String) = "session_storage/$sessionId"
-    fun chat(sessionId: String) = "chat/$sessionId"
     fun providerDetail(instanceId: String) = "provider/$instanceId"
     fun shadowVoiceDetail(instanceId: String) = "voice_service/$instanceId"
     // [T-android-model-entry-route-slash-crash] entryId is a composite key
@@ -246,31 +242,15 @@ fun AppNavigation(
         (context.applicationContext as com.openminis.app.MinisApp).mountedFoldersStore
     }
 
-    // Handle initial deep link after composition
+    // Seed the one root without changing its destination or generating new
+    // draft IDs on recomposition. Later requests use its saved-state mailbox.
+    val launchChat = remember(initialDeepLink) { initialChatTarget(initialDeepLink) }
     LaunchedEffect(initialDeepLink) {
         when (initialDeepLink) {
             is DeepLinkAction.OpenTerminal -> {
                 navController.safeNavigate(Routes.terminal(initialDeepLink.initCommand))
             }
-            is DeepLinkAction.OpenSession -> {
-                // T-double-chat-fix: on process-death recreation NavController
-                // auto-restores [SESSION_LIST, chat/<id>] AND MainActivity
-                // synthesizes an OpenSession deep-link from saved state. A
-                // bare navigate() pushed a SECOND chat entry, forcing the
-                // user to press back twice. launchSingleTop collapses the
-                // duplicate; popUpTo(SESSION_LIST, saveState=true) +
-                // restoreState=true preserves chat-screen state across the
-                // hop. When the synthesized deep-link is a no-op (chat
-                // already on top) launchSingleTop short-circuits.
-                navController.safeNavigate(Routes.chat(initialDeepLink.sessionId)) {
-                    popUpTo(Routes.SESSION_LIST) {
-                        inclusive = false
-                        saveState = true
-                    }
-                    launchSingleTop = true
-                    restoreState = true
-                }
-            }
+            is DeepLinkAction.OpenSession -> navController.openChat(initialDeepLink.sessionId)
             is DeepLinkAction.CreateEnvironmentVariable -> {
                 DeepLinkCoordinator.setPendingEnvVarCreate(
                     initialDeepLink.key,
@@ -288,35 +268,23 @@ fun AppNavigation(
             is DeepLinkAction.OpenPermissionSettings -> {
                 navController.safeNavigate(Routes.PERMISSIONS)
             }
-            // OpenHtmlPreview is handled by setting startDestination
-            // (see below) so the NavHost mounts directly into the right
-            // chat — no safeNavigate dance, no sessions-list flash.
-            is DeepLinkAction.OpenHtmlPreview -> {}
-            // App-icon quick actions: all three open a fresh draft chat.
-            // Voice/camera additionally seed DeepLinkCoordinator.pendingChatAction
-            // (done up-front in startDestination block below so the seed
-            // lands before ChatScreen's first compose).
+            is DeepLinkAction.OpenHtmlPreview -> {
+                DeepLinkCoordinator.setPendingHtmlPreview(
+                    initialDeepLink.sessionId, initialDeepLink.resourcePath, initialDeepLink.title,
+                )
+                navController.openChat(initialDeepLink.sessionId)
+            }
             is DeepLinkAction.NewChat,
             is DeepLinkAction.NewVoiceChat,
             is DeepLinkAction.NewCameraChat -> {
-                // Navigation handled by startDestination = chat/<__new__…>
-                // when the launch intent carries one of these actions.
-                // Nothing to do here — see startDestination block below.
+                launchChat?.let { navController.openChat(it.sessionId, it.action) }
             }
             else -> {}
         }
     }
 
-    // Resolve launch session preference once into a deferred navigation target.
-    // T314: this LaunchedEffect fires the same frame the NavHost mounts, so
-    // the SESSION_LIST start-destination's NavBackStackEntry is still in
-    // STARTED state when we'd otherwise call navigate(). safeNavigate() —
-    // designed to defang the back-then-tap race — early-returns whenever
-    // the current entry isn't RESUMED, which silently dropped every
-    // launch-session navigation and left the user on the home screen
-    // regardless of mode 1 / 2 / 0. Wait for the start destination to
-    // settle into RESUMED before navigating; for mode 3 (Home) we don't
-    // need to navigate at all so we can skip the wait entirely.
+    // Resolve the launch preference once and send a session request to the
+    // root. Startup requests do not depend on the root already being RESUMED.
     LaunchedEffect(Unit) {
         val hasDeepLink = initialDeepLink != null && initialDeepLink !is DeepLinkAction.Unknown
         if (hasDeepLink) return@LaunchedEffect
@@ -379,7 +347,7 @@ fun AppNavigation(
             // ChatScreen consumer never mounts and the buffer expires —
             // exactly the symptom from the bug report. Force a new draft
             // chat so the share lands in a composer.
-            hasPendingShare && mode == 3 -> Routes.chat("__new__${java.util.UUID.randomUUID()}")
+            hasPendingShare && mode == 3 -> newDraftSessionId()
             // [T-android-first-launch-lands-home] Nothing configured AND no
             // history: land on Home whatever the mode says. Mode 2 ("always a
             // new chat") is a real preference, but on a device with no provider
@@ -387,8 +355,8 @@ fun AppNavigation(
             // steps that explain why. Once the user has either a session or a
             // provider, their preference is honoured again.
             !hasAnySession && !hasAnyProvider -> null
-            mode == 1 -> chatRepository.dao.listSessions().firstOrNull { !it.isChild }?.let { Routes.chat(it.id) }
-            mode == 2 -> Routes.chat("__new__${java.util.UUID.randomUUID()}")
+            mode == 1 -> chatRepository.dao.listSessions().firstOrNull { !it.isChild }?.id
+            mode == 2 -> newDraftSessionId()
             mode == 3 -> null
             else -> {
                 // [T-android-first-launch-lands-home] No history → Home, not a
@@ -419,90 +387,33 @@ fun AppNavigation(
                             "fresh=$fresh -> ${if (fresh) "RESUME_EXISTING" else "NEW_DRAFT"}",
                     )
                 }
-                if (fresh) Routes.chat(latest.id) else Routes.chat("__new__${java.util.UUID.randomUUID()}")
+                if (fresh) latest.id else newDraftSessionId()
             }
         }
-        if (target != null) {
-            // T314: navigate directly without the safeNavigate guard.
-            // safeNavigate exists to defang back-then-tap-settings races
-            // where a popped destination is mid-tear-down — it requires
-            // RESUMED to be safe. But this LaunchedEffect fires on the
-            // first composition pass, when the start destination is
-            // STARTED but not yet RESUMED. There's no race here: we're
-            // the deterministic startup dispatcher, the start destination
-            // hasn't even rendered, and we want to navigate to it BEFORE
-            // it shows. Calling navigate() unconditionally produces the
-            // intended cold-start dispatch (mode 1 → last session, mode 2
-            // → new chat, mode 0 → auto). Pre-T314 the safeNavigate guard
-            // silently dropped this navigation and stranded the user on
-            // the SESSION_LIST start destination regardless of mode.
-            navController.navigate(target) {
-                popUpTo(Routes.SESSION_LIST) { inclusive = false }
-            }
-        }
+        val rootState = navController.getBackStackEntry(Routes.SESSION_LIST).savedStateHandle
+        // Do not override restored selection or a user request made while
+        // provider configuration was loading asynchronously.
+        if (target != null && rootState.get<String>(ChatNavigation.SELECTED_SESSION) == null &&
+            rootState.get<String>(ChatNavigation.PENDING_SESSION) == null
+        ) navController.openChat(target)
     }
 
-    // T185: warm-share fallback — if a share lands while the user is sitting
-    // on the session list (cold-start with mode 3 that raced past the launch
-    // resolver, or onNewIntent re-fires processPendingShare), route into a
-    // fresh chat so ChatScreen's existing LaunchedEffect(shareBufferVersion)
-    // can drain it. The drain itself is idempotent: consumeBuffer is one-shot,
-    // so a ChatScreen already in the backstack won't double-inject.
+    // Deliver shares to the selected chat, or open a draft in the same root
+    // when there is no selected chat / another screen is in front.
     val shareBufferVersion by com.openminis.app.share.ShareCoordinator.bufferVersion.collectAsState()
     LaunchedEffect(shareBufferVersion) {
         if (shareBufferVersion == 0) return@LaunchedEffect
         val current = navController.currentDestination?.route ?: return@LaunchedEffect
-        if (current == Routes.SESSION_LIST) {
-            navController.safeNavigate(Routes.chat("__new__${java.util.UUID.randomUUID()}")) {
-                popUpTo(Routes.SESSION_LIST) { inclusive = false }
-            }
-        }
+        val rootState = navController.getBackStackEntry(Routes.SESSION_LIST).savedStateHandle
+        if (current != Routes.SESSION_LIST ||
+            (rootState.get<String>(ChatNavigation.SELECTED_SESSION) == null &&
+                rootState.get<String>(ChatNavigation.PENDING_SESSION) == null)
+        ) navController.openChat(newDraftSessionId())
     }
 
-    // Pinned-shortcut cold start: when launched via
-     // `minis://session/<id>/<resource-path>`, set the pending HTML
-     // preview synchronously and start NavHost directly at the matching
-     // chat so ChatScreen's LaunchedEffect consumes the pending state on
-     // first composition — no sessions-list flash, no launch-session
-     // preference detour.
-    val htmlShortcut = initialDeepLink as? DeepLinkAction.OpenHtmlPreview
-    // App-icon quick action cold start: mount NavHost directly at a fresh
-    // draft chat, seeding the pending action so ChatScreen consumes it on
-    // its first LaunchedEffect tick. Mirrors the htmlShortcut path —
-    // avoids a sessions-list flash and a duplicate back-stack entry.
-    val quickActionStart: String? = when (initialDeepLink) {
-        is DeepLinkAction.NewVoiceChat -> {
-            DeepLinkCoordinator.setPendingChatAction(
-                DeepLinkCoordinator.ChatAction.START_VOICE,
-            )
-            Routes.chat("__new__${java.util.UUID.randomUUID()}")
-        }
-        is DeepLinkAction.NewCameraChat -> {
-            DeepLinkCoordinator.setPendingChatAction(
-                DeepLinkCoordinator.ChatAction.OPEN_CAMERA,
-            )
-            Routes.chat("__new__${java.util.UUID.randomUUID()}")
-        }
-        is DeepLinkAction.NewChat -> Routes.chat("__new__${java.util.UUID.randomUUID()}")
-        else -> null
-    }
-    val startDestination = when {
-        htmlShortcut != null -> {
-            // Seed coordinator before NavHost composition so ChatScreen sees
-            // the pending state on its very first LaunchedEffect tick.
-            DeepLinkCoordinator.setPendingHtmlPreview(
-                htmlShortcut.sessionId,
-                htmlShortcut.resourcePath,
-                htmlShortcut.title,
-            )
-            Routes.chat(htmlShortcut.sessionId)
-        }
-        quickActionStart != null -> quickActionStart
-        else -> Routes.SESSION_LIST
-    }
     NavHost(
         navController = navController,
-        startDestination = startDestination,
+        startDestination = Routes.SESSION_LIST,
         // T153: paint the in-app theme color underneath every transition
         // frame. Without this the NavHost's transition surface is
         // transparent and the window background bleeds through during
@@ -557,32 +468,11 @@ fun AppNavigation(
             ) + fadeOut(animationSpec = tween(200, easing = EmphasizedAccelerate))
         },
     ) {
-        // [T-android-tablet-split] SESSION_LIST and CHAT both render the same
-        // ChatSplitScaffold; they differ only in which session it opens with.
-        //
-        // Keeping BOTH routes (rather than collapsing to one) is deliberate:
-        // `Routes.chat(id)` is navigated to from many places — deep links,
-        // share handoff, Move-to, the widget, notifications — and every one of
-        // them keeps working unchanged. On a phone the scaffold resolves to a
-        // single pane, so those pushes look and behave exactly as before.
-        composable(Routes.SESSION_LIST) {
+        // Exactly one list/chat host; only independent screens use this NavHost.
+        composable(Routes.SESSION_LIST) { rootEntry ->
             ChatSplitScaffoldRoute(
-                initialSessionId = null,
-                navController = navController,
-                chatRepository = chatRepository,
-                providerRepository = providerRepository,
-                skillRepository = skillRepository,
-                mcpRepository = mcpRepository,
-            )
-        }
-
-        composable(
-            route = Routes.CHAT,
-            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
-        ) { backStackEntry ->
-            val sessionId = backStackEntry.arguments?.getString("sessionId") ?: return@composable
-            ChatSplitScaffoldRoute(
-                initialSessionId = sessionId,
+                initialSessionId = launchChat?.sessionId,
+                rootEntry = rootEntry,
                 navController = navController,
                 chatRepository = chatRepository,
                 providerRepository = providerRepository,
@@ -1410,7 +1300,7 @@ fun AppNavigation(
                     navController.safeNavigate(Routes.scheduledTaskRuns(taskId))
                 },
                 onOpenSession = { sessionId ->
-                    navController.safeNavigate(Routes.chat(sessionId))
+                    navController.safeOpenChat(sessionId)
                 },
             )
         }
@@ -1424,7 +1314,7 @@ fun AppNavigation(
                 taskId = taskId,
                 onBack = { navController.safePopBackStack() },
                 onOpenSession = { sessionId ->
-                    navController.safeNavigate(Routes.chat(sessionId))
+                    navController.safeOpenChat(sessionId)
                 },
             )
         }
@@ -1443,7 +1333,7 @@ fun AppNavigation(
                 taskId = taskId,
                 onBack = { navController.safePopBackStack() },
                 onOpenSession = { sessionId ->
-                    navController.safeNavigate(Routes.chat(sessionId))
+                    navController.safeOpenChat(sessionId)
                 },
             )
         }

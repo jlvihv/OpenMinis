@@ -72,14 +72,18 @@ object DeepLinkCoordinator {
      */
     enum class ChatAction { START_VOICE, OPEN_CAMERA }
 
-    private val _pendingChatAction = MutableStateFlow<ChatAction?>(null)
-    val pendingChatAction: StateFlow<ChatAction?> = _pendingChatAction.asStateFlow()
+    // Bind side effects to their destination so an outgoing chat cannot
+    // consume the assistant/camera request intended for the next chat.
+    data class ChatActionRequest(val sessionId: String, val action: ChatAction)
 
-    fun setPendingChatAction(action: ChatAction) {
-        _pendingChatAction.value = action
+    private val _pendingChatAction = MutableStateFlow<ChatActionRequest?>(null)
+    val pendingChatAction: StateFlow<ChatActionRequest?> = _pendingChatAction.asStateFlow()
+
+    fun setPendingChatAction(action: ChatAction, sessionId: String) {
+        _pendingChatAction.value = ChatActionRequest(sessionId, action)
     }
 
-    fun consumePendingChatAction(): ChatAction? {
+    fun consumePendingChatAction(): ChatActionRequest? {
         val current = _pendingChatAction.value
         _pendingChatAction.value = null
         return current
