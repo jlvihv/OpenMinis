@@ -44,6 +44,7 @@ import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneSca
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -341,6 +342,8 @@ fun ChatSplitScaffold(
     // See the long note at its former position further down for why the
     // selection is hoisted here at all.
     var selectedSessionId by rememberSaveable { mutableStateOf(initialSessionId) }
+    // The phone's outgoing pane needs its old content until AnimatedPane exits.
+    var lastDetailSessionId by rememberSaveable { mutableStateOf(initialSessionId) }
     val detailStateHolder = rememberSaveableStateHolder()
 
     // [T-android-tablet-sidebar-collapse] Whether the list pane is hidden.
@@ -446,6 +449,9 @@ fun ChatSplitScaffold(
         val resolvedSessionId = com.openminis.app.ui.chat.ChatViewModelStore
             .rememberPersistedId(currentSessionId.orEmpty())
         val persistedSessionId = resolvedSessionId.takeIf { currentSessionId != null }
+        SideEffect {
+            if (currentSessionId != null) lastDetailSessionId = currentSessionId
+        }
         // One pane navigator owns all list/detail transitions, including Back.
         // Publish the persisted id after a draft is promoted, so process-death
         // recovery and foreground-service presence follow the real session.
@@ -575,9 +581,10 @@ fun ChatSplitScaffold(
                 // in light theme the boundary was nearly invisible. SwiftUI's
                 // NavigationSplitView draws its own separator; ListDetailPane-
                 // Scaffold does not.
-                val sessionId = navigator.currentDestination
-                    ?.takeIf { it.pane == ListDetailPaneScaffoldRole.Detail }
-                    ?.contentKey
+                // Selection changes before the exit animation completes. Only
+                // tablets should swap to the empty-detail placeholder; phones
+                // retain the outgoing conversation until this pane disappears.
+                val sessionId = currentSessionId ?: lastDetailSessionId.takeUnless { twoPane }
                 Row(Modifier.fillMaxSize()) {
                     // [T-android-tablet-sidebar-collapse] No seam to draw when
                     // the list is collapsed — the chat then owns the full width
@@ -614,16 +621,12 @@ fun ChatSplitScaffold(
                     // this the control simply vanishes whenever no session is
                     // open — including after closing one with the list already
                     // collapsed, leaving a screen with no way to reach anything.
-                    NoConversationSelected(
-                        onToggleSidebar = if (twoPane) {
-                            {
-                                listCollapsed = !listCollapsed
-                                uiPrefs.edit()
-                                    .putBoolean(KEY_LIST_COLLAPSED, listCollapsed)
-                                    .apply()
-                            }
-                        } else {
-                            null
+                    if (twoPane) NoConversationSelected(
+                        onToggleSidebar = {
+                            listCollapsed = !listCollapsed
+                            uiPrefs.edit()
+                                .putBoolean(KEY_LIST_COLLAPSED, listCollapsed)
+                                .apply()
                         },
                         sidebarCollapsed = listCollapsed,
                     )

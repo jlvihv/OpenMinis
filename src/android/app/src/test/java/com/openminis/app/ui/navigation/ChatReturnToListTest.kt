@@ -44,6 +44,13 @@ class ChatReturnToListTest {
     }
 
     @Test
+    fun `phone exit retains the conversation and never renders tablet placeholder`() {
+        val source = ProductionSources.read("ui/navigation/ChatSplitScaffold.kt")
+        assertTrue(source.contains("currentSessionId ?: lastDetailSessionId.takeUnless { twoPane }"))
+        assertTrue(source.contains("if (twoPane) NoConversationSelected("))
+    }
+
+    @Test
     fun `activity tracks pane selection and does not replay launch intents on recreation`() {
         val source = ProductionSources.read("MainActivity.kt")
         assertTrue(source.contains("ChatNavigation.SELECTED_SESSION"))
