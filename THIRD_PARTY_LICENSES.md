@@ -48,10 +48,12 @@ Transitive packages (pinned in `Package.resolved`), all **Apache-2.0**, maintain
 
 Test-only dependencies: JUnit 4.13.2 (**EPL-1.0**), MockWebServer 4.12.0 (**Apache-2.0**), kotlinx-coroutines-test 1.9.0 (**Apache-2.0**), org.json 20231013 (**Public Domain / JSON License**).
 
-## Bundled web/UI assets
+## Bundled runtime/web/UI assets
 
 | Asset | Location | License |
 |---|---|---|
+| Pi codemode prelude | `src/android/codemode/vendor/prelude-source.ts`, upstream `a276dabe5` | **MIT** — license included in Android codemode assets |
+| QuickJS-NG | `src/android/app/src/main/cpp/quickjs/`, v0.15.1 (`fd0a0210b7be00957751871e7e01b8291268fc29`) | **MIT** — license included with source and in Android codemode assets |
 | KaTeX | iOS `src/ios/Resources/KaTeX/`, Android `app/src/main/assets/katex/` | **MIT** |
 | jieba dictionaries | iOS bundle / Android `assets/jieba/` | **MIT** (cppjieba distribution) |
 | [tiktoken](https://github.com/openai/tiktoken) `cl100k_base` BPE ranks | iOS `src/ios/Shared/cl100k_base.tiktoken`; the tokenizer in `BPETokenizer.swift` is ported from tiktoken | **MIT** |

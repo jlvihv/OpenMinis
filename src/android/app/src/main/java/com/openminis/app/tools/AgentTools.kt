@@ -37,6 +37,8 @@ object AgentTools {
         // would fail to resolve. Empty falls back to the built-in's name so the
         // enum is never an empty list (which some providers reject).
         rosterNames: List<String> = listOf(SubAgentDefinition.BUILT_IN_NAME),
+        codemodeMode: String = "off",
+        codemodeInlineBudget: Int = 3000,
     ): List<AgentToolDefinition> = buildList {
         add(shellExecuteDefinition())
         add(FileReadTool.definition())
@@ -49,7 +51,16 @@ object AgentTools {
         if (!isHelper && delegateEnabled) {
             add(subAgentTaskDefinition(rosterNames))
         }
-    }
+    }.let { prepareCodemodeLoadout(it, codemodeMode, codemodeInlineBudget) }
+
+    fun prepareCodemodeLoadout(tools: List<AgentToolDefinition>, codemodeMode: String, codemodeInlineBudget: Int = 3000): List<AgentToolDefinition> =
+        when (codemodeMode) {
+            "on" -> tools.map { tool -> tool.copy(description = tool.description +
+                "\n\nCodemode: tools.${CodemodeTool.identifier(tool.name)}(args) resolves to a string.") } +
+                CodemodeTool.definition(emptyList(), codemodeInlineBudget)
+            "only" -> listOf(CodemodeTool.definition(tools, codemodeInlineBudget))
+            else -> tools
+        }
 
     /**
      * [T-sub-agents-v1] The one sub agent tool: delegate, and inspect or stop

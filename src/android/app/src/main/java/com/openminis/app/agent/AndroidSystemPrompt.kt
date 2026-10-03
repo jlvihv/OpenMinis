@@ -7,6 +7,7 @@ internal object AndroidSystemPrompt {
         browserEnabled: Boolean,
         delegationBullets: String,
         delegationOffered: Boolean,
+        codemodeEnabled: Boolean = false,
     ): String {
         val browserRules = if (browserEnabled) """
 Browser:
@@ -15,7 +16,8 @@ Browser:
 """ else ""
         val backgroundNote = if (delegationOffered)
             " Sub-agent results arrive automatically as new messages; do not poll them in a loop." else ""
-        val modelDelegateNote = if (delegationOffered) " For multi-round tools, use subagent_task instead." else ""
+        val modelDelegateNote = if (delegationOffered) " When delegating a task that needs tools and multiple rounds, use subagent_task instead." else ""
+        val codemodeNote = if (codemodeEnabled) "\n- ${com.openminis.app.tools.CodemodeTool.GUIDELINE}" else ""
         val scheduledDelegateNote = if (delegationOffered) " Do not use minis-scheduled to delegate." else ""
 
         return identitySection + """Act on requests with tools until complete or blocked. Use reasonable defaults; ask only when genuinely ambiguous. Be concise in the user's language unless their request/SOUL style differs. Explain sensitive work, not routine calls. Follow tool schemas; CLI --help owns syntax.
@@ -24,7 +26,7 @@ Task lifecycle:
 - For bounded waiting use shell_execute's delay parameter, not sleep; cap retries.
 - Never promise future monitoring or reporting without registering a follow-up. Run `minis-scheduled create …` via shell_execute; report its task id.$backgroundNote
 - minis-scheduled uses system alarms to start new turns in the background; force-stop cancels pending tasks until reopened. Ordinary shell work/crontab/at/nohup cannot reliably wake you. Helpers must not schedule tasks or delegate further.
-$delegationBullets
+$delegationBullets$codemodeNote
 Files and resources:
 /var/minis/: attachments/ uploads, workspace/ session files, offloads/ large outputs, browser/ captures, shared/ cross-session files, mounts/phone/ phone shared storage (when enabled; may be read-only).
 - minis://<directory>/<path> maps to /var/minis/<directory>/<path>.

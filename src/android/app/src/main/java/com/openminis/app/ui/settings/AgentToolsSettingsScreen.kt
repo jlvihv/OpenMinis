@@ -30,6 +30,8 @@ fun AgentToolsSettingsScreen(onBack: () -> Unit) {
         mutableStateOf(AgentToolSwitch.BROWSER.isEnabled(context))
     }
 
+    var codemodeMode by remember { mutableStateOf(com.openminis.app.tools.CodemodeTool.mode(context)) }
+
     SettingsScaffold(title = stringResource(R.string.settings_agent_tools), onBack = onBack) {
         SettingsSection(footer = stringResource(R.string.agent_tools_browser_footer)) {
             SettingsSwitchRow(
@@ -41,6 +43,17 @@ fun AgentToolsSettingsScreen(onBack: () -> Unit) {
                 },
                 showDivider = false,
             )
+        }
+        SettingsSection(header = "codemode", footer = stringResource(R.string.codemode_footer)) {
+            listOf("off" to R.string.codemode_off, "on" to R.string.codemode_on, "only" to R.string.codemode_only)
+                .forEachIndexed { index, (mode, label) ->
+                    SettingsChoiceRow(title = stringResource(label), selected = codemodeMode == mode,
+                        onSelect = {
+                            codemodeMode = mode
+                            context.getSharedPreferences(com.openminis.app.tools.CodemodeTool.PREFS, android.content.Context.MODE_PRIVATE)
+                                .edit().putString(com.openminis.app.tools.CodemodeTool.MODE_KEY, mode).apply()
+                        }, showDivider = index < 2)
+                }
         }
         // [T-android-subagent-settings-parity] The agents switch is NOT here.
         //

@@ -8,11 +8,26 @@ import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.db.MessageHeadRow
 import com.openminis.app.data.model.ModelAttributionSnapshot
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 class ChatRepository(internal val dao: ChatDao) {
 
     fun observeSessions(): Flow<List<ChatSessionEntity>> = dao.observeSessions()
+
+    private val customEntryMutex = Mutex()
+
+    /** Commit a successful script immediately, independently of its enclosing LLM turn. */
+    suspend fun appendCodemodeStoreEntry(sessionId: String, writes: String) = customEntryMutex.withLock {
+        val parts = com.openminis.app.tools.CodemodeStore.encode(writes, UUID.randomUUID().toString())
+        val start = dao.nextSortOrder(sessionId)
+        val now = System.currentTimeMillis()
+        dao.insertMessages(parts.mapIndexed { index, json -> MessageEntity(
+            id = UUID.randomUUID().toString(), sessionId = sessionId, role = "system", partsJson = json,
+            createdAt = now, sortOrder = start + index,
+        ) })
+    }
 
     suspend fun createSession(
         modelId: String,
@@ -960,9 +975,11 @@ class ChatRepository(internal val dao: ChatDao) {
          * writer persists an empty assistant row: persistAssistantTurn drops
          * them). Such a row must never reach the model: an empty assistant
          * message is rejected by Anthropic and breaks role alternation.
+         * Also hides codemode custom entries, which are transcript metadata rather than messages.
          */
         internal fun isEmptyAssistantCarrier(role: String, partsJson: String): Boolean =
-            role == "assistant" && partsJson.trim() == ERROR_CARRIER_PARTS_JSON
+            (role == "assistant" && partsJson.trim() == ERROR_CARRIER_PARTS_JSON) ||
+                com.openminis.app.tools.CodemodeStore.isEntry(partsJson)
 
         private fun cleanPreview(raw: String): String {
             return stripSystemReminders(raw)

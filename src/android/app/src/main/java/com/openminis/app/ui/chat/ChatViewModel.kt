@@ -1925,7 +1925,7 @@ class ChatViewModel(
      * The cost is negligible — [AgentTools.makeAgentTools] just builds a
      * fixed list of definition objects, no I/O.
      */
-    private val agentTools: List<AgentToolDefinition>
+    private val callableAgentTools: List<AgentToolDefinition>
         get() = AgentTools.makeAgentTools(
             // [T-android-vision-group / GH#182] The main model's own vision
             // capability. When false but a Vision Group is configured, read_image
@@ -1948,6 +1948,12 @@ class ChatViewModel(
             // would reject.
             rosterNames = providerRepository.subAgents.map { it.name },
         )
+
+    private val agentTools: List<AgentToolDefinition>
+        get() = AgentTools.prepareCodemodeLoadout(callableAgentTools,
+            com.openminis.app.tools.CodemodeTool.mode(context),
+            context.getSharedPreferences(com.openminis.app.tools.CodemodeTool.PREFS, Context.MODE_PRIVATE)
+                .getInt(com.openminis.app.tools.CodemodeTool.INLINE_BUDGET_KEY, 3000))
 
     /**
      * [T-sub-agents-resume] Restart sub agent runs the app lost when it was
@@ -11890,13 +11896,16 @@ class ChatViewModel(
                         // partial artifact is silent corruption of user data and is worse
                         // than no write at all; read-only and shell tools keep the
                         // repair-and-run behaviour. Mirrors iOS ConcurrentTools.
-                        if (truncationRepairTag != null && (name == "file_write" || name == "file_edit")) {
+                        if (truncationRepairTag != null && (name == "file_write" || name == "file_edit" || name == "codemode")) {
                             val path = args.optString("path", "").ifBlank { args.optString("file_path", "") }
                             AppLogger.warning(
                                 "ToolPreflight",
                                 "[ToolRepair] REFUSED truncated write tool=$name id=$id strategy=$truncationRepairTag path=$path"
                             )
-                            val modelMessage = buildString {
+                            val modelMessage = if (name == "codemode") {
+                                "Error: This codemode call was NOT executed because its source was truncated in transit " +
+                                    "($truncationRepairTag). Re-issue a complete script; do not continue a partial script."
+                            } else buildString {
                                 append("Error: This call was NOT executed. Its argument stream was truncated ")
                                 append("in transit (repair strategy: $truncationRepairTag), so the `content` ")
                                 append("your client sent was cut short and would have written an incomplete file")
@@ -12075,7 +12084,10 @@ class ChatViewModel(
                             } else {
                                 result.output
                             }
-                            val finalContent = if (existingContent.length > resultContent.length) existingContent else resultContent
+                            val finalContent = if (name == com.openminis.app.tools.CodemodeTool.NAME) {
+                                val trace = com.openminis.app.tools.CodemodeTool.renderDetails(result.detailsJson)
+                                if (trace.isEmpty()) resultContent else "$trace\n\n$resultContent"
+                            } else if (existingContent.length > resultContent.length) existingContent else resultContent
                             // [T-truncated-args-visibility #119] A call built from
                             // truncated args must not render as a clean success — that
                             // silence is the reported bug. Show it with the same weight
@@ -12140,7 +12152,9 @@ class ChatViewModel(
                             imageData = result.imageData,
                             imageMimeType = result.imageMimeType,
                             imageLinuxPath = result.imageLinuxPath,
+                            detailsJson = result.detailsJson,
                         ))
+                        resultParts.addAll(result.additionalImages)
                             } finally {
                                 SessionActivityTracker.toolFinished()
                             }
@@ -12425,6 +12439,7 @@ class ChatViewModel(
         val toolTitle = try { JSONObject(argsJson).optString("tool_title", name) } catch (_: Exception) { name }
 
         return when (name) {
+            com.openminis.app.tools.CodemodeTool.NAME -> executeCodemodeTool(argsJson, toolId, toolBlocks, assistantId, currentText)
             FileReadTool.NAME -> {
                 val result = FileReadTool.execute(argsJson, fsSessionId, context)
                 // Record skill usage when SKILL.md under /var/minis/skills/<id>/ is read.
@@ -12515,6 +12530,74 @@ class ChatViewModel(
                 }
             else -> ToolExecutionResult("Unknown tool: $name", false)
         }
+    }
+
+    private suspend fun executeCodemodeTool(argsJson: String, toolId: String, toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String): ToolExecutionResult {
+        val cm = com.openminis.app.tools.CodemodeTool
+        if (cm.mode(context) == "off") return toolDisabledResult(cm.NAME)
+        val source = try { JSONObject(argsJson).getString("code") } catch (e: Exception) {
+            return ToolExecutionResult("Expected JavaScript source in code: ${e.message}", false, toolTitle = cm.NAME)
+        }
+        // Read the complete branch, not the compacted model context. Custom entries survive
+        // restart and compaction; copying/trimming transcript rows forks/rewinds them too.
+        val codemodeSessionId = activeSessionId
+        val store = com.openminis.app.tools.CodemodeStore.read(
+            chatRepository.loadMessages(codemodeSessionId).map { it.partsJson })
+        val tools = callableAgentTools
+        val result = cm.execute(context, source, toolId, tools, store,
+            spill = { text ->
+                val path = "/var/minis/offloads/codemode-${java.util.UUID.randomUUID()}.txt"
+                withContext(Dispatchers.IO) {
+                    val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, path, context)
+                        ?: error("Unable to resolve codemode output path")
+                    file.parentFile?.mkdirs()
+                    file.writeText(text)
+                }
+                path
+            },
+            invoke = { name, arguments, nestedId ->
+                // Same availability, preflight and executor as direct calls. No recursive codemode.
+                val definition = tools.firstOrNull { it.name == name }
+                    ?: throw IllegalArgumentException("Unknown or unavailable tool: $name")
+                val args = JSONObject(arguments)
+                preflightValidateToolCallImpl(name, args, listOf(definition))?.let { throw IllegalArgumentException(it) }
+                val nestedBlocks = mutableListOf(AssistantBlock(id = nestedId, kind = "tool_use", toolName = name,
+                    content = "", toolStatus = ToolBlockStatus.RUNNING))
+                executeTool(name, args.toString(), nestedId, nestedBlocks, assistantId, currentText)
+            },
+            onUpdate = { calls ->
+                val progress = cm.renderDetails(cm.details(calls))
+                viewModelScope.launch(Dispatchers.Main) {
+                    val index = toolBlocks.indexOfFirst { it.id == toolId }
+                    if (index >= 0 && toolBlocks[index].toolStatus == ToolBlockStatus.RUNNING && activeSessionId == codemodeSessionId) {
+                        toolBlocks[index] = toolBlocks[index].copy(content = progress)
+                        updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                    }
+                }
+            },
+            appendEntry = { writes ->
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                    chatRepository.appendCodemodeStoreEntry(codemodeSessionId, writes)
+                }
+            })
+        val images = withContext(Dispatchers.IO) {
+            result.images.map { image ->
+                val bytes = android.util.Base64.decode(image.data, android.util.Base64.DEFAULT)
+                val extension = when (image.mimeType) { "image/jpeg" -> "jpg"; "image/gif" -> "gif"; "image/webp" -> "webp"; else -> "png" }
+                val path = "/var/minis/offloads/codemode-${java.util.UUID.randomUUID()}.$extension"
+                val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, path, context)
+                    ?: error("Unable to resolve codemode image path")
+                file.parentFile?.mkdirs()
+                file.writeBytes(bytes)
+                AgentContentPart.ImageData(bytes, image.mimeType!!, linuxPath = path)
+            }
+        }
+        return ToolExecutionResult(result.output, result.success,
+            imageData = images.firstOrNull()?.data, imageMimeType = images.firstOrNull()?.mimeType,
+            imageLinuxPath = images.firstOrNull()?.linuxPath,
+            imageFilePath = images.firstOrNull()?.linuxPath?.let {
+                com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, it, context)?.absolutePath },
+            toolTitle = cm.NAME, additionalImages = images.drop(1), detailsJson = cm.details(result.calls))
     }
 
     /**
@@ -14348,7 +14431,18 @@ class ChatViewModel(
             results.forEachIndexed { index, result ->
                 if (index > 0) append(",")
                 val snapshotText = escapeJson(result.content.lines().takeLast(30).joinToString("\n"))
-                append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError},"snapshot":{"type":"text","text":$snapshotText}}}""")
+                val imageMetadata = if (result.name == com.openminis.app.tools.CodemodeTool.NAME) {
+                    val position = parts.indexOf(result)
+                    val images = mutableListOf<AgentContentPart.ImageData>()
+                    if (result.imageData != null && result.imageLinuxPath != null) images.add(
+                        AgentContentPart.ImageData(result.imageData, result.imageMimeType ?: "image/png", result.imageLinuxPath))
+                    images.addAll(parts.drop(position + 1).takeWhile { it !is AgentContentPart.ToolResult }
+                        .filterIsInstance<AgentContentPart.ImageData>())
+                    ",\"images\":" + org.json.JSONArray(images.map { image -> JSONObject()
+                        .put("path", image.linuxPath).put("mimeType", image.mimeType) }).toString()
+                } else ""
+                val detailsMetadata = result.detailsJson?.let { ",\"detailsJson\":${escapeJson(it)}" }.orEmpty()
+                append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError}$imageMetadata$detailsMetadata,"snapshot":{"type":"text","text":$snapshotText}}}""")
             }
             append("]")
         }
@@ -14395,6 +14489,7 @@ class ChatViewModel(
             browserEnabled = browserToolEnabled,
             delegationBullets = delegationBullets,
             delegationOffered = delegationOffered,
+            codemodeEnabled = com.openminis.app.tools.CodemodeTool.mode(context) != "off",
         )
 
         // Append optional capability fragments after the stable base.
@@ -16080,7 +16175,11 @@ class ChatViewModel(
                         val toolUseId = value.optString("toolUseId", "")
                         if (toolUseId.isNotEmpty()) {
                             toolResultMap[toolUseId] = ToolResultData(
-                                output = value.optString("output", ""),
+                                output = com.openminis.app.tools.CodemodeTool.renderDetails(
+                                    value.optString("detailsJson").ifEmpty { null }).let { trace ->
+                                    val output = value.optString("output", "")
+                                    if (trace.isEmpty()) output else "$trace\n\n$output"
+                                },
                                 success = value.optBoolean("success", true),
                             )
                         }
@@ -16092,6 +16191,7 @@ class ChatViewModel(
         // Second pass: convert messages, merging tool results into blocks
         // Filter out user messages that only contain toolResult parts (no visible text)
         return mapNotNull { entity ->
+            if (com.openminis.app.tools.CodemodeStore.isEntry(entity.partsJson)) return@mapNotNull null
             var text = ""
             val blocks = mutableListOf<AssistantBlock>()
             // T128: media attachments persisted under user messages as `mediaRef`
@@ -16398,12 +16498,27 @@ class ChatViewModel(
                     }
                     "toolResult" -> {
                         val v = obj.getJSONObject("value")
+                        val restoredImages = mutableListOf<AgentContentPart.ImageData>()
+                        val savedImages = v.optJSONArray("images")
+                        if (savedImages != null) for (j in 0 until savedImages.length()) {
+                            val image = savedImages.getJSONObject(j)
+                            val path = image.optString("path")
+                            val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, path, context)
+                            if (file?.exists() == true) runCatching {
+                                restoredImages.add(AgentContentPart.ImageData(file.readBytes(), image.getString("mimeType"), path))
+                            }
+                        }
                         contentParts.add(AgentContentPart.ToolResult(
                             id = v.optString("toolUseId", ""),
                             name = v.optString("name", ""),
                             content = v.optString("output", ""),
                             isError = !v.optBoolean("success", true),
+                            imageData = restoredImages.firstOrNull()?.data,
+                            imageMimeType = restoredImages.firstOrNull()?.mimeType,
+                            imageLinuxPath = restoredImages.firstOrNull()?.linuxPath,
+                            detailsJson = v.optString("detailsJson").ifEmpty { null },
                         ))
+                        contentParts.addAll(restoredImages.drop(1))
                     }
                     "mediaRef" -> {
                         // T128: load persisted user-message images so the model

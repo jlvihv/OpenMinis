@@ -1,0 +1,6 @@
+<resources>
+    <string name="codemode_footer">Run JavaScript that calls tools, batches independent calls and filters output. Uses native QuickJS with Pi’s scripting interface. No System WebView dependency.</string>
+    <string name="codemode_off">Off</string>
+    <string name="codemode_on">On — also allow direct tool calls</string>
+    <string name="codemode_only">Only — call tools through codemode</string>
+</resources>

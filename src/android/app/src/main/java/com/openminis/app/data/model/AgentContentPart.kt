@@ -48,13 +48,15 @@ sealed class AgentContentPart {
          * placeholder when the bytes are elided.
          */
         val imageLinuxPath: String? = null,
+        /** Tool rendering metadata; provider serializers use content only. */
+        val detailsJson: String? = null,
     ) : AgentContentPart() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (other !is ToolResult) return false
             return id == other.id && name == other.name && content == other.content &&
                 isError == other.isError && imageData.contentEquals(other.imageData) &&
-                imageMimeType == other.imageMimeType && imageLinuxPath == other.imageLinuxPath
+                imageMimeType == other.imageMimeType && imageLinuxPath == other.imageLinuxPath && detailsJson == other.detailsJson
         }
 
         override fun hashCode(): Int {
@@ -65,6 +67,7 @@ sealed class AgentContentPart {
             result = 31 * result + (imageData?.contentHashCode() ?: 0)
             result = 31 * result + (imageMimeType?.hashCode() ?: 0)
             result = 31 * result + (imageLinuxPath?.hashCode() ?: 0)
+            result = 31 * result + (detailsJson?.hashCode() ?: 0)
             return result
         }
     }

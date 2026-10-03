@@ -50,6 +50,7 @@ internal object ConfigBuiltins {
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
         registerUserProfile(r, context)
+        registerCodemode(r, context)
         registerNetwork(r, context)
     }
 
@@ -848,6 +849,31 @@ internal object ConfigBuiltins {
                     throw ConfigError.InvalidValue("that image could not be processed")
             }
         }
+    }
+
+    private fun registerCodemode(r: ConfigRegistry, context: Context) {
+        val cm = com.openminis.app.tools.CodemodeTool
+        val prefs = context.getSharedPreferences(cm.PREFS, Context.MODE_PRIVATE)
+        r.register(ClosureField(
+            path = "codemode.mode", displayName = "codemode", description = "off / on / only. on keeps direct tools; only exposes tools through codemode.",
+            valueSchema = ConfigSchema.StrEnum(listOf("off", "on", "only")), risk = ConfigRisk.NORMAL, revertable = true,
+            reader = { ConfigValue.Str(cm.mode(context)) },
+            writer = { value ->
+                val mode = (value as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                if (mode !in listOf("off", "on", "only")) throw ConfigError.InvalidValue("Expected off, on or only")
+                prefs.edit().putString(cm.MODE_KEY, mode).apply()
+            },
+        ))
+        r.register(ClosureField(
+            path = "codemode.inlineBudget", displayName = "codemode declaration budget", description = "Estimated token budget for inline tool declarations (default 3000).",
+            valueSchema = ConfigSchema.Int(min = 0), risk = ConfigRisk.NORMAL, revertable = true,
+            reader = { ConfigValue.Int(prefs.getInt(cm.INLINE_BUDGET_KEY, 3000)) },
+            writer = { value ->
+                val budget = (value as? ConfigValue.Int)?.value ?: throw ConfigError.TypeMismatch("integer")
+                if (budget < 0) throw ConfigError.InvalidValue("Budget must be non-negative")
+                prefs.edit().putInt(cm.INLINE_BUDGET_KEY, budget).apply()
+            },
+        ))
     }
 
     private fun registerUserProfile(r: ConfigRegistry, context: Context) {

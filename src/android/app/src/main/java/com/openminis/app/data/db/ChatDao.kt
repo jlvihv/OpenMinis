@@ -253,6 +253,10 @@ interface ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 
+    /** Room inserts the list in one transaction: a custom entry is never half-written. */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
     /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.

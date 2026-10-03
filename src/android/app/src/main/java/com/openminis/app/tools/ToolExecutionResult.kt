@@ -27,6 +27,9 @@ data class ToolExecutionResult(
      * subclassification iOS handles inline via error-message parsing.
      */
     val timedOut: Boolean = false,
+    val additionalImages: List<com.openminis.app.data.model.AgentContentPart.ImageData> = emptyList(),
+    /** UI-only nested-call trace; never included in model-facing output. */
+    val detailsJson: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -36,7 +39,7 @@ data class ToolExecutionResult(
             imageMimeType == other.imageMimeType && toolTitle == other.toolTitle &&
             pageURL == other.pageURL && imageFilePath == other.imageFilePath &&
             imageLinuxPath == other.imageLinuxPath &&
-            timedOut == other.timedOut
+            timedOut == other.timedOut && additionalImages == other.additionalImages && detailsJson == other.detailsJson
     }
 
     override fun hashCode(): Int {
@@ -49,6 +52,8 @@ data class ToolExecutionResult(
         result = 31 * result + (imageFilePath?.hashCode() ?: 0)
         result = 31 * result + (imageLinuxPath?.hashCode() ?: 0)
         result = 31 * result + timedOut.hashCode()
+        result = 31 * result + additionalImages.hashCode()
+        result = 31 * result + (detailsJson?.hashCode() ?: 0)
         return result
     }
 }

@@ -18,9 +18,16 @@ target_include_directories(jieba_jni PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/cppjieba/include
 )
 
+# Native codemode. Deliberately exclude quickjs-libc: no filesystem/network/OS bindings.
+add_library(codemode_jni SHARED codemode_jni.c
+    quickjs/quickjs.c quickjs/dtoa.c quickjs/libregexp.c quickjs/libunicode.c)
+target_compile_definitions(codemode_jni PRIVATE _GNU_SOURCE)
+set_target_properties(codemode_jni PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+target_link_libraries(codemode_jni m)
+
 # NDK r27 does not use 16 KB ELF LOAD alignment by default. Android devices
 # with 16 KB pages require every JNI library to use it.
-foreach(target pty_bridge minis_crash_handler jieba_jni)
+foreach(target pty_bridge minis_crash_handler jieba_jni codemode_jni)
     target_link_options(${target} PRIVATE
         "-Wl,-z,max-page-size=16384"
         "-Wl,-z,common-page-size=16384"
