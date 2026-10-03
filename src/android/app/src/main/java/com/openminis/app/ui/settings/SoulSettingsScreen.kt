@@ -98,6 +98,9 @@ fun SoulSettingsScreen(onBack: () -> Unit) {
     var style by remember { mutableStateOf(SoulMetadata.DEFAULT.style) }
     var lang by remember { mutableStateOf(SoulMetadata.DEFAULT.lang) }
     var body by remember { mutableStateOf("") }
+    var userProfile by remember { mutableStateOf("") }
+    var profileBaseline by remember { mutableStateOf("") }
+    var profileLoaded by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
@@ -188,6 +191,14 @@ fun SoulSettingsScreen(onBack: () -> Unit) {
             ),
             body = parsed.body,
         )
+        try {
+            val profile = withContext(Dispatchers.IO) { com.openminis.app.agent.UserProfileStore.load(context) }
+            userProfile = profile
+            profileBaseline = profile
+            profileLoaded = true
+        } catch (e: Exception) {
+            saveError = e.message ?: "Unable to load USER.md"
+        }
         loaded = true
     }
 
@@ -205,13 +216,17 @@ fun SoulSettingsScreen(onBack: () -> Unit) {
         ),
         body = body,
     )
-    val isDirty = loaded && baseline != null && currentFile != baseline
+    val isDirty = loaded && baseline != null && (currentFile != baseline || userProfile != profileBaseline)
     var showDiscardDialog by remember { mutableStateOf(false) }
 
     val save: () -> Unit = {
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { SoulStore.save(context, currentFile) }
+                withContext(Dispatchers.IO) {
+                    com.openminis.app.agent.UserProfileStore.validate(userProfile)
+                    if (currentFile != baseline) SoulStore.save(context, currentFile)
+                    if (userProfile != profileBaseline) com.openminis.app.agent.UserProfileStore.save(context, userProfile)
+                }
                 onBack()
             } catch (t: Throwable) {
                 saveError = t.message ?: "save failed"
@@ -237,7 +252,8 @@ fun SoulSettingsScreen(onBack: () -> Unit) {
             // (long) prompt editor to the bottom.
             MinisTextButton(
                 onClick = save,
-                enabled = loaded && isDirty && !bodyLimitCheck.isOverLimit,
+                enabled = loaded && profileLoaded && isDirty && !bodyLimitCheck.isOverLimit &&
+                    userProfile.length <= com.openminis.app.agent.UserProfileStore.MAX_LENGTH,
             ) { Text(stringResource(R.string.soul_save)) }
         },
     ) {
@@ -386,6 +402,25 @@ fun SoulSettingsScreen(onBack: () -> Unit) {
                     fontSize = 12.sp,
                     color = warnColor,
                 )
+            }
+        }
+
+        SettingsSection(
+            header = stringResource(R.string.user_profile_title),
+            footer = stringResource(R.string.user_profile_footer),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                OutlinedTextField(
+                    value = userProfile,
+                    onValueChange = { userProfile = it },
+                    placeholder = { Text(stringResource(R.string.user_profile_placeholder)) },
+                    minLines = 6, enabled = profileLoaded,
+                    isError = userProfile.length > com.openminis.app.agent.UserProfileStore.MAX_LENGTH,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("${userProfile.length} / ${com.openminis.app.agent.UserProfileStore.MAX_LENGTH}",
+                    style = MaterialTheme.typography.bodySmall)
             }
         }
 

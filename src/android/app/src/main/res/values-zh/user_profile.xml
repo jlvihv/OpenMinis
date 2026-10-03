@@ -1,0 +1,5 @@
+<resources>
+    <string name="user_profile_title">用户信息 · USER.md</string>
+    <string name="user_profile_footer">独立文档，不是自动聊天记忆。内容会提供给模型。AI 仅在你明确要求并确认后修改。不要填写密码或验证码。清空后保存即可删除资料。恢复人格默认值不会清空此文档。</string>
+    <string name="user_profile_placeholder">填写你希望 AI 了解的信息，例如称呼、手机号、兴趣、偏好等。支持 Markdown。</string>
+</resources>

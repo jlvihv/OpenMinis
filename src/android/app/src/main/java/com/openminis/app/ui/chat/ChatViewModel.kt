@@ -14381,7 +14381,8 @@ class ChatViewModel(
         val identitySection = helperConfig?.let {
             com.openminis.app.agent.jobs.HelperRunner.identitySection(it, browserEnabled = browserToolEnabled)
         }
-            ?: com.openminis.app.agent.SystemPromptBuilder.identitySection(context)
+            ?: (com.openminis.app.agent.SystemPromptBuilder.identitySection(context) +
+                "\n\n" + com.openminis.app.agent.UserProfileStore.promptFragment(context))
         // Depth is one: helpers never get delegation. The same gate controls
         // the roster, tool bullet and redirects from neighboring CLI commands.
         val delegationOffered = !isHelper &&

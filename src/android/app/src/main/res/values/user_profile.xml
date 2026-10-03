@@ -1,0 +1,5 @@
+<resources>
+    <string name="user_profile_title">User information · USER.md</string>
+    <string name="user_profile_footer">A separate document, not automatic chat memory. Its contents are sent to your model. AI updates require explicit instruction and confirmation. Do not include passwords or verification codes. Clear and save to remove information. Restoring personality defaults does not clear this document.</string>
+    <string name="user_profile_placeholder">Write information you want the assistant to know: your name, phone number, interests or preferences. Markdown is supported.</string>
+</resources>

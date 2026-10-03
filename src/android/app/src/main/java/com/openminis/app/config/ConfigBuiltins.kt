@@ -49,6 +49,7 @@ internal object ConfigBuiltins {
         registerProviderCollections(r, providerRepo, envVarRepo)
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
+        registerUserProfile(r, context)
         registerNetwork(r, context)
     }
 
@@ -847,6 +848,26 @@ internal object ConfigBuiltins {
                     throw ConfigError.InvalidValue("that image could not be processed")
             }
         }
+    }
+
+    private fun registerUserProfile(r: ConfigRegistry, context: Context) {
+        val store = com.openminis.app.agent.UserProfileStore
+        r.register(ClosureField(
+                path = "user.body",
+                displayName = "User information document",
+                description = "Explicit user information in USER.md, not automatic memory. Change only when the user explicitly requests it; do not store chat history, tasks, passwords or verification codes.",
+                valueSchema = ConfigSchema.Str(maxLength = store.MAX_LENGTH),
+                risk = ConfigRisk.SENSITIVE,
+                revertable = true,
+                reader = { ConfigValue.Str(store.load(context)) },
+                writer = { value ->
+                    val text = (value as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                    try { store.validate(text) } catch (e: IllegalArgumentException) {
+                        throw ConfigError.InvalidValue(e.message ?: "Invalid user information")
+                    }
+                    store.save(context, text)
+                },
+            ))
     }
 
     private fun registerSoul(r: ConfigRegistry, context: Context) {
