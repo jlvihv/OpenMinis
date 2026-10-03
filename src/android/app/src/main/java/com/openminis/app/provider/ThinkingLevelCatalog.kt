@@ -25,6 +25,7 @@ object ThinkingLevelCatalog {
         // metadata lists an "ultra" wire value, but that is deliberately NOT
         // special-cased — MAX and ULTRA both go out as "max" (see above), so
         // the existing clamp already covers it.
+        Rule({ it.startsWith("gpt-6.1-sol") }, ThinkingLevel.MAX),
         Rule({ it.startsWith("gpt-6-astra") }, ThinkingLevel.MAX),
         // [T-gpt6-sol-luna] gpt-6-sol / gpt-6-luna: same MAX tier as astra.
         // Sol's catalog metadata omits "ultra" (the backend rejects that tier,

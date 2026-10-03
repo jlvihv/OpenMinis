@@ -42,6 +42,7 @@ object OpenAIModelsApi {
         // enriches the flag later, and the Responses builder's "Codex OAuth
         // needs a reasoning object" fallback hard-codes effort "low" — the
         // exact data gap GPT6AstraReasoningTest exists to pin.
+        LLMModel("gpt-6.1-sol", "GPT-6.1 Sol", "OpenAI", contextWindow = 272_000, supportsReasoning = true),
         LLMModel("gpt-6-sol", "GPT-6 Sol", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-6-luna", "GPT-6 Luna", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-6-astra", "GPT-6 Astra", "OpenAI", supportsReasoning = true),

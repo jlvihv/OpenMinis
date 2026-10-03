@@ -253,7 +253,9 @@ class OpenAIProvider private constructor(
          * OAuth token to probe with. If gpt-6-astra or a gpt-5.6-* model starts
          * failing after this bump, this constant is the first thing to suspect.
          */
-        internal const val CODEX_CLIENT_VERSION = "0.155.0"
+        // GPT-6.1 Sol: live same-account A/B probe returned 400 at 0.155.0
+        // and response.completed at 0.159.2, with otherwise identical requests.
+        internal const val CODEX_CLIENT_VERSION = "0.159.2"
 
         /**
          * [T-android-stale-conn-retry-hang] Streaming time-to-first-byte
