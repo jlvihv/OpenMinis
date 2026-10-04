@@ -9440,15 +9440,6 @@ class ChatViewModel(
                 }
             }
             val turnThinking = StringBuilder()
-            // Opaque reasoning_content blob captured from the provider's
-            // ReasoningContent stream chunk. When set (including empty string),
-            // takes precedence over turnThinking concatenation so the exact
-            // server-emitted value round-trips on the next request — DeepSeek V4
-            // emits "" legitimately and fabricated text would be in-context-learned.
-            var turnReasoningBlob: String? = null
-            // T321: capture finish_reason from LLMStreamChunk.Finished so we can
-            // log it at turn-end alongside the empty-turn warning.
-            var turnFinishReason: String? = null
             var lastUsage: LLMUsage? = null
             var turnAttribution = runAttribution
             var turnCalibration: Triple<Int, Int, String?>? = null
@@ -9513,7 +9504,8 @@ class ChatViewModel(
                     // below the provider (DNS/TCP/TLS/read), which no existing
                     // log covers. `firstChunkSeen` is flipped in the collector.
                     val attempt = com.openminis.app.agent.AgentStreamAttempt(runJournal.sessionId, turn,
-                        currentProvider.javaClass.simpleName, agentHistory.size,
+                        currentProvider.javaClass.simpleName, agentHistory.size, turnContent,
+                        currentProvider.streamTextIsMonolithic,
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
                         duration = { turnStreamMs += it })
                     attempt.collect(create = {
@@ -9593,7 +9585,6 @@ class ChatViewModel(
                     }, consume = { chunk ->
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
-                        turnContent.thinking()
                         turnThinking.append(chunk.text)
                         // [T-android-live-update-content] Surface the
                         // thinking phase to the FGS notification / overlay.
@@ -9617,7 +9608,6 @@ class ChatViewModel(
                         }
                     }
                     is LLMStreamChunk.Text -> {
-                        turnContent.text(chunk.text, currentProvider.streamTextIsMonolithic)
                         // [T-android-live-update-content] Visible text ends the
                         // thinking phase (deduped inside the tracker).
                         SessionActivityTracker.setThinking(false)
@@ -9740,7 +9730,7 @@ class ChatViewModel(
                         // renamed value drives the AssistantBlock.id used by
                         // ToolCallComplete / ToolInputDelta lookups and ends
                         // up as the persisted tool_call_id on the next request.
-                        val toolUseId = turnContent.start(chunk.id, chunk.name)
+                        val toolUseId = chunk.id
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolUseStart id=$toolUseId name=${chunk.name}")
                         // Mark thinking block as done when tool use starts
                         val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
@@ -9807,7 +9797,7 @@ class ChatViewModel(
                         // [T-dedupe-toolcallid] Translate to the currently-in-flight
                         // renamed id so the per-tool ring + block lookup match
                         // the block that ToolUseStart created.
-                        val toolInputId = turnContent.inputId(chunk.id)
+                        val toolInputId = chunk.id
                         // [T-android-log-hotpath] Fires per tool-argument chunk.
                         if (AppLogger.traceEnabled) {
                             android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolInputDelta id=$toolInputId len=${chunk.accumulated.length}")
@@ -9879,7 +9869,7 @@ class ChatViewModel(
                         // persisted tool_calls list, the block lookup, and
                         // the downstream tool-result join all key on the
                         // same value (matches the rename applied at start).
-                        val toolCompleteId = turnContent.complete(chunk)
+                        val toolCompleteId = chunk.id
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
                         SessionActivityTracker.publishToolTitle(
                             activeSessionId, chunk.name,
@@ -9957,18 +9947,8 @@ class ChatViewModel(
                             }
                         }
                     }
-                    is LLMStreamChunk.ReasoningContent -> {
-                        // Opaque reasoning blob (DeepSeek/Kimi reasoning_content) — record
-                        // on the last assistant turn so it echoes back on the next request.
-                        // Empty strings are preserved (DeepSeek V4 emits "" on non-thinking
-                        // turns and we must round-trip exactly that). No live UI surface;
-                        // the thinking panel is driven by ThinkingDelta events above.
-                        turnReasoningBlob = chunk.content
-                    }
-                    is LLMStreamChunk.Finished -> {
-                        // T321: stash for empty-turn diagnostic logging below.
-                        turnFinishReason = chunk.stopReason
-                    }
+                    is LLMStreamChunk.ReasoningContent -> Unit
+                    is LLMStreamChunk.Finished -> Unit
                     is LLMStreamChunk.Started -> { /* no-op */ }
                     is LLMStreamChunk.MediaAttachment -> {
                         // [T-codex-gpt-image2-oauth-android] Model-generated
@@ -10366,7 +10346,7 @@ class ChatViewModel(
             // turn boundary. After this point everything is plain String
             // semantics — `turnText` participates in cross-turn accumulation
             // and gets persisted into agentHistory below.
-            val turnText = turnTextSb.toString()
+            val turnText = turnContent.visibleText()
             // Accumulate text across turns
             accumulatedText += turnText
 
@@ -10386,8 +10366,8 @@ class ChatViewModel(
             // `reasoning_content: ""` on non-thinking turns). Fall back to the
             // ThinkingDelta concatenation only when no blob arrived; in that case
             // an empty buffer becomes null (no field to round-trip).
-            val turnReasoningContent: String? = turnReasoningBlob
-                ?: turnThinking.toString().takeIf { it.isNotEmpty() }
+            val turnReasoningContent = turnContent.reasoningContent()
+            val turnFinishReason = turnContent.finishReason
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.ASSISTANT,
@@ -10404,7 +10384,7 @@ class ChatViewModel(
                 AppLogger.warning(
                     TAG_STREAM,
                     "empty turn detected: turn=$turn finishReason=$turnFinishReason " +
-                        "reasoningLen=${turnThinking.length} reasoningBlobLen=${turnReasoningBlob?.length ?: -1} " +
+                        "reasoningLen=${turnThinking.length} reasoningBlobLen=${turnContent.opaqueReasoningLength ?: -1} " +
                         "model=${provider.model.id} provider=${provider.name}"
                 )
             }

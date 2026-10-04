@@ -21,15 +21,37 @@ internal class AgentTurnContent {
     private val inFlight = mutableMapOf<String, String>()
     private var thinkingSeen = false
     private var monolithicText: Segment.Text? = null
+    private val reasoning = StringBuilder()
+    private var opaqueReasoning: String? = null
+    var finishReason: String? = null
+        private set
 
-    fun thinking() {
+    fun accept(chunk: LLMStreamChunk, monolithic: Boolean): LLMStreamChunk = when (chunk) {
+        is LLMStreamChunk.ThinkingDelta -> chunk.also { thinking(); reasoning.append(it.text) }
+        is LLMStreamChunk.ReasoningContent -> chunk.also { opaqueReasoning = it.content }
+        is LLMStreamChunk.Finished -> chunk.also { finishReason = it.stopReason }
+        is LLMStreamChunk.Text -> chunk.also { text(it.text, monolithic) }
+        is LLMStreamChunk.ToolUseStart -> chunk.copy(id = start(chunk.id, chunk.name))
+        is LLMStreamChunk.ToolInputDelta -> chunk.copy(id = inputId(chunk.id))
+        is LLMStreamChunk.ToolCallComplete -> chunk.copy(id = complete(chunk))
+        else -> chunk
+    }
+
+    fun visibleText(): String = buildString {
+        segments.forEach { if (it is Segment.Text) append(it.text) }
+    }
+
+    val opaqueReasoningLength: Int? get() = opaqueReasoning?.length
+    fun reasoningContent(): String? = opaqueReasoning ?: reasoning.toString().takeIf { it.isNotEmpty() }
+
+    private fun thinking() {
         if (!thinkingSeen) {
             thinkingSeen = true
             segments.add(Segment.Thinking)
         }
     }
 
-    fun text(delta: String, monolithic: Boolean) {
+    private fun text(delta: String, monolithic: Boolean) {
         if (monolithic) {
             val text = monolithicText ?: Segment.Text(StringBuilder()).also { text ->
                 val firstTool = segments.indexOfFirst { it is Segment.Tool }
@@ -44,7 +66,7 @@ internal class AgentTurnContent {
         }
     }
 
-    fun start(rawId: String, name: String): String {
+    private fun start(rawId: String, name: String): String {
         val count = (starts[rawId] ?: 0) + 1
         starts[rawId] = count
         val id = if (count == 1) rawId else "$rawId-$count"
@@ -57,9 +79,9 @@ internal class AgentTurnContent {
         return id
     }
 
-    fun inputId(rawId: String): String = inFlight[rawId] ?: rawId
+    private fun inputId(rawId: String): String = inFlight[rawId] ?: rawId
 
-    fun complete(chunk: LLMStreamChunk.ToolCallComplete): String {
+    private fun complete(chunk: LLMStreamChunk.ToolCallComplete): String {
         val count = (completions[chunk.id] ?: 0) + 1
         completions[chunk.id] = count
         val id = if (count == 1) chunk.id else "${chunk.id}-$count"
@@ -84,5 +106,8 @@ internal class AgentTurnContent {
         signatures.clear()
         thinkingSeen = false
         monolithicText = null
+        reasoning.setLength(0)
+        opaqueReasoning = null
+        finishReason = null
     }
 }
