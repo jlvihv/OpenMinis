@@ -255,8 +255,19 @@ interface ChatDao {
 
     /** Allocate branch order and insert accounting metadata in one transaction. */
     @androidx.room.Transaction
-    suspend fun insertJournalMessage(message: MessageEntity) {
-        insertMessage(message.copy(sortOrder = nextSortOrder(message.sessionId)))
+    suspend fun insertJournalMessage(message: MessageEntity): MessageEntity {
+        val stored = message.copy(sortOrder = nextSortOrder(message.sessionId))
+        insertMessage(stored)
+        return stored
+    }
+
+    @androidx.room.Transaction
+    suspend fun appendJournalBatch(messages: List<MessageEntity>) {
+        if (messages.isEmpty()) return
+        val sessionId = messages.first().sessionId
+        require(messages.all { it.sessionId == sessionId })
+        val start = nextSortOrder(sessionId)
+        insertMessages(messages.mapIndexed { index, message -> message.copy(sortOrder = start + index) })
     }
 
     /** Room inserts the list in one transaction: a custom entry is never half-written. */

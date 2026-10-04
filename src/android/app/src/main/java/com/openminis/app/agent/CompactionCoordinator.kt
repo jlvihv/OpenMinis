@@ -25,7 +25,7 @@ internal class CompactionCoordinator(
             "Previous context summary:\n$previousSummary\n\nNew conversation to merge:\n$transcript"
         spend(depth)
         return try {
-            summarizer.transcript(context.provider, text, context.summaryPrompt, contextWindow, context.attribution)
+            summarizer.transcript(context.provider, text, context.summaryPrompt, contextWindow, context.attribution, context.recordUsage)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (!retryable(failure) || messages.size < 2 || depth >= 3) throw failure

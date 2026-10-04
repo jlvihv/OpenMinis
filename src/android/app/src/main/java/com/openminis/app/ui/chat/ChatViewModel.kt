@@ -1573,14 +1573,6 @@ class ChatViewModel(
         return WarmUpTrim(warmUp.drop(drop), decided = true)
     }
 
-    private fun usageRecordJson(usage: LLMUsage, streamMs: Long? = null): String =
-        com.openminis.app.data.model.RequestUsageRecord.json(usage, streamMs = streamMs).also { json ->
-            lastCalibratedPair?.let { (estimate, fixed, model) ->
-                json.put("estimatedRequestTokens", estimate).put("estimatedFixedTokens", fixed)
-                if (model != null) json.put("calibrationModelId", model)
-            }
-        }.toString()
-
     // ---- [T-android-context-usage-hint] Context-window pressure surface ----
     //
     // Port of iOS [T-ios-context-usage-hint] / -realtime-crossing. Two paths
@@ -1870,7 +1862,11 @@ class ChatViewModel(
      */
     private fun currentModelSnapshot(): com.openminis.app.data.model.ModelAttributionSnapshot? {
         val model = currentModel ?: return null
-        val entry = _activeEntryId.value?.let { id ->
+        return modelSnapshotFor(model, _activeEntryId.value)
+    }
+
+    private fun modelSnapshotFor(model: LLMModel, entryId: String?): com.openminis.app.data.model.ModelAttributionSnapshot {
+        val entry = entryId?.let { id ->
             providerRepository.config.value.modelEntries.find { it.id == id }
         }
         val instance = entry?.let { providerRepository.instance(it.providerInstanceId) }
@@ -1888,16 +1884,7 @@ class ChatViewModel(
     /** Structured agent history for the agent loop (contentParts-based). */
     private val agentHistory = mutableListOf<LLMMessage>()
 
-    private val compactionSummarizer = CompactionSummarizer(COMPACT_IDLE_TIMEOUT_MS, ::shouldSplitOnError) { usage, duration, attribution ->
-        withContext(NonCancellable + Dispatchers.IO) {
-            try {
-                chatRepository.recordRequestUsage(activeSessionId,
-                    com.openminis.app.data.model.RequestUsageRecord.Purpose.COMPACTION, usage, duration, attribution)
-            } catch (failure: Exception) {
-                AppLogger.warning(TAG, "[Usage] compaction accounting write failed (${failure.javaClass.simpleName})")
-            }
-        }
-    }
+    private val compactionSummarizer = CompactionSummarizer(COMPACT_IDLE_TIMEOUT_MS, ::shouldSplitOnError)
     private val compactionCoordinator = com.openminis.app.agent.CompactionCoordinator(
         compactionSummarizer, compactCallsIssued, MAX_COMPACT_LLM_CALLS, ::shouldSplitOnError,
     ) { depth, issued ->
@@ -4425,13 +4412,17 @@ class ChatViewModel(
         previousSummary: String? = null,
         depth: Int = 0,
     ): String {
-        val provider = currentProvider ?: throw IllegalStateException("No LLM provider available for compaction")
+        val (provider, journal, attribution) = withContext(Dispatchers.Main) {
+            val selected = currentProvider ?: throw IllegalStateException("No LLM provider available for compaction")
+            Triple(selected, com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId),
+                modelSnapshotFor(selected.model, _activeEntryId.value))
+        }
         val history = if (compactionSummarizer.canReuse(provider))
             applyRequestImageBudget(effectiveAgentHistory()) else emptyList()
         return compactionCoordinator.summarize(messages, previousSummary,
             CompactionSummarizer.Context(provider, history, compactSummarySystemPrompt, lastDispatchRatio,
-                currentModelSnapshot()?.copy(modelId = provider.model.id, displayName = provider.model.displayName)),
-            currentModel?.contextWindow ?: 128_000, depth)
+                attribution, journal::compactionUsage),
+            provider.model.contextWindow ?: 128_000, depth)
     }
 
     /**
@@ -6159,6 +6150,14 @@ class ChatViewModel(
     private data class FallbackCandidate(
         val provider: LLMProvider,
         val entryId: String,
+    )
+
+    private data class LoopModelSelection(
+        val provider: LLMProvider,
+        val candidates: List<FallbackCandidate>,
+        val strategy: com.openminis.app.data.model.FallbackStrategy,
+        val entryId: String?,
+        val attribution: com.openminis.app.data.model.ModelAttributionSnapshot,
     )
 
     private fun buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> = emptyList()
@@ -8812,6 +8811,8 @@ class ChatViewModel(
         // loop's first turn. See [pendingScriptedTurn] below.
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
     ) {
+        val runJournal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
+        var runAttribution = modelSnapshotFor(provider.model, _activeEntryId.value)
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
         // [T-android-mem-probe-trust] Send-path context shape. The existing
         // `messages-shape` probe only runs on session LOAD, so the 2026-08-15
@@ -8976,9 +8977,6 @@ class ChatViewModel(
         // conversation part by part, so the error surfaces instead.
         var hasAttemptedOverflowSelfHeal = false
 
-        // Accumulate tool inputs across all turns (so persist includes all, not just current turn)
-        val allToolInputs = mutableMapOf<String, String>()
-
         // Add placeholder assistant message (once). Mark as awaiting so the
         // "Minis is thinking" indicator shows during the initial request gap
         // before the first stream chunk arrives. Mirrors iOS isAwaitingModelResponse.
@@ -9048,6 +9046,7 @@ class ChatViewModel(
         // prefill re-arms it (see the injectQueuedPromptsAsNewTurn call site).
         var pendingScriptedTurn: com.openminis.app.scheduled.ScriptedToolTurn? = scriptedTurnFor(prefill)
         for (turn in 0 until turnCap) {
+            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed")
             // [T-android-switch-model-next-request] The user picked another
             // model while this turn ran. Apply it HERE, before the next
             // request: the request or tool call that was in flight when they
@@ -9072,12 +9071,14 @@ class ChatViewModel(
                     if (c != null && modelSwitchToApply(pendingModelSwitch, c, currentProvider)) {
                         pendingModelSwitch = false
                         val strategy = com.openminis.app.data.model.FallbackStrategy.default
-                        Triple(c, buildFallbackProviders(c), strategy)
+                        LoopModelSelection(c, buildFallbackProviders(c), strategy, _activeEntryId.value,
+                            modelSnapshotFor(c.model, _activeEntryId.value))
                     } else null
                 }
-                val chosen = switched?.first
+                val chosen = switched?.provider
                 if (switched != null && chosen != null) {
-                    providerRecovery.switch(switched.second, switched.third, _activeEntryId.value)
+                    providerRecovery.switch(switched.candidates, switched.strategy, switched.entryId)
+                    runAttribution = switched.attribution
                     val from = currentProvider.model.displayName
                     currentProvider = chosen
                     classProviderAtSend = chosen
@@ -9333,7 +9334,6 @@ class ChatViewModel(
                     assistantId = freshAssistantId
                     accumulatedText = ""
                     allToolBlocks.clear()
-                    allToolInputs.clear()
                     toolInputChunkRings.clear()
                     AppLogger.info(
                         TAG,
@@ -9457,6 +9457,8 @@ class ChatViewModel(
             // log it at turn-end alongside the empty-turn warning.
             var turnFinishReason: String? = null
             var lastUsage: LLMUsage? = null
+            var turnAttribution = runAttribution
+            var turnCalibration: Triple<Int, Int, String?>? = null
             // [T-android-token-usage-output-speed] Wall-clock milliseconds this
             // turn spent streaming, accumulated across every attempt (a
             // retried 5xx streams more than once). Persisted with the turn's
@@ -9465,10 +9467,11 @@ class ChatViewModel(
             // its equivalent in memory and loses it when the VM goes away.
             var turnStreamMs = 0L
             val maxTokens = dynamicMaxTokens(provider, lastContextTokens)
-            val toolCalls = mutableListOf<Triple<String, String, JSONObject>>() // id, name, args
+            val turnContent = com.openminis.app.agent.AgentTurnContent()
+            val toolCalls = turnContent.calls
             // [T-android-gemini3-thoughtsig / #179] toolCallId -> Gemini 3.x
             // thoughtSignature for this turn's calls (null for other providers).
-            val toolCallSignatures = mutableMapOf<String, String>()
+            val toolCallSignatures = turnContent.thoughtSignatures
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
             // Some upstream OpenAI-compatible gateways occasionally emit
@@ -9490,27 +9493,6 @@ class ChatViewModel(
             //
             // Start/complete ordering match: OpenAI streams emit tools in
             // `index` order at finish_reason, mirroring start order.
-            val dedupeStartCounts = mutableMapOf<String, Int>()
-            val dedupeCompleteCounts = mutableMapOf<String, Int>()
-            val inFlightRenamedId = mutableMapOf<String, String>()
-            fun dedupeToolStartId(raw: String): String {
-                val n = (dedupeStartCounts[raw] ?: 0) + 1
-                dedupeStartCounts[raw] = n
-                val renamed = if (n == 1) raw else "$raw-$n"
-                if (n > 1) {
-                    AppLogger.warning(TAG_STREAM, "[ToolDedupe] duplicate tool_call id on stream start: '$raw' #$n -> renamed '$renamed'")
-                }
-                inFlightRenamedId[raw] = renamed
-                return renamed
-            }
-            fun dedupeToolInputId(raw: String): String =
-                inFlightRenamedId[raw] ?: raw
-            fun dedupeToolCompleteId(raw: String): String {
-                val n = (dedupeCompleteCounts[raw] ?: 0) + 1
-                dedupeCompleteCounts[raw] = n
-                return if (n == 1) raw else "$raw-$n"
-            }
-
             // Stream the response — with auto-retry on transient errors, then fallback.
             // callbackFlow wraps throws into CancellationException(cause=LLMError),
             // so we catch at collect level and unwrap.
@@ -9537,28 +9519,11 @@ class ChatViewModel(
                     // Silence here + no network error = the request is hung
                     // below the provider (DNS/TCP/TLS/read), which no existing
                     // log covers. `firstChunkSeen` is flipped in the collector.
-                    val streamStartMs = android.os.SystemClock.elapsedRealtime()
-                    val firstChunkSeen = java.util.concurrent.atomic.AtomicBoolean(false)
-                    val diagSid = activeSessionId
-                    println(
-                        "[T-STALL-DIAG] stream REQUEST-OUT sid=$diagSid turn=$turn " +
-                            "provider=${currentProvider.javaClass.simpleName} " +
-                            "historySize=${agentHistory.size}",
-                    )
-                    val firstChunkWatchdog = viewModelScope.launch(Dispatchers.IO) {
-                        var waited = 0L
-                        while (!firstChunkSeen.get()) {
-                            kotlinx.coroutines.delay(10_000L)
-                            if (firstChunkSeen.get()) break
-                            waited += 10_000L
-                            println(
-                                "[T-STALL-DIAG] stream NO-FIRST-CHUNK sid=$diagSid turn=$turn " +
-                                    "waitedMs=$waited provider=${currentProvider.javaClass.simpleName} " +
-                                    "— request sent, provider has returned NOTHING (not even message_start)",
-                            )
-                        }
-                    }
-                    try {
+                    val attempt = com.openminis.app.agent.AgentStreamAttempt(runJournal.sessionId, turn,
+                        currentProvider.javaClass.simpleName, agentHistory.size,
+                        firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
+                        duration = { turnStreamMs += it })
+                    attempt.collect(create = {
                     // [T-scheduled-tool-prefill] A prefilled turn streams the
                     // calls that were decided ahead of time instead of asking the
                     // provider. Everything downstream of `collect` is the same code a
@@ -9615,8 +9580,8 @@ class ChatViewModel(
                         val requestThinking = if (currentProvider.model.supportsReasoning == true) _thinkingLevel.value else ThinkingLevel.OFF
                         val warmCandidate = CompactionSummarizer.ConversationRequest(currentProvider,
                             com.openminis.app.agent.CachedCompaction.snapshot(requestHistory), loopSystemPrompt,
-                            requestTools, requestThinking, currentModelSnapshot()?.copy(
-                                modelId = currentProvider.model.id, displayName = currentProvider.model.displayName))
+                            requestTools, requestThinking, runAttribution)
+                        turnAttribution = runAttribution
                         currentProvider.streamMessage(
                             requestHistory,
                             loopSystemPrompt, dynamicMaxTokens(currentProvider, dispatchInputTokens),
@@ -9631,25 +9596,11 @@ class ChatViewModel(
                             if (chunk is LLMStreamChunk.Usage && chunk.usage.latestContextTokens > 0) compactionSummarizer.remember(warmCandidate)
                         }
                     }
-                    turnChunks.collect { chunk ->
-                // [T-STALL-DIAG] Mark first byte back from the provider and log
-                // the time-to-first-chunk once per turn.
-                if (firstChunkSeen.compareAndSet(false, true)) {
-                    // [T-switch-model-retry-counter-reset] The retried attempt is
-                    // producing output, so the ladder is done. isBoundToAbandonedModel()
-                    // reads these counters; left set until the stream COMPLETES, a
-                    // healthy turn that needed one retry looked like a ghost retry and
-                    // a model switch cancelled it. iOS clears them on stream open.
-                    _autoRetryAttempt.value = 0
-                    _autoRetryCountdown.value = 0
-                    println(
-                        "[T-STALL-DIAG] stream FIRST-CHUNK sid=$diagSid turn=$turn " +
-                            "ttfbMs=${android.os.SystemClock.elapsedRealtime() - streamStartMs} " +
-                            "kind=${chunk.javaClass.simpleName}",
-                    )
-                }
+                    turnChunks
+                    }, consume = { chunk ->
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
+                        turnContent.thinking()
                         turnThinking.append(chunk.text)
                         // [T-android-live-update-content] Surface the
                         // thinking phase to the FGS notification / overlay.
@@ -9673,6 +9624,7 @@ class ChatViewModel(
                         }
                     }
                     is LLMStreamChunk.Text -> {
+                        turnContent.text(chunk.text, currentProvider.streamTextIsMonolithic)
                         // [T-android-live-update-content] Visible text ends the
                         // thinking phase (deduped inside the tracker).
                         SessionActivityTracker.setThinking(false)
@@ -9795,7 +9747,7 @@ class ChatViewModel(
                         // renamed value drives the AssistantBlock.id used by
                         // ToolCallComplete / ToolInputDelta lookups and ends
                         // up as the persisted tool_call_id on the next request.
-                        val toolUseId = dedupeToolStartId(chunk.id)
+                        val toolUseId = turnContent.start(chunk.id, chunk.name)
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolUseStart id=$toolUseId name=${chunk.name}")
                         // Mark thinking block as done when tool use starts
                         val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
@@ -9862,7 +9814,7 @@ class ChatViewModel(
                         // [T-dedupe-toolcallid] Translate to the currently-in-flight
                         // renamed id so the per-tool ring + block lookup match
                         // the block that ToolUseStart created.
-                        val toolInputId = dedupeToolInputId(chunk.id)
+                        val toolInputId = turnContent.inputId(chunk.id)
                         // [T-android-log-hotpath] Fires per tool-argument chunk.
                         if (AppLogger.traceEnabled) {
                             android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolInputDelta id=$toolInputId len=${chunk.accumulated.length}")
@@ -9934,16 +9886,14 @@ class ChatViewModel(
                         // persisted tool_calls list, the block lookup, and
                         // the downstream tool-result join all key on the
                         // same value (matches the rename applied at start).
-                        val toolCompleteId = dedupeToolCompleteId(chunk.id)
+                        val toolCompleteId = turnContent.complete(chunk)
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
-                        toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
                         SessionActivityTracker.publishToolTitle(
                             activeSessionId, chunk.name,
                             providedToolTitle(chunk.name, chunk.args) ?: friendlyToolTitle(chunk.name),
                         )
                         // [T-android-gemini3-thoughtsig / #179] Stash the Gemini
                         // 3.x thought signature keyed by the (deduped) tool call id.
-                        chunk.thoughtSignature?.let { toolCallSignatures[toolCompleteId] = it }
                         val idx = allToolBlocks.indexOfFirst { it.id == toolCompleteId }
                         if (idx >= 0) {
                             val providedTitle = providedToolTitle(chunk.name, chunk.args)
@@ -9989,6 +9939,7 @@ class ChatViewModel(
                             // estimate of the same request; the pair (persisted
                             // with the turn) is what capacity decisions use.
                             calibrateContextSize(lastContextTokens)
+                            turnCalibration = lastCalibratedPair
                             lastInLoopCompactionMadeNoProgress = false
                             // [T-ctx-valve-rearm] An accepted request is fresh
                             // evidence, so the once-per-evidence uncalibrated
@@ -10035,7 +9986,7 @@ class ChatViewModel(
                         // loop compiles with the new chunk variant.
                     }
                 }
-                    }  // end collect
+                    }, completed = {
                     // T94 fix 2: flush any text that landed in the throttle
                     // window after the last UI tick. The retry-rollback /
                     // turn-finalize paths below assume _messages reflects all
@@ -10073,24 +10024,7 @@ class ChatViewModel(
                         _autoRetryAttempt.value = 0
                         _autoRetryCountdown.value = 0
                     }
-                    } finally {
-                        // [T-STALL-DIAG] Always stop the first-chunk watchdog —
-                        // success, error, or cancellation — so it can never
-                        // outlive its turn and spam the log.
-                        firstChunkWatchdog.cancel()
-                        if (!firstChunkSeen.get()) {
-                            println(
-                                "[T-STALL-DIAG] stream ENDED-WITHOUT-CHUNK sid=$diagSid turn=$turn " +
-                                    "elapsedMs=${android.os.SystemClock.elapsedRealtime() - streamStartMs}",
-                            )
-                        }
-                        // [T-android-token-usage-output-speed] Accumulate here,
-                        // in `finally`, so a turn that streamed for 20s and
-                        // then failed still contributes the seconds it really
-                        // spent. elapsedRealtime is monotonic, so a clock
-                        // change or a doze cannot produce a negative interval.
-                        turnStreamMs += android.os.SystemClock.elapsedRealtime() - streamStartMs
-                    }
+                    })
                 } catch (e: Exception) {
                     if (e is CancellationException && e.cause == null) throw e  // real job cancellation
                     val actual = unwrapFlowException(e)
@@ -10176,8 +10110,7 @@ class ChatViewModel(
                         // this turn's partial blocks.
                         turnTextBlockIdx = -1
                         turnThinking.clear()
-                        toolCalls.clear()
-                        toolCallSignatures.clear()  // [T-android-gemini3-thoughtsig / #179]
+                        turnContent.resetAttempt()
                         // T94 fix 2 + T256: throttle bookkeeping is per-stream
                         // attempt; reset alongside the partial-block rollback so
                         // the next attempt's first delta fires through immediately
@@ -10270,8 +10203,7 @@ class ChatViewModel(
                             currentTextBlockSb = null
                             turnTextBlockIdx = -1
                             turnThinking.clear()
-                            toolCalls.clear()
-                            toolCallSignatures.clear()
+                            turnContent.resetAttempt()
                             continue
                         }
                         AppLogger.warning(
@@ -10318,6 +10250,7 @@ class ChatViewModel(
                         providerRecovery.recordFailure(currentProvider.model.displayName, reason)
                         Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
                         currentProvider = next
+                        runAttribution = modelSnapshotFor(next.model, nextCandidate.entryId)
                         // [T-fallback-5xx-status] Fresh same-model budget for the
                         // member we just switched to. The counter is per-turn, so
                         // without this reset every member after the first got
@@ -10409,8 +10342,7 @@ class ChatViewModel(
                         // shifted every block index anyway.
                         turnTextBlockIdx = -1
                         turnThinking.clear()
-                        toolCalls.clear()
-                        toolCallSignatures.clear()  // [T-android-gemini3-thoughtsig / #179]
+                        turnContent.resetAttempt()
                         // loop continues — will retry collect with currentProvider
                     } else {
                         // All fallbacks exhausted. Surface the trail of tried
@@ -10456,9 +10388,6 @@ class ChatViewModel(
                 assistantParts.add(AgentContentPart.ToolUse(id, name, args, thoughtSignature = toolCallSignatures[id]))
             }
 
-            // Map toolUseId -> input JSON string for persistence (accumulated across turns)
-            toolCalls.forEach { (id, _, args) -> allToolInputs[id] = args.toString() }
-            val toolInputMap = allToolInputs
             // Prefer the opaque blob from LLMStreamChunk.ReasoningContent when the
             // provider emitted one — that path preserves empty strings (DeepSeek V4
             // `reasoning_content: ""` on non-thinking turns). Fall back to the
@@ -10493,9 +10422,10 @@ class ChatViewModel(
                 withContext(Dispatchers.Main) {
                     updateAssistantMessage(assistantId, accumulatedText, false, allToolBlocks)
                 }
-                val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
+                val turnParts = turnContent.parts()
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
+                persistAssistantTurn(runJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
+                    turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
                 // reply and no tool blocks — the user just sees a blank bubble.
@@ -10716,13 +10646,10 @@ class ChatViewModel(
             // the list reflects exactly what the model just emitted. Mirrors
             // iOS overlaying the live VM's last message over the DB value.
             run {
-                val livePreviewParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
+                val livePreviewParts = turnContent.parts()
                 val liveMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
                 if (livePreviewParts.isNotEmpty()) {
-                    chatRepository.updateSessionPreview(
-                        realSessionId.ifEmpty { sessionId },
-                        buildAssistantPartsJson(livePreviewParts, liveMeta),
-                    )
+                    runJournal.preview(livePreviewParts, journalMetadata(liveMeta))
                 }
             }
 
@@ -11040,9 +10967,11 @@ class ChatViewModel(
             // Persist the assistant+tools turn (with full input JSON and thinking).
             // Capture the persisted DB id so we can back-fill agentHistory's last
             // assistant entry — compact-marker boundary resolution depends on it.
-            val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
+            val turnParts = turnContent.parts()
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-            val assistantDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
+            val assistantDbId = persistAssistantTurn(runJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
+                turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
+            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
             if (assistantDbId != null) {
                 val lastIdx = agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
                 if (lastIdx >= 0) {
@@ -11051,7 +10980,8 @@ class ChatViewModel(
             }
 
             // Persist tool results as user-role message (mirrors iOS)
-            val toolResultDbId = persistToolResultMessage(resultParts)
+            val toolResultDbId = runJournal.toolResults(resultParts)?.id
+            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
 
             // Add tool results to history
             agentHistory.add(LLMMessage(
@@ -11187,7 +11117,6 @@ class ChatViewModel(
                     scriptedTurnFor(handled.prefill)?.let { pendingScriptedTurn = it }
                     accumulatedText = ""
                     allToolBlocks.clear()
-                    allToolInputs.clear()
                     toolInputChunkRings.clear()
                     _canResume.value = false
                     continue
@@ -12776,95 +12705,15 @@ class ChatViewModel(
         _streamingById.value = emptyMap()
     }
 
-    /**
-     * Build the ordered AgentContentPart list for this turn by walking the slice of
-     * `allToolBlocks` that belongs to the current turn (from `turnStartBlockIndex` to
-     * the end). Text blocks become `Text`, tool_use blocks become `ToolUse` — the
-     * original stream order is preserved by the list slice order. Thinking and info
-     * blocks are skipped (they're persisted via `reasoningContent` or not at all).
-     */
-    private fun buildTurnParts(
-        allToolBlocks: List<AssistantBlock>,
-        turnStartBlockIndex: Int,
-        toolCallInputs: Map<String, String>,
-    ): List<AgentContentPart> {
-        if (turnStartBlockIndex >= allToolBlocks.size) return emptyList()
-        val out = mutableListOf<AgentContentPart>()
-        for (i in turnStartBlockIndex until allToolBlocks.size) {
-            val block = allToolBlocks[i]
-            when (block.kind) {
-                "text" -> if (block.content.isNotEmpty()) {
-                    out.add(AgentContentPart.Text(block.content))
-                }
-                "tool_use" -> {
-                    val name = block.toolName
-                    if (name.isBlank()) continue
-                    val inputStr = toolCallInputs[block.id] ?: "{}"
-                    val inputJson = try { JSONObject(inputStr) } catch (_: Exception) { JSONObject() }
-                    // [T-android-gemini3-thoughtsig / #179] Carry the block's
-                    // signature into the persisted/replayed ToolUse.
-                    out.add(AgentContentPart.ToolUse(block.id, name, inputJson, thoughtSignature = block.thoughtSignature))
-                }
-                // "thinking" / "info" → not persisted in parts
-                else -> { /* skip */ }
-            }
-        }
-        return out
-    }
-
-    /**
-     * Persist a single agent turn: the ordered list of AgentContentParts produced
-     * in this turn (text segments and tool_use blocks interleaved in the order they
-     * were emitted). Mirrors iOS's per-turn `persistAgentMessage` — one DB row per
-     * turn, no cross-turn accumulation, preserving `parts` array order.
-     *
-     * This is the right entry point for the agent loop; the legacy
-     * `persistAssistantMessage(text, usage, toolBlocks, ...)` accumulated all history
-     * on every call, which caused:
-     *   - Duplicate tool_use rows across turns (crashed LazyColumn key uniqueness)
-     *   - Orphan tool_result detection thrashing (sanitize injecting placeholders)
-     *   - Lost chronological text ↔ tool_use ordering within a single turn
-     */
-    /**
-     * Serialize a turn's [AgentContentPart] list into the on-disk parts_json
-     * shape (text + toolUse blocks). Shared by [persistAssistantTurn] (the
-     * authoritative per-turn row write) and the live session-list preview
-     * update ([T-android-session-last-message-live-tool-call]) so both produce
-     * an identical payload that [ChatRepository.extractTextPreview] understands.
-     */
-    private fun buildAssistantPartsJson(
-        parts: List<AgentContentPart>,
-        toolBlockMeta: Map<String, AssistantBlock>,
-    ): String = buildString {
-        append("[")
-        parts.forEachIndexed { index, part ->
-            if (index > 0) append(",")
-            when (part) {
-                is AgentContentPart.Text -> {
-                    append("""{"type":"text","value":${escapeJson(part.text)}}""")
-                }
-                is AgentContentPart.ToolUse -> {
-                    // Skip tool_use with blank name — upstream bug guard.
-                    val name = part.name
-                    if (name.isBlank()) return@forEachIndexed
-                    val inputStr = part.input.toString()
-                    val meta = toolBlockMeta[part.id]
-                    val desc = meta?.toolTitle ?: ""
-                    val pageURL = meta?.browserURL ?: ""
-                    val imgPath = meta?.imageFilePath ?: ""
-                    // [T-android-gemini3-thoughtsig / #179] Persist the captured
-                    // signature (null-literal when absent) so it survives a session
-                    // reload and can be replayed on the historical functionCall.
-                    val sigJson = part.thoughtSignature?.let { escapeJson(it) } ?: "null"
-                    append("""{"type":"toolUse","value":{"toolUseId":${escapeJson(part.id)},"name":${escapeJson(name)},"input":${escapeJson(inputStr)},"description":${escapeJson(desc)},"pageURL":${escapeJson(pageURL)},"imageFilePath":${escapeJson(imgPath)},"thoughtSignature":$sigJson}}""")
-                }
-                else -> { /* tool_result is persisted via persistToolResultMessage */ }
-            }
-        }
-        append("]")
+    private fun journalMetadata(toolBlockMeta: Map<String, AssistantBlock>) = toolBlockMeta.mapValues { (_, block) ->
+        com.openminis.app.agent.AgentJournalWriter.ToolPresentation(block.toolTitle,
+            block.browserURL.orEmpty(), block.imageFilePath.orEmpty())
     }
 
     private suspend fun persistAssistantTurn(
+        journal: com.openminis.app.agent.AgentJournalWriter,
+        attribution: com.openminis.app.data.model.ModelAttributionSnapshot,
+        calibration: Triple<Int, Int, String?>?,
         parts: List<AgentContentPart>,
         usage: LLMUsage?,
         reasoningContent: String? = null,
@@ -12880,18 +12729,9 @@ class ChatViewModel(
         // change reads as — hence a NEW key rather than a changed one.
         streamMs: Long = 0L,
     ): String? {
-        if (parts.isEmpty()) return null
-        val partsJson = buildAssistantPartsJson(parts, toolBlockMeta)
-        val tokenJson = usage?.let {
-            usageRecordJson(it, streamMs)
-        }
-        val entity = chatRepository.appendMessage(
-            realSessionId.ifEmpty { sessionId }, "assistant", partsJson, tokenJson,
-            reasoningContent = reasoningContent,
-            // [T-token-attribution-snapshot] From the live request context, not
-            // the session row — see currentModelSnapshot().
-            modelSnapshot = currentModelSnapshot(),
-        )
+        val entity = journal.assistant(parts,
+            com.openminis.app.agent.AgentJournalWriter.Receipt(usage, streamMs, attribution, calibration),
+            reasoningContent, journalMetadata(toolBlockMeta)) ?: return null
 
         // [T-android-usage-capsule-live] Stamp the usage capsule's data onto
         // the LIVE bubble, not just the DB row.
@@ -12919,6 +12759,7 @@ class ChatViewModel(
         if (uiAssistantId != null) {
             val stampedUsage = ChatTokenUsage.parse(entity.tokenUsage)
             withContext(Dispatchers.Main) {
+                if (activeSessionId != journal.sessionId) return@withContext
                 var hit = false
                 // [T-android-usage-capsule-live-reload] A turn with no usage
                 // (provider sent none) must not wipe the capsule an earlier tool
@@ -12938,79 +12779,6 @@ class ChatViewModel(
                 )
             }
         }
-        return entity.id
-    }
-
-    @Deprecated("Use persistAssistantTurn(parts, ...) for per-turn delta persistence")
-    private suspend fun persistAssistantMessage(
-        text: String,
-        usage: LLMUsage?,
-        toolBlocks: List<AssistantBlock>? = null,
-        toolCallInputs: Map<String, String> = emptyMap()
-        ,
-        reasoningContent: String? = null,
-    ) {
-        if (text.isEmpty() && (toolBlocks == null || toolBlocks.isEmpty())) return
-
-        val partsJson = buildString {
-            append("[")
-            var first = true
-            if (text.isNotEmpty()) {
-                append("""{"type":"text","value":${escapeJson(text)}}""")
-                first = false
-            }
-            toolBlocks?.forEach { block ->
-                // Only persist real tool-use blocks. text / thinking / info blocks are
-                // either represented via the `text` parameter (accumulatedText) or
-                // reconstructed from thinking metadata; persisting them as `toolUse`
-                // produces empty-name records that Anthropic rejects with
-                // "messages.N.content.M.tool_use.name: String should have at least 1 character".
-                if (block.kind != "tool_use") return@forEach
-                if (block.toolName.isBlank()) return@forEach  // extra safety
-                if (!first) append(",")
-                first = false
-                val inputJson = toolCallInputs[block.id]?.let { escapeJson(it) } ?: "\"\""
-                val pUrl = block.browserURL ?: ""
-                val iPath = block.imageFilePath ?: ""
-                append("""{"type":"toolUse","value":{"toolUseId":${escapeJson(block.id)},"name":${escapeJson(block.toolName)},"input":$inputJson,"description":${escapeJson(block.toolTitle)},"pageURL":${escapeJson(pUrl)},"imageFilePath":${escapeJson(iPath)},"thoughtSignature":null}}""")
-            }
-            append("]")
-        }
-        val tokenJson = usage?.let {
-            usageRecordJson(it)
-        }
-        chatRepository.appendMessage(
-            realSessionId.ifEmpty { sessionId }, "assistant", partsJson, tokenJson,
-            reasoningContent = reasoningContent,
-            modelSnapshot = currentModelSnapshot(),
-        )
-    }
-
-    /** Persist tool results as a user-role message (mirrors iOS behavior). */
-    private suspend fun persistToolResultMessage(parts: List<AgentContentPart>): String? {
-        val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
-        if (results.isEmpty()) return null
-        val partsJson = buildString {
-            append("[")
-            results.forEachIndexed { index, result ->
-                if (index > 0) append(",")
-                val snapshotText = escapeJson(result.content.lines().takeLast(30).joinToString("\n"))
-                val imageMetadata = if (result.name == com.openminis.app.tools.CodemodeTool.NAME) {
-                    val position = parts.indexOf(result)
-                    val images = mutableListOf<AgentContentPart.ImageData>()
-                    if (result.imageData != null && result.imageLinuxPath != null) images.add(
-                        AgentContentPart.ImageData(result.imageData, result.imageMimeType ?: "image/png", result.imageLinuxPath))
-                    images.addAll(parts.drop(position + 1).takeWhile { it !is AgentContentPart.ToolResult }
-                        .filterIsInstance<AgentContentPart.ImageData>())
-                    ",\"images\":" + org.json.JSONArray(images.map { image -> JSONObject()
-                        .put("path", image.linuxPath).put("mimeType", image.mimeType) }).toString()
-                } else ""
-                val detailsMetadata = result.detailsJson?.let { ",\"detailsJson\":${escapeJson(it)}" }.orEmpty()
-                append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError}$imageMetadata$detailsMetadata,"snapshot":{"type":"text","text":$snapshotText}}}""")
-            }
-            append("]")
-        }
-        val entity = chatRepository.appendMessage(realSessionId.ifEmpty { sessionId }, "user", partsJson)
         return entity.id
     }
 
@@ -14270,6 +14038,7 @@ class ChatViewModel(
      * Always sets [_canResume] = true when there is something to resume from.
      */
     private fun handleUserCancelledCleanup() {
+        val journal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
         val msgs = _messages.value.toMutableList()
         val lastIdx = msgs.indexOfLast { it.role == "assistant" }
         if (lastIdx < 0) return
@@ -14311,7 +14080,7 @@ class ChatViewModel(
                 )
             }
             viewModelScope.launch(Dispatchers.IO) {
-                persistToolResultMessage(parts)
+                journal.toolResults(parts)
             }
             // [T-android-group-pause-badge-restamp] A LIVE interruption just
             // happened: this is a real entry into the paused state, so the
@@ -14370,8 +14139,8 @@ class ChatViewModel(
                 )
             )
             viewModelScope.launch(Dispatchers.IO) {
-                val partsJson = buildAssistantPartsJson(parts)
-                chatRepository.appendMessage(activeSessionId, "assistant", partsJson)
+                journal.assistant(parts, com.openminis.app.agent.AgentJournalWriter.Receipt(null, 0, null, null),
+                    null, emptyMap())
             }
             // [T-android-group-pause-badge-restamp] A LIVE interruption just
             // happened: this is a real entry into the paused state, so the
@@ -14391,26 +14160,6 @@ class ChatViewModel(
             markLiveInterruption()
             _canResume.value = true
         }
-    }
-
-    /**
-     * Build a JSON parts array matching the ChatRepository schema so a
-     * committed interrupted-assistant turn round-trips across app restarts.
-     * Only emits text parts — tool_use / tool_result paths are handled by
-     * the existing persistence code in the agent loop.
-     */
-    private fun buildAssistantPartsJson(parts: List<AgentContentPart>): String {
-        val sb = StringBuilder("[")
-        var first = true
-        for (p in parts) {
-            if (p !is AgentContentPart.Text) continue
-            if (!first) sb.append(',') else first = false
-            sb.append("""{"type":"text","value":""")
-            sb.append(escapeJson(p.text))
-            sb.append('}')
-        }
-        sb.append(']')
-        return sb.toString()
     }
 
     /**

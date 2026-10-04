@@ -31,6 +31,7 @@ internal class CompactionSummarizer(
         val summaryPrompt: String,
         val estimateRatio: Double,
         val attribution: com.openminis.app.data.model.ModelAttributionSnapshot? = null,
+        val recordUsage: (suspend (com.openminis.app.data.model.LLMUsage, Long, com.openminis.app.data.model.ModelAttributionSnapshot?) -> Unit)? = null,
     )
     @Volatile private var warm: ConversationRequest? = null
     fun remember(request: ConversationRequest) { warm = request }
@@ -57,7 +58,8 @@ internal class CompactionSummarizer(
         AppLogger.info(TAG, "[CompactCache] replaying ${prefix.size} prefix messages, ${previous.tools.size} declarations")
         return try {
             collect(context.provider, request, previous.systemPrompt, minOf(8192L, remaining).toInt(),
-                previous.tools, previous.thinking, cached = true, attribution = previous.attribution).takeIf { it.isNotBlank() }
+                previous.tools, previous.thinking, cached = true, attribution = previous.attribution,
+                recordUsage = context.recordUsage).takeIf { it.isNotBlank() }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (failure !is CachedCompaction.UnsafeSummary && !retryable(unwrap(failure))) throw failure
@@ -67,7 +69,8 @@ internal class CompactionSummarizer(
     }
 
     suspend fun transcript(provider: LLMProvider, conversation: String, prompt: String, window: Int,
-        attribution: com.openminis.app.data.model.ModelAttributionSnapshot? = null): String {
+        attribution: com.openminis.app.data.model.ModelAttributionSnapshot? = null,
+        recordUsage: (suspend (com.openminis.app.data.model.LLMUsage, Long, com.openminis.app.data.model.ModelAttributionSnapshot?) -> Unit)? = null): String {
         val userMessage = "Compact this conversation into a context summary:\n\n" + conversation +
             "\n\n---\nEND OF CONVERSATION TO COMPACT.\n\n" +
             "Now generate a structured context summary following the system prompt " +
@@ -76,13 +79,14 @@ internal class CompactionSummarizer(
             "was done\", NOT as an ongoing goal or todo list."
         val maxOut = maxOf(1024, minOf(8192, window - userMessage.length / 4))
         return collect(provider, listOf(LLMMessage(LLMMessage.Role.USER, userMessage)), prompt,
-            maxOut, emptyList(), ThinkingLevel.OFF, cached = false, attribution = attribution)
+            maxOut, emptyList(), ThinkingLevel.OFF, cached = false, attribution = attribution, recordUsage = recordUsage)
     }
 
     private suspend fun collect(
         provider: LLMProvider, messages: List<LLMMessage>, prompt: String?, maxTokens: Int,
         tools: List<AgentToolDefinition>, thinking: ThinkingLevel, cached: Boolean,
         attribution: com.openminis.app.data.model.ModelAttributionSnapshot?,
+        recordUsage: (suspend (com.openminis.app.data.model.LLMUsage, Long, com.openminis.app.data.model.ModelAttributionSnapshot?) -> Unit)?,
     ): String {
         val started = System.nanoTime()
         val text = StringBuilder()
@@ -110,7 +114,7 @@ internal class CompactionSummarizer(
         } finally {
             // Providers may emit preliminary and final usage. Account once per request,
             // including a failed/cancelled stream when it reported measurable usage.
-            observedUsage?.let { onUsage(it, (System.nanoTime() - started) / 1_000_000, attribution) }
+            observedUsage?.let { (recordUsage ?: onUsage)(it, (System.nanoTime() - started) / 1_000_000, attribution) }
         }
         AppLogger.info(TAG, "[Compact] segment stream done: $chunks chunks, ${text.length} chars")
         return text.toString()

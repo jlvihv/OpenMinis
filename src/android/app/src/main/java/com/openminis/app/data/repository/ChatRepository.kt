@@ -21,11 +21,10 @@ class ChatRepository(internal val dao: ChatDao) {
     /** Commit a successful script immediately, independently of its enclosing LLM turn. */
     suspend fun appendCodemodeStoreEntry(sessionId: String, writes: String) = customEntryMutex.withLock {
         val parts = com.openminis.app.tools.CodemodeStore.encode(writes, UUID.randomUUID().toString())
-        val start = dao.nextSortOrder(sessionId)
         val now = System.currentTimeMillis()
-        dao.insertMessages(parts.mapIndexed { index, json -> MessageEntity(
+        dao.appendJournalBatch(parts.map { json -> MessageEntity(
             id = UUID.randomUUID().toString(), sessionId = sessionId, role = "system", partsJson = json,
-            createdAt = now, sortOrder = start + index,
+            createdAt = now, sortOrder = 0,
         ) })
     }
 
@@ -566,7 +565,6 @@ class ChatRepository(internal val dao: ChatDao) {
         reasoningContent: String? = null,
         modelSnapshot: ModelAttributionSnapshot? = null,
     ): MessageEntity {
-        val sortOrder = dao.nextSortOrder(sessionId)
         val now = System.currentTimeMillis()
         // Cap the body so a runaway tool_result (e.g. a 13 MB browser
         // dump — Issue #17) cannot land an oversize blob into a Room row
@@ -586,14 +584,14 @@ class ChatRepository(internal val dao: ChatDao) {
             partsJson = capped,
             createdAt = now,
             tokenUsage = tokenUsage,
-            sortOrder = sortOrder,
+            sortOrder = 0,
             reasoningContent = reasoningContent,
             modelId = modelSnapshot?.modelId,
             modelDisplayName = modelSnapshot?.displayName,
             providerType = modelSnapshot?.providerTypeRaw,
             providerInstanceId = modelSnapshot?.providerInstanceId,
         )
-        dao.insertMessage(message)
+        val stored = dao.insertJournalMessage(message)
         // [T-android-preview-flicker-toolresult] Only overwrite the preview
         // when this row actually yields one. A tool-result row is
         // `[{"type":"toolResult",…}]`, a shape extractTextPreview does not
@@ -612,7 +610,7 @@ class ChatRepository(internal val dao: ChatDao) {
         } else {
             dao.touchSession(sessionId, now)
         }
-        return message
+        return stored
     }
 
     /**
