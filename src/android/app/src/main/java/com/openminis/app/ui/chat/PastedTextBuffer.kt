@@ -204,58 +204,6 @@ fun splitPastePlaceholders(
 }
 
 /**
- * [T-android-paste-mediaref] Naming and typing convention that marks a
- * `mediaRef` part as "this was a pasted block", without touching the DB schema.
- *
- * The spec's hard constraint is no new column and no new table. `parts_json` is
- * already a free-form array and `mediaRef` already carries arbitrary text/image
- * /document payloads, so the only thing missing is a way to tell a pasted block
- * apart from a file the user actually picked — the two must render differently
- * and expand differently in the request.
- *
- * The discriminator is [PASTED_FILENAME_PREFIX] on `originalFileName`, paired
- * with `text/plain`. Filename was chosen over a bespoke MIME subtype because
- * every existing consumer already reads `originalFileName` and treats it as an
- * opaque label — a `text/x-minis-pasted` MIME would instead have to be taught to
- * the file-icon mapper, the preview router and the share sheet, any one of which
- * would show something wrong if missed.
- */
-object PastedMedia {
-    /** Marks a mediaRef as pasted text. Also what the user sees as the filename. */
-    const val PASTED_FILENAME_PREFIX = "Pasted#"
-
-    const val MIME = "text/plain"
-
-    /**
-     * [T-android-paste-missing-file] Stands in for a pasted block whose file is
-     * gone at request-build time.
-     *
-     * Explicit over silent: an omitted part leaves the model reading a sentence
-     * with an invisible hole, which it will answer as though nothing were
-     * missing. Phrased for the model rather than the user, since this string
-     * only ever reaches the prompt.
-     */
-    const val MISSING_PLACEHOLDER =
-        "[pasted content unavailable — the stored text file is missing]"
-
-    /** `Pasted#3.txt` — recognisable in a file listing and traceable to the marker. */
-    fun fileNameFor(id: Int): String = "$PASTED_FILENAME_PREFIX$id.txt"
-
-    /**
-     * Whether a persisted mediaRef came from a folded paste.
-     *
-     * Both conditions matter: the prefix alone would misclassify a real file a
-     * user happened to name `Pasted#1.txt`, and `text/plain` alone would swallow
-     * every genuine .txt attachment — which must keep rendering and behaving as
-     * an ordinary file.
-     */
-    fun isPastedRef(mimeType: String?, originalFileName: String?): Boolean =
-        mimeType == MIME &&
-            originalFileName != null &&
-            originalFileName.startsWith(PASTED_FILENAME_PREFIX)
-}
-
-/**
  * [T-android-paste-oversize] Above this many characters a paste stops being a
  * placeholder and becomes a real `.txt` file attachment instead.
  *

@@ -81,12 +81,19 @@ class CodemodeSandboxTest {
         fun open() = androidx.room.Room.databaseBuilder(context,
             com.openminis.app.data.db.AppDatabase::class.java, name).build()
         var db = open()
+        val mediaDir = java.io.File(context.cacheDir, name).apply { mkdirs() }
+        java.io.File(mediaDir, "paste.txt").writeText("restored paste")
+        val bitmap = android.graphics.Bitmap.createBitmap(2, 3, android.graphics.Bitmap.Config.ARGB_8888)
+        java.io.File(mediaDir, "original.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
         val runtime = com.openminis.app.agent.RuntimeContextSnapshot
         val text = runtime.render("2026-10-04", "UTC", "zh-CN", 3)
         try {
             var repo = com.openminis.app.data.repository.ChatRepository(db.chatDao())
             val session = repo.createSession("cache-test")
-            repo.appendMessage(session.id, "user", """[{"type":"text","value":"test"}]""")
+            repo.appendMessage(session.id, "user", """[{"type":"text","value":"test"},
+                {"type":"mediaRef","value":{"relativePath":"paste.txt","mimeType":"text/plain","originalFileName":"Pasted#1.txt"}},
+                {"type":"mediaRef","value":{"relativePath":"original.png","mimeType":"image/png","linuxPath":"/uploads/original.png"}}]""")
             val snapshot = repo.appendMessage(session.id, "user", runtime.encode(text))
             val attribution = com.openminis.app.data.model.ModelAttributionSnapshot("cache-test", "Cache Test", "openAI", "test-instance")
             repo.recordRequestUsage(session.id, com.openminis.app.data.model.RequestUsageRecord.Purpose.COMPACTION,
@@ -96,6 +103,13 @@ class CodemodeSandboxTest {
             db.close(); db = open()
             repo = com.openminis.app.data.repository.ChatRepository(db.chatDao())
             assertEquals(text, repo.loadMessages(session.id).mapNotNull { runtime.decode(it.partsJson) }.single())
+            val decoded = com.openminis.app.agent.HistoryMessageDecoder(
+                com.openminis.app.agent.AndroidHistoryMedia(context, session.id, mediaDir, "no vision"))
+                .decode(repo.loadMessages(session.id).first())!!
+            assertEquals("testrestored paste", decoded.content)
+            assertArrayEquals(java.io.File(mediaDir, "original.png").readBytes(), decoded.imageParts.single().data)
+            assertEquals("/uploads/original.png", decoded.imageParts.single().linuxPath)
+            assertEquals("no vision", decoded.imageParts.single().noVisionPlaceholder)
             val usageRow = repo.loadMessages(session.id).last()
             assertFalse(com.openminis.app.agent.JournalProjection.isModelVisible(usageRow.partsJson))
             assertEquals("test-instance", usageRow.providerInstanceId)
@@ -112,7 +126,7 @@ class CodemodeSandboxTest {
             assertTrue(repo.sessionTokenUsages(session.id).isEmpty())
             assertEquals(text, repo.loadMessages(copy).mapNotNull { runtime.decode(it.partsJson) }.single())
             assertEquals(1, repo.sessionTokenUsages(copy).size)
-        } finally { db.close(); context.deleteDatabase(name) }
+        } finally { db.close(); context.deleteDatabase(name); mediaDir.deleteRecursively() }
     }
     @Test fun deadlineInterruptsVmAndNextInvocationStillWorks() = runBlocking {
         val result = run("// @options: {\"tool_title\":\"测试中断\",\"timeout_ms\":200}\nwhile (true) {}")

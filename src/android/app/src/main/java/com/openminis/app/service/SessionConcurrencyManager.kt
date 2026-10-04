@@ -1,130 +1,93 @@
 package com.openminis.app.service
 
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.LinkedList
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.resume
 
-/**
- * Limits concurrent agent loop sessions to [maxConcurrent].
- * Excess sessions are suspended in a FIFO queue until a slot frees up.
- */
 object SessionConcurrencyManager {
     const val MAX_CONCURRENT = 5
-
-    /** [T-STALL-DIAG] Heartbeat cadence while a turn is blocked on a slot. */
     private const val SLOT_WAIT_WARN_MS = 10_000L
-
+    private val lock = Any()
+    private val holders = LinkedHashMap<Lease, String>()
+    private data class Waiter(val sessionId: String, val continuation: CancellableContinuation<Lease>)
+    private val waitQueue = LinkedList<Waiter>()
     private val _runningSessions = MutableStateFlow<Set<String>>(emptySet())
     val runningSessions: StateFlow<Set<String>> = _runningSessions.asStateFlow()
-
     private val _suspendedSessions = MutableStateFlow<List<String>>(emptyList())
     val suspendedSessions: StateFlow<List<String>> = _suspendedSessions.asStateFlow()
 
-    private data class Waiter(val sessionId: String, val continuation: Continuation<Unit>)
-    private val waitQueue = LinkedList<Waiter>()
+    class Lease internal constructor(val sessionId: String) : AutoCloseable {
+        override fun close() = release(this)
+    }
 
-    suspend fun acquireSlot(sessionId: String) {
-        if (_runningSessions.value.size < MAX_CONCURRENT) {
-            _runningSessions.value = _runningSessions.value + sessionId
-            // [T-STALL-DIAG] Fast path taken — record who now holds slots so a
-            // later leak can be traced back to the turn that opened it.
-            println(
-                "[T-STALL-DIAG] slot ACQUIRED-fast sid=$sessionId " +
-                    "running=${_runningSessions.value.size}/$MAX_CONCURRENT " +
-                    "holders=${_runningSessions.value.joinToString(",")}",
-            )
-            return
-        }
-
-        // [T-STALL-DIAG] SLOW PATH — every slot is taken, so this turn is about
-        // to suspend with NO timeout. This is the prime suspect for the reported
-        // "new session sits on thinking… forever, nothing in the UI, stop button
-        // still armed": if a streamJob is killed before its `finally`
-        // (process death, cancellation gap), its id is never removed from
-        // _runningSessions, and after MAX_CONCURRENT such leaks EVERY new turn
-        // blocks here silently and indefinitely.
-        //
-        // Log WHO holds the slots at the moment we start waiting, then emit a
-        // heartbeat while still blocked, so the log distinguishes:
-        //   - "waiting, holders are real live sessions"  → legitimate queueing
-        //   - "waiting, holders are stale/unknown ids"   → leaked slots (bug)
-        val holdersAtWait = _runningSessions.value.toList()
-        val waitStartMs = android.os.SystemClock.elapsedRealtime()
-        println(
-            "[T-STALL-DIAG] slot WAIT-BEGIN sid=$sessionId " +
-                "running=${holdersAtWait.size}/$MAX_CONCURRENT " +
-                "holders=${holdersAtWait.joinToString(",")} " +
-                "queueDepth=${_suspendedSessions.value.size}",
-        )
-        val watchdog = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            var waited = 0L
+    suspend fun acquireSlot(sessionId: String): Lease {
+        val start = android.os.SystemClock.elapsedRealtime()
+        val watchdog = CoroutineScope(currentCoroutineContext()).launch {
             while (true) {
-                kotlinx.coroutines.delay(SLOT_WAIT_WARN_MS)
-                waited += SLOT_WAIT_WARN_MS
-                println(
-                    "[T-STALL-DIAG] slot STILL-WAITING sid=$sessionId waitedMs=$waited " +
-                        "holders=${_runningSessions.value.joinToString(",")} " +
-                        "queueDepth=${_suspendedSessions.value.size} " +
-                        "— if these holders are not live turns, slots have LEAKED",
-                )
+                delay(SLOT_WAIT_WARN_MS)
+                println("[T-STALL-DIAG] slot STILL-WAITING sid=$sessionId waitedMs=${android.os.SystemClock.elapsedRealtime() - start} ${diagSnapshot()}")
             }
         }
-
-        // Queue and suspend
-        _suspendedSessions.value = _suspendedSessions.value + sessionId
         try {
-            suspendCancellableCoroutine { cont ->
-                synchronized(this@SessionConcurrencyManager) {
-                    waitQueue.add(Waiter(sessionId, cont))
-                }
-                cont.invokeOnCancellation {
-                    synchronized(this@SessionConcurrencyManager) {
-                        waitQueue.removeAll { it.sessionId == sessionId }
-                        _suspendedSessions.value = _suspendedSessions.value - sessionId
+            return suspendCancellableCoroutine { continuation ->
+                val waiter = Waiter(sessionId, continuation)
+                synchronized(lock) {
+                    waitQueue.add(waiter)
+                    continuation.invokeOnCancellation {
+                        synchronized(lock) {
+                            waitQueue.remove(waiter)
+                            publish()
+                            grantWaiting()
+                        }
                     }
+                    grantWaiting()
+                    publish()
                 }
             }
         } finally {
             watchdog.cancel()
-            println(
-                "[T-STALL-DIAG] slot WAIT-END sid=$sessionId " +
-                    "waitedMs=${android.os.SystemClock.elapsedRealtime() - waitStartMs}",
-            )
         }
     }
 
-    /**
-     * [T-STALL-DIAG] Snapshot for the send path to log BEFORE it tries to
-     * acquire — so a turn that never reaches "slot acquired" still leaves a
-     * record of what the manager looked like at that moment.
-     */
-    fun diagSnapshot(): String =
-        "running=${_runningSessions.value.size}/$MAX_CONCURRENT " +
-            "holders=${_runningSessions.value.joinToString(",")} " +
-            "suspended=${_suspendedSessions.value.joinToString(",")}"
-
-    @Synchronized
-    fun releaseSlot(sessionId: String) {
-        val had = sessionId in _runningSessions.value
-        _runningSessions.value = _runningSessions.value - sessionId
-        println(
-            "[T-STALL-DIAG] slot RELEASED sid=$sessionId wasHeld=$had " +
-                "running=${_runningSessions.value.size}/$MAX_CONCURRENT " +
-                "holders=${_runningSessions.value.joinToString(",")}",
-        )
-
-        // Resume next waiter
-        val next = synchronized(this) { waitQueue.pollFirst() }
-        if (next != null) {
-            _suspendedSessions.value = _suspendedSessions.value - next.sessionId
-            _runningSessions.value = _runningSessions.value + next.sessionId
-            next.continuation.resume(Unit)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun grantWaiting() {
+        while (holders.size < MAX_CONCURRENT) {
+            val waiter = waitQueue.firstOrNull { it.sessionId !in holders.values } ?: break
+            waitQueue.remove(waiter)
+            if (!waiter.continuation.isActive) continue
+            val lease = Lease(waiter.sessionId)
+            holders[lease] = waiter.sessionId
+            publish()
+            println("[T-STALL-DIAG] slot ACQUIRED sid=${waiter.sessionId} ${diagSnapshot()}")
+            waiter.continuation.resume(lease, onCancellation = { _, cancelledLease, _ -> cancelledLease.close() })
         }
+    }
+
+    private fun release(lease: Lease) {
+        synchronized(lock) {
+            if (holders.remove(lease) == null) return
+            publish()
+            println("[T-STALL-DIAG] slot RELEASED sid=${lease.sessionId} ${diagSnapshot()}")
+            grantWaiting()
+            publish()
+        }
+    }
+
+    private fun publish() {
+        _runningSessions.value = holders.values.toSet()
+        _suspendedSessions.value = waitQueue.map { it.sessionId }
+    }
+
+    fun diagSnapshot(): String = synchronized(lock) {
+        "running=${holders.size}/$MAX_CONCURRENT holders=${holders.values.joinToString(",")} suspended=${waitQueue.joinToString(",") { it.sessionId }}"
     }
 
     fun isSuspended(sessionId: String): Boolean = sessionId in _suspendedSessions.value
