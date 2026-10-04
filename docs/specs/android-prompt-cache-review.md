@@ -1,0 +1,36 @@
+# Android prompt-cache review
+
+Reviewed upstream: `deepseek-ai/deepseek-harness` at `5badb15009ae1756c3afe0ae0cef1faafc290ccc` (shallow clone: `/home/vihv/Code/lib/deepseek-harness`). Review only; no upstream build or credential-backed tests were run.
+
+## Android implementation (2026-10-04)
+
+- Added owned `runtime-context` journal rows, hidden from chat bubbles but replayed as user-role fact snapshots. Each request appends only a changed effective snapshot; restart/fork/rewind follows retained branch rows. Runtime facts no longer rewrite the system suffix. They are not user-task boundaries.
+- Added a cached compaction fast path using a usage-confirmed conversation request's original system/tools and a matching, tool-balanced leading history region, with the compaction directive appended last. It is same-provider-instance only and currently restricted to thinking OFF, so it does not increase summary reasoning cost. Edited/replaced/unbalanced histories and insufficient capacity use the old bounded transcript/splitting path.
+- Summary tool requests and output truncation fail closed, never reach a dispatcher, and fall back. Existing cancellation, idle timeout, total timeout, model fallback and model-call budget remain in force; an attempted fast call consumes budget.
+- Seven JVM regressions and three manual ART/PRoot/device tests passed. The device suite tested an isolated runtime journal database across close/reopen, session duplication and rewind; it never cleared the personal chat database. Final Release build passed and was installed over the existing app without uninstalling or clearing data.
+- Live API verification subsequently passed after a fresh Debug cover install and RPC readiness check. The actual serialized Responses bodies requested `gpt-6.1-sol`: summary instructions/tools/reasoning/cache key matched the preceding conversation request, all six leading wire input items were identical, and only the final summary directive was new. The successful summary reported **571 fresh input + 4480 cache-read tokens (88.7%)**, with seven unchanged tool declarations. Another ordinary request in the same probe still reported zero cache hits: this is evidence of actual summary prefix reuse, not uniformly high hit rates or a global optimum.
+- After compaction, the model recalled `CACHE_COMPACTION_PROBE` without calling tools; after force-stop/restart and reload it recalled the same value. Both stages retained exactly one runtime-context journal row and one original tool call; the cache key survived restart. Existing device tests separately cover isolated database fork/rewind. Logging was briefly enabled for the controlled measurement and restored to its original disabled setting. Evidence: `/tmp/openminis-compaction-live-result.json`, `/tmp/openminis-compaction-live-cache.log`, and sanitized request bodies (no request headers) in `/tmp/openminis-compaction-live-bodies.json`. No background cache warming or WebSocket transport was added.
+
+## Findings from reviewed upstream code (Android comparisons below describe the pre-change state)
+
+1. **Dynamic context is separate from the system head.** `packages/core/agent-loop/src/runtime-context.ts`, `RuntimeContextProjection.project()`, appends a durable sourced user snapshot only when its text changes; clearing context emits an explicit clearing snapshot. Android currently embeds date/timezone/locale/model count in `ChatViewModel.buildSystemPrompt()`. Moving those changing facts into persisted history would preserve the much longer conversation prefix on updates, including across restart/fork/rewind.
+2. **System prompt changes are capability-gated.** `SystemPromptProjection.project()` appends changed system text only on a continuing `in-history` route. Unsupported routes, empty prompts, surface replacement and certain tool-schema changes consolidate the head and clear older active versions. `agent.ts` uses the actual prepared adapter's capability, not a guess based on model name. Blindly freezing Android's prompt would leave instructions/settings stale; blindly appending system messages could break incompatible providers.
+3. **Compaction's auxiliary request replays the warm prefix.** `packages/compaction/compaction-basic/src/region.ts`, `buildSummarizationInput()`, reconstructs the original system head, tool declarations and actual leading message objects. `src/summarizer.ts`, `summarizeWithLlm()`, appends the summary instruction at the end, retains tool history and session ID, and does not dispatch generated tool calls. Android instead flattens/truncates history into text, replaces the system prompt and omits tools in `ChatViewModel.generateCompactSummary*()`. This is a concrete missing cache optimization, independent of WebSocket transport. Different summary models and non-leading regions still lose reuse; the post-compaction conversation necessarily has a changed prefix.
+4. **Tool declarations have a history.** `packages/core/session/src/tool-history.ts` retains immutable baseline declarations plus recorded additions/removals. Redefining an existing tool resets the declaration series. Native in-history/deferred tool updates are provider capabilities, not portable JSON fields to copy into every Android request.
+5. **Reconstructable requests are the stability mechanism.** Headers, message identities and tool definitions are frozen for requests and derived from the durable session log. Ordinary accepted input, results and recovery messages append; intentional replacement starts a new series. An unchanged runtime snapshot adds no new tokens.
+
+## Limits of the evidence
+
+- `packages/core/agent-loop/tests/request-cache.e2e.ts` asserts positive cache reads after the first request, not a universal 99.8% hit rate. Its real API tests require credentials and were not run here.
+- The archived `2026-07-07-session-prefix.md` explicitly says its request-only frozen-prefix seam was later removed. Do not mistake it for the current implementation.
+- Stable prefixes make reuse eligible; eviction, idle gaps, model/provider switches and provider routing remain outside the client's control.
+- Android's previous four-request GPT-6.1 Sol probe measured 15.1%, 97.3%, 98.6%, 98.1%. This proves short-run improvement, not optimal lifetime caching. New input and cache-block tails remain uncached even with an unchanged earlier prefix.
+
+## Recommended order
+
+1. Separate and persist changing runtime-context snapshots with branch-aware replay and explicit clearing semantics.
+2. Add a same-route, same-system/tools/history compaction fast path; preserve bounded output, cancellation, budget and overflow fallback, without dispatching summary tool calls. Verify actual provider prefix/usage rather than assuming identical Kotlin objects mean identical rendered tokens.
+3. Introduce capability-gated system/tool update history, including restart, fork, rewind and provider-switch tests.
+4. Consider Codex WebSocket continuation only with faithful response/reasoning replay and safe fallback. It primarily reduces upload and connection overhead; it does not make newly added input cacheable.
+
+Do not enable billable cache-warming requests merely to raise the displayed percentage. Keep cumulative usage and latest-request cache hit rate distinct.

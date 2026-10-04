@@ -333,7 +333,8 @@
     <string name="token_usage_section_cache">缓存（会话总计）</string>
     <string name="token_usage_cache_read">缓存读取</string>
     <string name="token_usage_cache_write">缓存写入</string>
-    <string name="token_usage_cache_hit_rate">缓存命中率</string>
+    <string name="token_usage_cache_hit_rate">累计缓存命中率</string>
+    <string name="token_usage_latest_cache_hit_rate">最近请求缓存命中率</string>
     <string name="token_usage_section_speed">速度</string>
     <string name="token_usage_output_speed">输出速度</string>
     <string name="token_usage_section_agent_loop">Agent 循环</string>

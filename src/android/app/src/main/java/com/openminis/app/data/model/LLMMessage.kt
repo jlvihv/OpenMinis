@@ -29,6 +29,8 @@ data class LLMMessage(
      * reasoning_content once `thinking` is enabled.
      */
     val reasoningContent: String? = null,
+    /** Owned persisted runtime facts, not a user task or turn boundary. Never sent as a wire field. */
+    val isRuntimeContext: Boolean = false,
 ) {
     enum class Role(val value: String) {
         USER("user"),

@@ -77,11 +77,12 @@ Never uninstall or clear storage to resolve an installation signature mismatch.
 
 - Android user-facing task titles use the raw-source header, e.g.
   `// @options: {"tool_title":"并行整理账单并生成报告","timeout_ms":60000}`.
-  This optional Android metadata extends Pi's options, without wrapping custom
+  This required Android metadata extends Pi's options, without wrapping custom
   Responses input in JSON. Titles update the streaming card, foreground status,
   and saved transcript. Discovery functions (`searchTools`, `describeTool`,
   `describeNamespace`) are asynchronous and must be awaited.
-- Input is JavaScript with optional first-line `// @options:`; JSON-schema
+- Input is JavaScript with a required first-line `// @options:` containing a
+  non-blank string `tool_title` (other options remain optional); JSON-schema
   providers receive `{code: string}`. Supported first-party GPT-5/GPT-6 Responses
   routes use Pi's raw-source Lark grammar/custom-tool representation.
 - Async body, `tools`, `ALL_TOOLS`, `text`, `image`, `console`, `exit`,

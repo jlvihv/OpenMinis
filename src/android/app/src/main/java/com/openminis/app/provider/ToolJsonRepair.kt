@@ -67,7 +67,7 @@ object ToolJsonRepair {
 
         // Other Android tools may repair scalar strings, never structured values.
         for (field in toolDef.required) {
-            if (toolDef.parameters[field]?.type != "string" || !args.has(field)) continue
+            if (field == "tool_title" || toolDef.parameters[field]?.type != "string" || !args.has(field)) continue
             val raw = args.opt(field) ?: continue
             if (raw is String) continue
             if (raw === JSONObject.NULL) continue
@@ -83,7 +83,7 @@ object ToolJsonRepair {
         // steal a sibling that the tool helper would have read directly.
         val schemaFields = toolDef.parameters.keys
         for (field in toolDef.required) {
-            if (args.has(field)) continue
+            if (field == "tool_title" || args.has(field)) continue
             val keys = args.keys().asSequence().toList()
             val candidate = keys.firstOrNull { key ->
                 key !in schemaFields && levenshteinAtMostOne(key, field)

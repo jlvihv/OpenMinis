@@ -24,9 +24,7 @@ object CodemodeTool {
     const val GUIDELINE = "Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls."
     private const val SAFE_INTEGER = 9_007_199_254_740_991L
     val SOURCE_GRAMMAR = """
-start: options_source | plain_source
-options_source: OPTIONS_LINE NEWLINE SOURCE
-plain_source: SOURCE
+start: OPTIONS_LINE NEWLINE SOURCE
 
 OPTIONS_LINE: /[ \t]*\/\/ @options:[^\r\n]*/
 NEWLINE: /\r?\n/
@@ -60,10 +58,10 @@ SOURCE: /[\s\S]+/
     fun titleFromArguments(args: JSONObject): String? = titleFromSource(args.optString("code", ""))
 
     fun parseSource(input: String): Source {
-        require(input.isNotBlank()) { "Expected JavaScript source text (non-empty). Provide JS only, optionally with a first line // @options: {\"max_output_tokens\": 1000}." }
+        require(input.isNotBlank()) { "Expected JavaScript source with a required first line // @options: {\"tool_title\": \"Summary\"}." }
         val newline = input.indexOf('\n')
         val first = (if (newline < 0) input else input.substring(0, newline)).removeSuffix("\r").trimStart()
-        if (!first.startsWith("// @options:")) return Source(input)
+        require(first.startsWith("// @options:")) { "First line must be // @options: {\"tool_title\": \"Summary\"}" }
         val code = if (newline < 0) "" else input.substring(newline)
         require(code.isNotBlank()) { "The @options line must be followed by JavaScript source on subsequent lines" }
         val options = try {
@@ -73,7 +71,7 @@ SOURCE: /[\s\S]+/
             catch (e: Exception) { throw IllegalArgumentException("@options must be valid JSON: ${e.message}") }
         require(options != null) { "@options must be a JSON object with supported fields tool_title, max_output_tokens and timeout_ms" }
         for (key in options.keys()) require(key in listOf("tool_title", "max_output_tokens", "timeout_ms")) { "@options only supports tool_title, max_output_tokens and timeout_ms; got $key" }
-        if (options.has("tool_title")) require(options.opt("tool_title") is String && titleFromSource(input) != null) {
+        require(options.opt("tool_title") is String && titleFromSource(input) != null) {
             "@options field tool_title must be a non-blank string"
         }
         fun integer(key: String, default: Long?): Long? {
@@ -112,7 +110,7 @@ SOURCE: /[\s\S]+/
     fun definition(tools: List<AgentToolDefinition>, inlineBudget: Int = 3000): AgentToolDefinition {
         val sections = mutableListOf("Run JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a QuickJS sandbox: top-level await and return work. No Node, file system, network, or timers.\n" +
             "- await tools.<name>({ ...args }) resolves to its declared return type (most file tools return strings; bash returns a structured object) and rejects with an Error on failure. Calls still running when the script ends are cancelled.\n" +
-            "- Start with // @options: {\"tool_title\": \"Short user-facing description of the work\", \"max_output_tokens\": 10000, \"timeout_ms\": 60000}. Options are syntactically optional; always provide tool_title so the user can see what you are doing. This Android UI metadata is part of the raw JavaScript header, not a JSON wrapper.\n" +
+            "- Start with // @options: {\"tool_title\": \"Short user-facing description of the work\", \"max_output_tokens\": 10000, \"timeout_ms\": 60000}. The first-line @options header and its non-blank string tool_title are REQUIRED so the user can see what you are doing. max_output_tokens and timeout_ms are optional. This Android UI metadata is part of the raw JavaScript header, not a JSON wrapper.\n" +
             "Globals:\n- text(value), image(dataUrlOrImageBlock), console.log(...), and top-level return add output; exit() ends the script.\n" +
             "- store(key, value) and load(key) keep JSON values across codemode calls.\n" +
             "- ALL_TOOLS is the tool catalog. Discovery functions are async: await searchTools(query, { limit?, namespace? }), await describeTool(name), await describeNamespace(name). Always await them before inspecting/printing their results; otherwise you only have a Promise, not a description.")

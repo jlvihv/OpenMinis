@@ -11,6 +11,10 @@ object CoreToolNames {
     }
     /** Core-only validation: Android tools retain their existing flexible input contracts. */
     fun validate(args: org.json.JSONObject, definition: com.openminis.app.data.model.AgentToolDefinition): String? {
+        for (key in definition.required) if (!args.has(key) || args.isNull(key)) return "Tool '${definition.name}': $key is required"
+        if ("tool_title" in definition.required && (args.opt("tool_title") !is String || args.getString("tool_title").isBlank())) {
+            return "Tool '${definition.name}': tool_title must be a non-blank string"
+        }
         fun check(value: Any?, p: com.openminis.app.data.model.AgentToolParam, path: String): String? {
             val valid = when (p.type) {
                 "string" -> value is String

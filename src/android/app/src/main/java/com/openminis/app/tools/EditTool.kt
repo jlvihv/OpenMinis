@@ -17,7 +17,7 @@ object EditTool {
                 items = AgentToolParam("object", "Targeted replacement", properties = mapOf(
                     "oldText" to AgentToolParam("string", "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."),
                     "newText" to AgentToolParam("string", "Replacement text for this targeted edit.")), required = listOf("oldText", "newText"))),
-            "tool_title" to AgentToolParam("string", "Optional user-visible summary")), listOf("path", "edits"), propertyOrdering = listOf("path", "edits", "tool_title"))
+            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language.")), listOf("path", "edits", "tool_title"), propertyOrdering = listOf("tool_title", "path", "edits"))
 
     internal fun arguments(args: JSONObject): List<PiFileEditor.Edit> {
         fun text(obj: JSONObject, key: String): String = obj.get(key).let { require(it is String) { "$key must be a string" }; it }
@@ -27,6 +27,7 @@ object EditTool {
     suspend fun execute(argsJson: String, sessionId: String, context: Context): ToolExecutionResult = withContext(Dispatchers.IO) {
         try {
             val args = JSONObject(argsJson)
+            require(CoreToolNames.validate(args, definition()) == null) { CoreToolNames.validate(args, definition()).orEmpty() }
             val path = CoreToolNames.linuxPath(args.getString("path"))
             val edits = arguments(args)
             require(edits.isNotEmpty()) { "edits must contain at least one replacement" }

@@ -14,11 +14,12 @@ object WriteTool {
         "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
         mapOf("path" to AgentToolParam("string", "Path to the file to write (relative or absolute)"),
             "content" to AgentToolParam("string", "Content to write to the file"),
-            "tool_title" to AgentToolParam("string", "Optional user-visible summary")), listOf("path", "content"), propertyOrdering = listOf("path", "content", "tool_title"))
+            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language.")), listOf("path", "content", "tool_title"), propertyOrdering = listOf("tool_title", "path", "content"))
 
     suspend fun execute(argsJson: String, sessionId: String, context: Context): ToolExecutionResult = withContext(Dispatchers.IO) {
         try {
             val args = JSONObject(argsJson)
+            require(CoreToolNames.validate(args, definition()) == null) { CoreToolNames.validate(args, definition()).orEmpty() }
             val rawPath = args.getString("path")
             require(rawPath.isNotBlank()) { "path is required" }
             val path = CoreToolNames.linuxPath(rawPath)

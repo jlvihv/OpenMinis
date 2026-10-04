@@ -418,6 +418,9 @@ class OpenAIProvider private constructor(
     @Volatile
     var sessionId: String? = null
 
+    // Stable even for attachment-only or one-shot requests without a persisted session.
+    private val promptCacheFallbackId = java.util.UUID.randomUUID().toString()
+
     /**
      * Absolute-path endpoint override. When set (must start with "/"), it
      * replaces the ENTIRE URL path after scheme+host — unlike [imagePathOverride],
@@ -2777,6 +2780,13 @@ class OpenAIProvider private constructor(
                 .header("Openai-Beta", "responses=experimental")
                 .header("User-Agent", "codex_cli_rs/$CODEX_CLIENT_VERSION (Android; arm64)")
                 .header("Originator", "codex_cli_rs")
+            // Use the body's exact key, not a second read of sessionId: draft promotion
+            // must never make headers and body disagree on the same request.
+            val cacheBody = JSONObject(bodyStr)
+            for ((name, value) in OpenAIPromptCache.codexHeaders(cacheBody)) builder.header(name, value)
+            if (com.openminis.app.BuildConfig.DEBUG) {
+                android.util.Log.d("PromptCache", OpenAIPromptCache.diagnostics(cacheBody))
+            }
             codexAccountId?.let { builder.header("Chatgpt-Account-Id", it) }
             // [T-provider-custom-user-agent] Applied last so a non-blank
             // override wins over the Codex default UA. In practice null on
@@ -3304,17 +3314,9 @@ class OpenAIProvider private constructor(
         resolvedServiceTier()?.let { body.put("service_tier", it) }
         body.put("store", false)
         body.put("parallel_tool_calls", true)
-        // Stable per-conversation cache key so the Responses API can hit prompt
-        // cache across turns. Codex CLI sets this to its conversation_id; at
-        // this layer we don't have one, so we hash the first user message —
-        // re-sent verbatim every turn of the same chat → stable across turns,
-        // distinct between chats. iOS does the same in
-        // OpenAIAgentProvider.swift:325 + derivePromptCacheKey() at line 515.
-        // Without this, each turn was treated as a separate prompt by the
-        // Responses-API cache regardless of how byte-stable the prefix was —
-        // that's the missing piece between Android (~70%) and iOS (90%+) on
-        // the Codex OAuth / forceResponsesAPI path.
-        body.put("prompt_cache_key", derivePromptCacheKey(messages))
+        // Pi-style real conversation identity survives edits, compaction and image-only
+        // input. This is an affinity hint, not a guarantee of a provider cache hit.
+        body.put("prompt_cache_key", OpenAIPromptCache.key(sessionId, promptCacheFallbackId))
         // T-responses-include: `include: ["reasoning.encrypted_content"]` is a
         // ChatGPT-backend-only field. Third-party Responses-API-compatible
         // proxies (non-OpenAI) don't recognize it and reject the request with
@@ -3812,31 +3814,6 @@ class OpenAIProvider private constructor(
         val hex = digest.joinToString("") { "%02x".format(it) }
         // "call_" + 56 hex chars = 61 chars, safely under 64 and clearly a call id.
         return "call_${hex.take(56)}"
-    }
-
-    /**
-     * Derives a stable per-conversation `prompt_cache_key` for the Responses
-     * API. Mirrors iOS derivePromptCacheKey (OpenAIAgentProvider.swift:515).
-     * The first user message is re-sent verbatim on every turn → its hash is
-     * stable across turns within the same chat, distinct between chats.
-     * Falls back to a random UUID when there is no user text yet (first
-     * turn with attachments-only input, etc.).
-     */
-    private fun derivePromptCacheKey(messages: List<LLMMessage>): String {
-        for (msg in messages) {
-            if (msg.role != LLMMessage.Role.USER) continue
-            val text = msg.contentParts
-                .filterIsInstance<AgentContentPart.Text>()
-                .joinToString("") { it.text }
-                .ifEmpty { msg.content }
-            if (text.isNotEmpty()) {
-                val digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(text.toByteArray(Charsets.UTF_8))
-                val hex = digest.joinToString("") { "%02x".format(it) }
-                return "minis-${hex.take(32)}"
-            }
-        }
-        return "minis-${java.util.UUID.randomUUID().toString().lowercase()}"
     }
 
     /**

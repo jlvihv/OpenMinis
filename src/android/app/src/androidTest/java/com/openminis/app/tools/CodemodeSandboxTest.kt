@@ -13,7 +13,8 @@ class CodemodeSandboxTest {
     private suspend fun run(code: String): CodemodeTool.Result {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         return withContext(Dispatchers.Default) {
-            CodemodeTool.execute(context, code, "smoke", listOf(AgentToolDefinition("read", "Read", emptyMap())),
+            val source = if (code.startsWith("// @options:")) code else "// @options: {\"tool_title\":\"原生运行时测试\"}\n$code"
+            CodemodeTool.execute(context, source, "smoke", listOf(AgentToolDefinition("read", "Read", emptyMap())),
                 JSONObject(), spill = { text -> File(context.cacheDir, "codemode-smoke.txt").apply { writeText(text) }.path },
                 invoke = { _, _, _ -> delay(10); ToolExecutionResult("ok", true) })
         }
@@ -31,7 +32,7 @@ class CodemodeSandboxTest {
             val bitmap = android.graphics.Bitmap.createBitmap(4, 2, android.graphics.Bitmap.Config.ARGB_8888)
             try { file.outputStream().use { assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) } }
             finally { bitmap.recycle() }
-            val input = JSONObject().put("path", path).toString()
+            val input = JSONObject().put("path", path).put("tool_title", "读取测试图片").toString()
             val resized = ReadTool.execute(input, session, context,
                 com.openminis.app.data.model.ModelImageResizeOptions(maxWidth = 2, maxHeight = 2), supportsImages = false)
             assertTrue(resized.success); assertNotNull(resized.imageData)
@@ -70,9 +71,36 @@ class CodemodeSandboxTest {
                 assertEquals(1, it.width); assertEquals(2, it.height); it.recycle()
             }
         } finally { file.parentFile!!.parentFile!!.deleteRecursively() }
+        checkRuntimeSnapshotReplay()
+    }
+
+    /** Disposable DB only: restart, fork and rewind never touch the user's chat database. */
+    private suspend fun checkRuntimeSnapshotReplay() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "runtime-cache-smoke-${java.util.UUID.randomUUID()}"
+        fun open() = androidx.room.Room.databaseBuilder(context,
+            com.openminis.app.data.db.AppDatabase::class.java, name).build()
+        var db = open()
+        val runtime = com.openminis.app.agent.RuntimeContextSnapshot
+        val text = runtime.render("2026-10-04", "UTC", "zh-CN", 3)
+        try {
+            var repo = com.openminis.app.data.repository.ChatRepository(db.chatDao())
+            val session = repo.createSession("cache-test")
+            repo.appendMessage(session.id, "user", """[{"type":"text","value":"test"}]""")
+            val snapshot = repo.appendMessage(session.id, "user", runtime.encode(text))
+            db.close(); db = open()
+            repo = com.openminis.app.data.repository.ChatRepository(db.chatDao())
+            assertEquals(text, runtime.decode(repo.loadMessages(session.id).last().partsJson))
+            val copy = com.openminis.app.data.SessionForkManager(repo, filesDir = context.cacheDir)
+                .duplicateSession(session.id)!!
+            assertEquals(text, runtime.decode(repo.loadMessages(copy).last().partsJson))
+            repo.deleteMessagesAfter(session.id, snapshot.sortOrder)
+            assertNull(runtime.decode(repo.loadMessages(session.id).last().partsJson))
+            assertEquals(text, runtime.decode(repo.loadMessages(copy).last().partsJson))
+        } finally { db.close(); context.deleteDatabase(name) }
     }
     @Test fun deadlineInterruptsVmAndNextInvocationStillWorks() = runBlocking {
-        val result = run("// @options: {\"timeout_ms\":200}\nwhile (true) {}")
+        val result = run("// @options: {\"tool_title\":\"测试中断\",\"timeout_ms\":200}\nwhile (true) {}")
         assertFalse(result.success); assertTrue(result.output.contains("timed out"))
         assertTrue(run("return 'alive'").success)
         checkRealCoreTools()
@@ -94,8 +122,9 @@ class CodemodeSandboxTest {
         try {
             val tools = AgentTools.makeAgentTools().filter { it.name in listOf("read", "write", "edit", "bash") }
             val result = CodemodeTool.execute(context,
-                "await tools.write({path:'a.txt',content:'你好🌍'}); await tools.edit({path:'a.txt',edits:[{oldText:'你好',newText:'Hello'}]}); " +
-                    "const textResult=await tools.read({path:'a.txt'}); const shell=await tools.bash({command:'printf x >> counter; exit 119'}); return {textResult,exit:shell.exit_code};",
+                "// @options: {\"tool_title\":\"文件与 Bash 集成测试\"}\n" +
+                    "await tools.write({tool_title:'写入文件',path:'a.txt',content:'你好🌍'}); await tools.edit({tool_title:'编辑文件',path:'a.txt',edits:[{oldText:'你好',newText:'Hello'}]}); " +
+                    "const textResult=await tools.read({tool_title:'读取文件',path:'a.txt'}); const shell=await tools.bash({tool_title:'测试退出码',command:'printf x >> counter; exit 119'}); return {textResult,exit:shell.exit_code};",
                 "core-smoke", tools, JSONObject(), spill = { error("Unexpected spill") },
                 invoke = { name, args, _ -> when (name) {
                     "read" -> ReadTool.execute(args, session, context)

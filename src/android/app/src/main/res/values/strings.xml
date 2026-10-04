@@ -380,7 +380,8 @@
     <string name="token_usage_section_cache">Cache (Session Total)</string>
     <string name="token_usage_cache_read">Cache Read</string>
     <string name="token_usage_cache_write">Cache Write</string>
-    <string name="token_usage_cache_hit_rate">Cache Hit Rate</string>
+    <string name="token_usage_cache_hit_rate">Cumulative Cache Hit Rate</string>
+    <string name="token_usage_latest_cache_hit_rate">Latest Request Cache Hit Rate</string>
     <string name="token_usage_section_speed">Speed</string>
     <string name="token_usage_output_speed">Output Speed</string>
     <string name="token_usage_section_agent_loop">Agent Loop</string>

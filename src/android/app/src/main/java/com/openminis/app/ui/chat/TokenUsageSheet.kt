@@ -108,6 +108,12 @@ fun TokenUsageSheet(
                 // rather than shown as 0.0% when nothing was cached, so a
                 // provider that does no caching does not look like a cache
                 // miss — see SessionTokenStats.cacheHitRate.
+                s?.latestCacheHitRate?.let {
+                    StatRow(
+                        stringResource(R.string.token_usage_latest_cache_hit_rate),
+                        String.format(java.util.Locale.US, "%.1f%%", it),
+                    )
+                }
                 s?.cacheHitRate?.let {
                     StatRow(
                         stringResource(R.string.token_usage_cache_hit_rate),

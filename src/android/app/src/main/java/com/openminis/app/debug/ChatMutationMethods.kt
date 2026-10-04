@@ -97,7 +97,7 @@ internal object ChatMutationMethods {
 
         // Re-read DB to pick up the latest message metadata after the run.
         val msgs = app.chatRepository.dao.loadMessages(sessionId)
-        val userMsg = msgs.lastOrNull { it.role == "user" }
+        val userMsg = msgs.lastOrNull { it.role == "user" && com.openminis.app.agent.RuntimeContextSnapshot.decode(it.partsJson) == null }
         val displayedModelName = overrideName ?: app.chatRepository.dao.getSession(sessionId)?.let { resolveDisplay(context, it.modelId) }
         return JSONObject().apply {
             put("sessionId", sessionId)

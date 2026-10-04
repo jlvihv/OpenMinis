@@ -351,7 +351,8 @@ class SkillRepository(private val context: Context) {
         val hasMore: Boolean
 
         if (total <= MAX_SKILLS_IN_PROMPT) {
-            selected = enabled.sortedByDescending { it.updatedAt }
+            // Presentation order must not change just because a skill was edited/used.
+            selected = enabled.sortedBy { it.id }
             hasMore = false
         } else {
             val picked = linkedMapOf<String, Skill>() // preserves insertion order + id dedupe
@@ -375,7 +376,7 @@ class SkillRepository(private val context: Context) {
                     .take(remaining)
                     .forEach { picked.putIfAbsent(it.id, it) }
             }
-            selected = picked.values.toList()
+            selected = picked.values.sortedBy { it.id }
             hasMore = total > selected.size
         }
 

@@ -17,10 +17,10 @@ object ReadTool {
             "path" to AgentToolParam("string", "Path to the file to read (relative or absolute)"),
             "offset" to AgentToolParam("integer", "Line number to start reading from (1-indexed)"),
             "limit" to AgentToolParam("integer", "Maximum number of lines to read"),
-            "tool_title" to AgentToolParam("string", "Optional user-visible summary"),
+            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language."),
         ),
-        required = listOf("path"),
-        propertyOrdering = listOf("path", "offset", "limit", "tool_title"),
+        required = listOf("path", "tool_title"),
+        propertyOrdering = listOf("tool_title", "path", "offset", "limit"),
     )
 
     suspend fun execute(argsJson: String, sessionId: String, context: Context,
@@ -29,6 +29,7 @@ object ReadTool {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val args = JSONObject(argsJson)
+                require(CoreToolNames.validate(args, definition()) == null) { CoreToolNames.validate(args, definition()).orEmpty() }
                 val path = CoreToolNames.linuxPath(args.getString("path"))
                 val file = PRootKernel.resolveSessionHostPath(sessionId, path, context) ?: error("Cannot resolve path: $path")
                 require(file.isFile && file.canRead()) { "Not a readable file: $path" }

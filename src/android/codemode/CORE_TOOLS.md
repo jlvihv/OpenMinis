@@ -6,6 +6,10 @@ or old argument adapters. Image is not a separate tool.
 
 ## Contracts
 
+- All seven tools require a non-blank string `tool_title`, including nested calls.
+  For `codemode`, it lives in the required first-line `// @options:` JSON header;
+  the wire input remains raw JavaScript (or `{code: string}` for JSON providers).
+  Missing, null, non-string and whitespace-only titles are rejected before work.
 - Relative paths and Bash start at `/var/minis/workspace`; absolute mounted Linux
   paths and `minis://` URLs are supported. `~` means `/root`.
 - `read`: 1-based `offset`/`limit`, 2,000-line/50 KiB text head limit with

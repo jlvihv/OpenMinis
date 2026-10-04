@@ -35,6 +35,7 @@ Files and resources:
 - minis:// action URLs (open_terminal, views, settings) are app deep links: render Markdown links.
 $browserRules
 Tool use:
+- Every direct and nested tool call requires a non-blank string tool_title in the user's language. For codemode, put it in the required first-line // @options: {"tool_title":"…"} header, not a JSON wrapper.
 - Use bash for file operations like ls, rg, find.
 - Use read to examine files instead of cat or sed.
 - Use edit for precise changes (edits[].oldText must match exactly).

@@ -12,10 +12,10 @@ object BashTool {
         parameters = mapOf(
             "command" to AgentToolParam("string", "Shell command to execute"),
             "timeout" to AgentToolParam("number", "Timeout in seconds (optional, no default timeout)"),
-            "tool_title" to AgentToolParam("string", "Optional user-visible summary"),
+            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language."),
         ),
-        required = listOf("command"),
-        propertyOrdering = listOf("command", "timeout", "tool_title"),
+        required = listOf("command", "tool_title"),
+        propertyOrdering = listOf("tool_title", "command", "timeout"),
         outputSchema = AgentToolParam("object", "Command result", properties = mapOf(
             "output" to AgentToolParam("string", "Combined stdout and stderr, possibly truncated"),
             "truncated" to AgentToolParam("boolean", "Whether programmatic output was truncated"),

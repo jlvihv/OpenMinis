@@ -84,6 +84,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -436,22 +438,12 @@ class ChatViewModel(
                 // and the round-trip matcher compares trimmed values.
                 .trim()
 
-        // [T-preflight-tool-title-nonblocking] Fields kept in each tool's
-        // `required` list (so the schema keeps nudging the model to emit them —
-        // tool_title drives the live pill header) but which must NOT block the
-        // call when absent: they carry no execution semantics, so rejecting the
-        // whole call over a missing one is pure downside. Preflight skips these
-        // when checking for missing required fields. Mirrors iOS
-        // AIChatViewModel.preflightNonBlockingFields.
-        private val PREFLIGHT_NON_BLOCKING_FIELDS = setOf("tool_title")
-
         /**
          * (tool name → field names) where an EMPTY STRING is a semantically
          * valid value and must not be treated as "missing".
          *
-         * Distinct from [PREFLIGHT_NON_BLOCKING_FIELDS], which skips the
-         * missing-field check entirely: these fields must still be PRESENT in
-         * args — they are just allowed to hold "" as their content.
+         * These fields must still be PRESENT in args — they are just allowed
+         * to hold "" as their content. Titles must be non-blank strings.
          *
          * The canonical case is `edit.new_string`, whose schema documents
          * "Use empty string to delete old_string". Blocking it broke a promised
@@ -498,13 +490,11 @@ class ChatViewModel(
             // executeTool() which returns "Unknown tool: …". Preflight stays
             // silent so we don't double-fail.
             val toolDef = tools.firstOrNull { it.name == name } ?: return null
-            // Required fields that actually gate execution (everything except the
-            // non-blocking ones like tool_title — see PREFLIGHT_NON_BLOCKING_FIELDS).
             val enforced = toolDef.required
-                .filter { it !in PREFLIGHT_NON_BLOCKING_FIELDS }
-            // Empty args on a tool that requires anything → block. Gate on
-            // `enforced` so a tool whose only required field is non-blocking isn't
-            // rejected for empty args, and the message lists only real blockers.
+            if ("tool_title" in enforced && (args.opt("tool_title") !is String || args.getString("tool_title").isBlank())) {
+                return "Tool '$name': tool_title is required and must be a non-blank string."
+            }
+            // Reject missing required arguments before any tool side effects.
             if (args.length() == 0 && enforced.isNotEmpty()) {
                 return "Tool '$name' was called with empty arguments {} but requires: ${enforced.joinToString(", ")}."
             }
@@ -1581,7 +1571,7 @@ class ChatViewModel(
         if (ContextSizeMeter.estimateTokens(warmUp) + restTokens < budget) return WarmUpTrim(warmUp, decided = true)
         val drop = ContextSizeMeter.warmUpDrop(
             sizes = warmUp.map { ContextSizeMeter.estimateTokens(listOf(it)) },
-            startsTurn = warmUp.map { m -> m.role == LLMMessage.Role.USER && m.contentParts.none { it is AgentContentPart.ToolResult } },
+            startsTurn = warmUp.map { m -> m.role == LLMMessage.Role.USER && !m.isRuntimeContext && m.contentParts.none { it is AgentContentPart.ToolResult } },
             restTokens = restTokens,
             budget = budget,
         )
@@ -1894,6 +1884,16 @@ class ChatViewModel(
 
     /** Structured agent history for the agent loop (contentParts-based). */
     private val agentHistory = mutableListOf<LLMMessage>()
+
+    private data class WarmConversationRequest(
+        val provider: LLMProvider,
+        val messages: List<LLMMessage>,
+        val systemPrompt: String?,
+        val tools: List<AgentToolDefinition>,
+        val thinking: ThinkingLevel,
+    )
+    // Retain only a request that produced actual provider usage; failures do not replace it.
+    @Volatile private var lastWarmConversationRequest: WarmConversationRequest? = null
 
     /**
      * Agent tool definitions are rebuilt so capability switches take effect immediately.
@@ -2892,7 +2892,13 @@ class ChatViewModel(
          */
         val streamMs: Long = 0L,
         val streamOutput: Long = 0L,
+        val latestInput: Long = 0L,
+        val latestCacheRead: Long = 0L,
     ) {
+        /** Do not let historical misses hide the current request's cache behaviour. */
+        val latestCacheHitRate: Double?
+            get() = if (latestInput > 0 && cacheRead > 0) latestCacheRead.toDouble() / latestInput * 100.0 else null
+
         /**
          * Average output tokens per second, or null when nothing measurable
          * has been recorded yet (a fresh session, or one whose rows all
@@ -2959,6 +2965,8 @@ class ChatViewModel(
         var context = 0
         var streamMs = 0L
         var streamOutput = 0L
+        var latestInput = 0L
+        var latestCacheRead = 0L
         for (json in usages) {
             try {
                 val obj = org.json.JSONObject(json)
@@ -2967,6 +2975,11 @@ class ChatViewModel(
                 output += turnOutput
                 cacheRead += obj.optLong("cacheReadTokens", 0L)
                 cacheWrite += obj.optLong("cacheCreationTokens", 0L)
+                val turnInput = obj.optLong("inputTokens", 0L) + obj.optLong("cacheReadTokens", 0L) + obj.optLong("cacheCreationTokens", 0L)
+                if (turnInput > 0) {
+                    latestInput = turnInput
+                    latestCacheRead = obj.optLong("cacheReadTokens", 0L)
+                }
                 val ctx = obj.optInt("latestContextTokens", 0)
                 if (ctx > 0) context = ctx
                 // [T-android-token-usage-output-speed] Absent on every row
@@ -2986,7 +2999,7 @@ class ChatViewModel(
         val toolCalls = snapshot.filter { it.role == "assistant" }
             .sumOf { msg -> msg.toolBlocks.count { it.kind != "text" && it.kind != "info" } }
         val loops = maxOf(toolCalls, assistantCount)
-        return SessionTokenStats(input, output, cacheRead, cacheWrite, context, loops, streamMs, streamOutput)
+        return SessionTokenStats(input, output, cacheRead, cacheWrite, context, loops, streamMs, streamOutput, latestInput, latestCacheRead)
     }
 
 
@@ -4595,7 +4608,7 @@ class ChatViewModel(
                 else "userTextWalkBack(N=$keepN)"
             AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchor=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
 
-            val firstUserOffset = postAnchor.indexOfFirst { it.role == LLMMessage.Role.USER }
+            val firstUserOffset = postAnchor.indexOfFirst { it.role == LLMMessage.Role.USER && !it.isRuntimeContext }
             if (firstUserOffset >= 0) {
                 if (firstUserOffset > 0) {
                     result.addAll(postAnchor.subList(0, firstUserOffset))
@@ -4877,7 +4890,7 @@ class ChatViewModel(
         var i = anchorIdx
         while (i >= 0) {
             val msg = agentHistory[i]
-            if (msg.role != LLMMessage.Role.USER) {
+            if (msg.role != LLMMessage.Role.USER || msg.isRuntimeContext) {
                 i -= 1
                 continue
             }
@@ -4984,6 +4997,7 @@ class ChatViewModel(
         previousSummary: String? = null,
         depth: Int = 0,
     ): String {
+        if (depth == 0) generateCachedCompactSummary(messages)?.let { return it }
         val transcript = buildConversationTextForSummary(messages)
         val conversationText = if (previousSummary.isNullOrBlank()) {
             transcript
@@ -4995,18 +5009,7 @@ class ChatViewModel(
         // The depth cap bounds how DEEP the recursion goes; this bounds how
         // WIDE it gets in total, which is what actually determines wall-clock
         // time when each call is slow rather than failing fast.
-        val spent = compactCallsIssued.incrementAndGet()
-        if (spent > MAX_COMPACT_LLM_CALLS) {
-            throw IllegalStateException(
-                "compaction exceeded its budget of $MAX_COMPACT_LLM_CALLS model calls"
-            )
-        }
-        // [T-android-compact-progress] Publish before the call so the UI shows
-        // the segment that is actually running, not the one that just finished.
-        _compactProgress.value = _compactProgress.value?.copy(
-            depth = depth,
-            callsIssued = spent,
-        )
+        spendCompactCall(depth)
         return try {
             generateCompactSummary(conversationText)
         } catch (e: CancellationException) {
@@ -5057,6 +5060,52 @@ class ChatViewModel(
             // positional form, and each is internally coherent because it was
             // summarised under the full system prompt.
             summary1 + "\n\n" + summary2
+        }
+    }
+
+    private fun spendCompactCall(depth: Int) {
+        val spent = compactCallsIssued.incrementAndGet()
+        check(spent <= MAX_COMPACT_LLM_CALLS) { "compaction exceeded its budget of $MAX_COMPACT_LLM_CALLS model calls" }
+        _compactProgress.value = _compactProgress.value?.copy(depth = depth, callsIssued = spent)
+    }
+
+    /** Same-route fast path; unsupported/stale/oversize histories retain the bounded fallback. */
+    private suspend fun generateCachedCompactSummary(region: List<LLMMessage>): String? {
+        val warm = lastWarmConversationRequest ?: return null
+        val provider = currentProvider ?: return null
+        // Do not introduce expensive thinking on a summary merely for cache statistics.
+        if (warm.provider !== provider || warm.thinking != ThinkingLevel.OFF) return null
+        val current = applyRequestImageBudget(effectiveAgentHistory())
+        val prefix = com.openminis.app.agent.CachedCompaction.prefix(warm.messages, current, region) ?: return null
+        val directive = "Summarize the conversation ABOVE, including any previous context summary. " +
+            "This is a compaction request, not an instruction to continue earlier tasks. " +
+            "Do NOT call any tools. Output ONLY the checkpoint summary.\n\n" + compactSummarySystemPrompt
+        val request = prefix + LLMMessage(LLMMessage.Role.USER, directive)
+        val estimate = ContextSizeMeter.estimateTokens(request) + ContextSizeMeter.estimateFixedTokens(warm.systemPrompt, warm.tools)
+        val window = provider.model.contextWindow ?: 128_000
+        val remaining = window.toLong() - (estimate * maxOf(1.25, lastDispatchRatio)).toLong() - 1024
+        if (remaining < 1024) return null
+        spendCompactCall(0)
+        val text = StringBuilder()
+        AppLogger.info(TAG, "[CompactCache] replaying ${prefix.size} prefix messages, ${warm.tools.size} declarations")
+        return try {
+            provider.streamMessage(request, warm.systemPrompt, minOf(8192L, remaining).toInt(),
+                temperature = null, tools = warm.tools, thinkingLevel = warm.thinking)
+                .withIdleTimeout(COMPACT_IDLE_TIMEOUT_MS) { throw CompactIdleTimeoutException("compaction stream idle") }
+                .collect { chunk ->
+                    com.openminis.app.agent.CachedCompaction.requireTextOnly(chunk)
+                    when (chunk) {
+                        is LLMStreamChunk.Text -> text.append(chunk.text)
+                        is LLMStreamChunk.Usage -> AppLogger.info(TAG, "[CompactCache] input=${chunk.usage.inputTokens} cacheRead=${chunk.usage.cacheReadInputTokens ?: 0}")
+                        else -> Unit
+                    }
+                }
+            text.toString().takeIf { it.isNotBlank() }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            if (failure !is com.openminis.app.agent.CachedCompaction.UnsafeSummary && !isSegmentRetryableError(unwrapFlowException(failure))) throw failure
+            AppLogger.info(TAG, "[CompactCache] using bounded transcript fallback (${failure.javaClass.simpleName})")
+            null
         }
     }
 
@@ -6175,6 +6224,7 @@ class ChatViewModel(
             // request. Clearing first makes the rebuild idempotent, so any
             // future re-entry into loadSession() is safe by construction
             // rather than by a comment nobody can enforce.
+            lastWarmConversationRequest = null
             agentHistory.clear()
             agentHistory.addAll(loaded.llmHistory)
             // [T-ctx-measure-outbound] Re-seed the size meter from this session's
@@ -10079,7 +10129,7 @@ class ChatViewModel(
                 val reason = if (helperWrapUpRequested) com.openminis.app.agent.jobs.HelperWrapUpReason.BUDGET else com.openminis.app.agent.jobs.HelperWrapUpReason.TURNS
                 val note = com.openminis.app.agent.jobs.HelperRunner.wrapUpPrompt(reason)
                 val lastIdx = agentHistory.lastIndex
-                if (lastIdx >= 0 && agentHistory[lastIdx].role == LLMMessage.Role.USER) {
+                if (lastIdx >= 0 && agentHistory[lastIdx].role == LLMMessage.Role.USER && !agentHistory[lastIdx].isRuntimeContext) {
                     val last = agentHistory[lastIdx]
                     agentHistory[lastIdx] = if (last.contentParts.isEmpty()) last.copy(content = (last.content + "\n\n" + note).trim())
                     else last.copy(contentParts = last.contentParts + AgentContentPart.Text(note))
@@ -10108,7 +10158,7 @@ class ChatViewModel(
                     helperTurnWarningInjected = true
                     val note = com.openminis.app.agent.jobs.HelperRunner.turnBudgetWarning(remaining)
                     val lastIdx = agentHistory.lastIndex
-                    if (lastIdx >= 0 && agentHistory[lastIdx].role == LLMMessage.Role.USER) {
+                    if (lastIdx >= 0 && agentHistory[lastIdx].role == LLMMessage.Role.USER && !agentHistory[lastIdx].isRuntimeContext) {
                         val last = agentHistory[lastIdx]
                         agentHistory[lastIdx] = if (last.contentParts.isEmpty()) last.copy(content = (last.content + "\n\n" + note).trim())
                         else last.copy(contentParts = last.contentParts + AgentContentPart.Text(note))
@@ -10201,6 +10251,7 @@ class ChatViewModel(
             // request; measure them for this iteration (the helper wrap-up path
             // drops the tools) so the guards and the calibration pair see the
             // real fixed share.
+            appendRuntimeContextSnapshot()
             contextFixedTokens = ContextSizeMeter.estimateFixedTokens(
                 loopSystemPrompt,
                 if (helperWrapUpInjected) emptyList() else agentTools,
@@ -10588,24 +10639,25 @@ class ChatViewModel(
                                 "ratio=${"%.3f".format(lastDispatchRatio)} predicted=$dispatchInputTokens " +
                                 "maxTokens=${dynamicMaxTokens(currentProvider, dispatchInputTokens)}",
                         )
+                        val requestHistory = auditOutgoingPayload(applyRequestImageBudget(outboundHistory))
+                        val requestTools = if (helperWrapUpInjected) emptyList() else agentTools
+                        val requestThinking = if (currentProvider.model.supportsReasoning == true) _thinkingLevel.value else ThinkingLevel.OFF
+                        val warmCandidate = WarmConversationRequest(currentProvider,
+                            com.openminis.app.agent.CachedCompaction.snapshot(requestHistory), loopSystemPrompt,
+                            requestTools, requestThinking)
                         currentProvider.streamMessage(
-                            // [T-android-payload-size-audit] (GH#352) Byte-side
-                            // cross-check on the token estimate, outermost so it
-                            // sees exactly what goes on the wire.
-                            auditOutgoingPayload(
-                                applyRequestImageBudget(
-                                    outboundHistory,
-                                ),
-                            ),
+                            requestHistory,
                             loopSystemPrompt, dynamicMaxTokens(currentProvider, dispatchInputTokens),
-                            tools = if (helperWrapUpInjected) emptyList() else agentTools,
+                            tools = requestTools,
                             // [T-switch-model-thinking-gate] Gate on the provider that
                             // serves THIS turn. selectEntry swaps the class-level
                             // currentModel mid-turn while the turn keeps its local
                             // provider, so reading the class-level model would send the
                             // NEW model's reasoning decision to the OLD model.
-                            thinkingLevel = if (currentProvider.model.supportsReasoning == true) _thinkingLevel.value else ThinkingLevel.OFF,
-                        )
+                            thinkingLevel = requestThinking,
+                        ).onEach { chunk ->
+                            if (chunk is LLMStreamChunk.Usage && chunk.usage.latestContextTokens > 0) lastWarmConversationRequest = warmCandidate
+                        }
                     }
                     turnChunks.collect { chunk ->
                 // [T-STALL-DIAG] Mark first byte back from the provider and log
@@ -14182,22 +14234,8 @@ class ChatViewModel(
     }
 
     private fun buildSystemPrompt(): String? {
-        // Cache-friendly layout: keep `base` byte-stable by stripping out anything
-        // that varies per request, then append a "Runtime context" suffix at the
-        // very end with all the dynamic bits (date, timezone, locale, configured
-        // minis-model-use count). OpenAI / DeepSeek prompt caching is prefix-
-        // based, so the longer the static head, the better the hit rate.
-        // Pre-T122 the prompt embedded `Current time: yyyy-MM-dd HH:mm` mid-base,
-        // which guaranteed cache misses across minute boundaries — even a quick
-        // follow-up could land on a different minute and pay full ingestion.
-        val today = java.time.LocalDate.now()
-        val dateStr = today.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
-        val tzId = java.util.TimeZone.getDefault().id
-        val lang = context.resources.configuration.locales[0].toLanguageTag()
-
-        // Count of agent-loop-visible models for the `minis-model-use` CLI
-        // (exposed as a shell command via the native_offload handler).
-        val modelUseCount = try { providerRepository.resolvedAgentLoopEntries().size } catch (_: Exception) { 0 }
+        // Keep policy/capability text at the head. Changing runtime facts are owned,
+        // persisted snapshots appended to history, never a rewritten system suffix.
 
         // Main agents get the SOUL identity/personality; helpers get their own
         // task/deliverable preamble, without inheriting the parent's persona.
@@ -14249,17 +14287,26 @@ class ChatViewModel(
                 append("\n\n")
                 append(mcpFragment)
             }
-            // Runtime context goes last so the prefix above stays byte-stable
-            // across requests within the same day. Keep ordering deterministic
-            // (date → tz → lang → model count) — any reorder defeats the cache.
-            append("\n\nRuntime context:\n")
-            append("- Current date: ").append(dateStr).append(" (").append(tzId).append(")\n")
-            append("- Device language: ").append(lang).append("\n")
-            append("- minis-model-use models available: ").append(modelUseCount)
         }
     }
 
-    // ─── Legacy tool execution methods (kept for compatibility) ───────────
+    private suspend fun appendRuntimeContextSnapshot() {
+        val text = com.openminis.app.agent.RuntimeContextSnapshot.render(
+            java.time.LocalDate.now().toString(), java.util.TimeZone.getDefault().id,
+            context.resources.configuration.locales[0].toLanguageTag(),
+            try { providerRepository.resolvedAgentLoopEntries().size } catch (_: Exception) { 0 },
+        )
+        if (!com.openminis.app.agent.RuntimeContextSnapshot.changed(effectiveAgentHistory(), text)) return
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        // Keep the small journal commit and memory publication together on cancellation.
+        withContext(NonCancellable + Dispatchers.IO) {
+            val row = chatRepository.appendMessage(activeSessionId, "user", com.openminis.app.agent.RuntimeContextSnapshot.encode(text))
+            agentHistory.add(com.openminis.app.agent.RuntimeContextSnapshot.message(text, row.id))
+        }
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+    }
+
+    // ─── Tool execution methods ───────────
 
     suspend fun executeBrowser(argsJson: String): BrowserToolResult {
         val input = BrowserActionInput.parse(argsJson)
@@ -15921,7 +15968,8 @@ class ChatViewModel(
         // Second pass: convert messages, merging tool results into blocks
         // Filter out user messages that only contain toolResult parts (no visible text)
         return mapNotNull { entity ->
-            if (com.openminis.app.tools.CodemodeStore.isEntry(entity.partsJson)) return@mapNotNull null
+            if (com.openminis.app.tools.CodemodeStore.isEntry(entity.partsJson) ||
+                com.openminis.app.agent.RuntimeContextSnapshot.decode(entity.partsJson) != null) return@mapNotNull null
             var text = ""
             val blocks = mutableListOf<AssistantBlock>()
             // T128: media attachments persisted under user messages as `mediaRef`
@@ -16180,6 +16228,9 @@ class ChatViewModel(
     private data class ToolResultData(val output: String, val success: Boolean)
 
     private fun MessageEntity.toLLMMessage(): LLMMessage {
+        com.openminis.app.agent.RuntimeContextSnapshot.decode(partsJson)?.let {
+            return com.openminis.app.agent.RuntimeContextSnapshot.message(it, id)
+        }
         val r = if (role == "user") LLMMessage.Role.USER else LLMMessage.Role.ASSISTANT
         val contentParts = mutableListOf<AgentContentPart>()
         val imageParts = mutableListOf<LLMMessage.ImagePart>()
