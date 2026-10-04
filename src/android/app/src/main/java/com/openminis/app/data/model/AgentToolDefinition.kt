@@ -14,6 +14,8 @@ data class AgentToolDefinition(
     val parameters: Map<String, AgentToolParam>,
     val required: List<String> = emptyList(),
     val propertyOrdering: List<String>? = null,
+    /** Programmatic result contract; not an input parameter or provider-facing schema. */
+    val outputSchema: AgentToolParam? = null,
 ) {
     /** Anthropic format: {name, description, input_schema: {type:object, properties, required}} */
     fun toAnthropicJson(): JSONObject {
@@ -78,16 +80,25 @@ data class AgentToolParam(
     val type: String,
     val description: String,
     val enumValues: List<String>? = null,
+    val items: AgentToolParam? = null,
+    val properties: Map<String, AgentToolParam>? = null,
+    val required: List<String>? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("type", type)
         put("description", description)
         if (enumValues != null) put("enum", JSONArray(enumValues))
+        items?.let { put("items", it.toJson()) }
+        properties?.let { fields -> put("properties", JSONObject().apply { fields.forEach { (k, v) -> put(k, v.toJson()) } }) }
+        required?.let { put("required", JSONArray(it)) }
     }
 
     fun toGeminiJson(): JSONObject = JSONObject().apply {
         put("type", type.uppercase())
         put("description", description)
         if (enumValues != null) put("enum", JSONArray(enumValues))
+        items?.let { put("items", it.toGeminiJson()) }
+        properties?.let { fields -> put("properties", JSONObject().apply { fields.forEach { (k, v) -> put(k, v.toGeminiJson()) } }) }
+        required?.let { put("required", JSONArray(it)) }
     }
 }

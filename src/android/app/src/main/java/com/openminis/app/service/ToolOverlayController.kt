@@ -269,7 +269,7 @@ class ToolOverlayController(private val context: Context) {
      * @param isToolRunning true only for the first of those two: an actual
      *        tool is executing. [T-android-overlay-streaming-state] The two
      *        were previously collapsed into one boolean at this boundary, so
-     *        the capsule could not tell "running shell_execute" from "the
+     *        the capsule could not tell "running bash" from "the
      *        model is talking", and rendered a stale tool for the latter.
      * @param outcome typed outcome of the most recently finished tool.
      *        Only consulted when [isRunning] = false, where it picks
@@ -691,7 +691,7 @@ class ToolOverlayController(private val context: Context) {
         //
         //   tool running — the model-supplied tool_title, e.g. "Open Baidu
         //                  home page". Replaces the old generic
-        //                  "Running: shell_execute", which named the tool's
+        //                  "Running: bash", which named the tool's
         //                  internal identifier rather than the work.
         //   streaming    — a localized "generating" line, for the stretch where
         //                  the model is producing text with no tool in flight.

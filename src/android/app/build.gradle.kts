@@ -197,20 +197,6 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
-// [T-bash-on-demand] Keep the shared bashism rule table / test vectors as a
-// SINGLE source of truth (src/shared/bashism) — copy into assets at build
-// time instead of committing duplicate JSON. iOS references the same files as
-// bundle resources. Runs before every asset merge so debug/release stay fresh.
-val copyBashismRules by tasks.registering(Copy::class) {
-    from(rootProject.file("../shared/bashism")) {
-        include("bashism_rules.json", "bashism_test_vectors.json")
-    }
-    into(layout.projectDirectory.dir("src/main/assets/bashism"))
-}
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
-    .configureEach { dependsOn(copyBashismRules) }
-tasks.named("preBuild") { dependsOn(copyBashismRules) }
-
 // [T-android-debugserver-skill] Stage the debug-server skill + an Android
 // reference client into the DEBUG-ONLY asset source set, so the debug server
 // can serve them over GET /skill (mirrors the iOS "Generate Debug Skill" build
@@ -372,22 +358,10 @@ dependencies {
 
     // Testing — JVM unit tests
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.json:json:20231013")
-    // [T-android-search-visible-only] Runs the session-search SQL (SQLite JSON functions)
-    // against a real SQLite in JVM tests; the same driver Room's compiler already uses.
-    testImplementation("org.xerial:sqlite-jdbc:3.41.2.2")
 
     // Testing — Instrumented (on-device) tests
-    // [T-android-downgrade-compat] MigrationTestHelper replays the committed
-    // schema json to prove every migration — upgrade AND the no-op downgrade —
-    // still lands on the schema the entities expect.
-    androidTestImplementation("androidx.room:room-testing:2.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test:rules:1.6.1")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("junit:junit:4.13.2")
 }
 

@@ -860,7 +860,7 @@ private fun parseInlineMarkdown(
 // ─── Browser live-preview plumbing ──────────────────────────────────────────
 //
 // Mirrors iOS `takeBrowserSnapshot()` timer (ToolLiveSheet.swift:1803-1825):
-// while a browser_use block is RUNNING/STREAMING, poll the active WebView at
+// while a browser block is RUNNING/STREAMING, poll the active WebView at
 // a fixed interval so the Minis Computer sheet, detail sheet, and floating
 // thumbnail can show the current page state — not just screenshots saved by
 // visualChangeActions (NAVIGATE/CLICK/SCROLL/HOVER/TYPE). Actions like
@@ -877,7 +877,7 @@ internal fun rememberBrowserLiveSnapshot(
     block: AssistantBlock,
     intervalMs: Long = 3000L,
 ): android.graphics.Bitmap? {
-    if (block.toolName != "browser_use") return null
+    if (block.toolName != "browser") return null
     val isLive = block.toolStatus == ToolBlockStatus.RUNNING ||
         block.toolStatus == ToolBlockStatus.STREAMING ||
         block.toolStatus == ToolBlockStatus.PENDING

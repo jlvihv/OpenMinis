@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Idagdag sa Home screen</string>
     <string name="webpreview_pin_to_home_requested">Hiniling ang shortcut — kumpirmahin sa iyong launcher</string>
     <string name="webpreview_pin_to_home_unsupported">Hindi sinusuportahan ng launcher mo ang mga naka-pin na shortcut</string>
-    <string name="browser_use_tab_busy_timeout">May ibang tool na kasalukuyang gumagamit ng browser tab %1$d, at hindi nakakuha ng pagkakataon ang kahilingang ito sa loob ng %2$d segundo. Hindi sinusuportahan ang maraming tool na sabay na gumagamit ng iisang tab. Magbukas ng bagong tab (action: new_tab) at ulitin ang aksyon mo roon.</string>
+    <string name="browser_tab_busy_timeout">May ibang tool na kasalukuyang gumagamit ng browser tab %1$d, at hindi nakakuha ng pagkakataon ang kahilingang ito sa loob ng %2$d segundo. Hindi sinusuportahan ang maraming tool na sabay na gumagamit ng iisang tab. Magbukas ng bagong tab (action: new_tab) at ulitin ang aksyon mo roon.</string>
     <string name="filebrowser_title">Mga File</string>
     <string name="filebrowser_empty_folder">Walang laman ang folder</string>
     <string name="filebrowser_delete_title">Burahin ang \"%1$s\"?</string>

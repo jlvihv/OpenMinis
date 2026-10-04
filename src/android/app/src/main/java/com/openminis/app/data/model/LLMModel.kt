@@ -45,6 +45,7 @@ data class LLMModel(
     // rules. See VoiceRole. Nullable so older persisted models decode as null.
     // Mirrors iOS LLMModel.voiceRole.
     val voiceRole: String? = null,
+    val inputLimits: ModelInputLimits? = null,
 ) {
     companion object {
         // Anthropic — mirrors iOS LLMTypes.swift allAnthropic.
@@ -383,7 +384,7 @@ data class LLMModel(
         }
         if (missing.isNotEmpty()) {
             sb.append("You cannot natively process ").append(missing.joinToString(", "))
-            sb.append(" — for those formats, call shell_execute with ffmpeg or similar tools to extract text/metadata first.")
+            sb.append(" — for those formats, call bash with ffmpeg or similar tools to extract text/metadata first.")
         }
         return sb.toString().trim().ifEmpty { null }
     }
@@ -423,7 +424,6 @@ fun String.normalizeModalityName(): String =
     // removeSuffix("_input") matches literally, so "IMAGE_INPUT" kept its
     // suffix and normalized to "image_input", which then compared unequal to
     // "image" everywhere — hasImageInput / hasAudioInput / hasAudioOutput and
-    // the Vision Group member filter all read such a model as lacking the
     // modality it actually declares.
     lowercase().removeSuffix("_input").removeSuffix("_output")
 

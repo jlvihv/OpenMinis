@@ -83,7 +83,7 @@ object SessionActivityTracker {
 
     /**
      * T-bg-overlay phase 1: tool name currently dispatched to the agent
-     * (e.g. "shell_execute", "browser_use"). null when no tool is in
+     * (e.g. "bash", "browser"). null when no tool is in
      * flight (idle, or between tool calls within a turn). The FGS
      * notification reads this to render a tool-specific icon + display
      * label without parsing [currentToolStatus]'s freeform string.
@@ -101,8 +101,8 @@ object SessionActivityTracker {
      *
      * Populated from the dispatch loop in [com.openminis.app.ui.chat.ChatViewModel]
      * by reading the `tool_title` arg uniformly for ALL tools — so
-     * browser_use (which has no per-tool status override) surfaces the
-     * title alongside shell_execute and friends.
+     * browser (which has no per-tool status override) surfaces the
+     * title alongside bash and friends.
      */
     private val _currentToolTitle = MutableStateFlow<String?>(null)
     val currentToolTitle: StateFlow<String?> = _currentToolTitle.asStateFlow()
@@ -143,7 +143,7 @@ object SessionActivityTracker {
      * line. Captured by [clearToolRunning] right before the live
      * [currentToolName] / [currentToolTitle] / [currentToolStatus] are
      * wiped, so the floating overlay can surface what the agent just did
-     * after the run ends (e.g. "browser_use — Completed" + "Opened Google.com
+     * after the run ends (e.g. "browser — Completed" + "Opened Google.com
      * in system Chrome") instead of a bare "Done". Cleared on
      * [dismissOverlay] and on [setActive] so a fresh run starts blank.
      */
@@ -977,7 +977,7 @@ object SessionActivityTracker {
      * T180-bg-notif: localize via context resources when the active set
      * is non-empty — the notification reads "1 task running" / "N tasks
      * running" instead of falling through to the per-tool English status.
-     * Tool-specific status strings (e.g. "browser_use") still surface as
+     * Tool-specific status strings (e.g. "browser") still surface as
      * `_currentToolStatus.value` when set; otherwise we synthesize
      * "%d task(s) running".
      */

@@ -50,10 +50,9 @@ import com.openminis.app.sandbox.ExecutionCoordinator
 import com.openminis.app.terminal.MinisOpenUrlBroker
 import com.openminis.app.terminal.MinisUrlMarker
 import com.openminis.app.tools.AgentTools
-import com.openminis.app.tools.FileEditTool
-import com.openminis.app.tools.FileReadTool
-import com.openminis.app.tools.FileWriteTool
-import com.openminis.app.tools.ReadImageTool
+import com.openminis.app.tools.EditTool
+import com.openminis.app.tools.ReadTool
+import com.openminis.app.tools.WriteTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.service.SessionActivityTracker
@@ -99,7 +98,7 @@ internal fun ChatViewModel.dismissBrowserSheet() {
  * Open the session browser sheet, focused on the tab whose URL matches
  * [url]. If no pool tab currently has that URL, a new tab is created and
  * loaded. Used by the tool-call preview's globe button so the agent's
- * existing browser_use page is reused when available instead of spawning
+ * existing browser page is reused when available instead of spawning
  * a duplicate tab.
  */
 internal fun ChatViewModel.openBrowserSheetForUrl(url: String) {

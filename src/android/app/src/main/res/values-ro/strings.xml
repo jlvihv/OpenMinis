@@ -359,7 +359,7 @@
     <string name="webpreview_pin_to_home">Adaugă pe ecranul principal</string>
     <string name="webpreview_pin_to_home_requested">Scurtătură solicitată — confirmă în launcherul tău</string>
     <string name="webpreview_pin_to_home_unsupported">Launcherul tău nu acceptă scurtături fixate</string>
-    <string name="browser_use_tab_busy_timeout">Un alt instrument folosește în acest moment fila de browser %1$d, iar această cerere nu a primit rândul în %2$d secunde. Folosirea simultană a aceleiași file de către mai multe instrumente nu este acceptată. Deschide o filă nouă (action: new_tab) și reia acolo acțiunea.</string>
+    <string name="browser_tab_busy_timeout">Un alt instrument folosește în acest moment fila de browser %1$d, iar această cerere nu a primit rândul în %2$d secunde. Folosirea simultană a aceleiași file de către mai multe instrumente nu este acceptată. Deschide o filă nouă (action: new_tab) și reia acolo acțiunea.</string>
     <string name="filebrowser_title">Fișiere</string>
     <string name="filebrowser_empty_folder">Dosar gol</string>
     <string name="filebrowser_delete_title">Ștergi „%1$s”?</string>

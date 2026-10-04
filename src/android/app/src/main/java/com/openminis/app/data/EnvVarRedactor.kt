@@ -76,12 +76,15 @@ object EnvVarRedactor {
      * count. No-op when Privacy Mode is disabled or the repository
      * isn't wired yet (e.g. very early in app boot).
      */
-    fun redactIfEnabled(output: String): Pair<String, Int> {
+    /** Machine-readable output must not acquire a prose suffix that breaks JSON parsing. */
+    fun redactContentIfEnabled(output: String): Pair<String, Int> {
         if (!EnvVarPrivacyStore.isEnabled) return output to 0
         val repo = envVarRepository ?: return output to 0
-        val values = repo.allAsDict().values.filter { it.isNotEmpty() }
-        if (values.isEmpty()) return output to 0
-        val (masked, hits) = redact(output, values)
+        return redact(output, repo.allAsDict().values.filter { it.isNotEmpty() })
+    }
+
+    fun redactIfEnabled(output: String): Pair<String, Int> {
+        val (masked, hits) = redactContentIfEnabled(output)
         if (hits == 0) return masked to 0
         return (masked + "\n\n" + SYSTEM_REMINDER) to hits
     }

@@ -3,6 +3,7 @@ package com.openminis.app.sandbox
 import android.content.Context
 import android.util.Log
 import com.openminis.app.data.repository.EnvVarRepository
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -38,6 +39,9 @@ object ExecutionCoordinator {
          * it after everything else it appends (exit status, redaction).
          */
         val queueNote: String? = null,
+        val structuredContentJson: String? = null,
+        val fullOutputPath: String? = null,
+        val timedOut: Boolean = false,
     )
 
     /**
@@ -67,17 +71,24 @@ object ExecutionCoordinator {
         timeout: Long,
         lineCallback: ((String) -> Unit)?,
         fsSessionId: String?,
+        captureBashOutput: Boolean,
     ): CommandResult {
-        val startTime = System.currentTimeMillis()
+        val startTime = android.os.SystemClock.elapsedRealtime()
         val bindMounts = buildSessionBindMounts(fsSessionId ?: sessionId)
         val envVars = envVarRepository?.allAsDict() ?: emptyMap()
+        var capture: com.openminis.app.tools.PiBashCapture? = null
+        var timedOut = false
+        var cancelled = false
 
         suspend fun attempt(noSeccomp: Boolean): Pair<String, Int> {
+            capture?.discard()
+            capture = if (captureBashOutput) com.openminis.app.tools.PiBashCapture(appContext.cacheDir) else null
             val shell = FreshProcessShell(
                 context = appContext,
                 sessionId = sessionId,
                 sessionBindMounts = bindMounts,
                 useNoSeccomp = noSeccomp,
+                capture = capture,
             )
             // [T-android-shell-fresh-process] Step 5. Register before running so
             // stopCurrentCommand() can reach this command. A fresh shell is owned
@@ -92,14 +103,20 @@ object ExecutionCoordinator {
             freshShells.compute(sessionId) { _, existing ->
                 (existing ?: newFreshShellSet()).also { it.add(shell) }
             }
+            var completed = false
             return try {
                 shell.execute(
                     command = command,
                     timeout = timeout,
                     envVars = envVars,
                     lineCallback = lineCallback,
-                )
+                ).also {
+                    completed = true; timedOut = shell.didTimeOut; cancelled = shell.wasCancelled
+                    if (it.second < 0 && capture?.bytes == 0L) capture?.append(it.first)
+                    capture?.finish()
+                }
             } finally {
+                if (!completed) capture?.discard()
                 freshShells.computeIfPresent(sessionId) { _, set ->
                     set.remove(shell)
                     if (set.isEmpty()) null else set
@@ -112,11 +129,11 @@ object ExecutionCoordinator {
         // (PersistentShell), ShellExecutor and TerminalSession all retry once
         // with PROOT_NO_SECCOMP=1 when the child dies on an early fatal signal
         // with no output. The fresh path became the default without that
-        // self-heal, so on a GH#186 device every shell_execute died with
+        // self-heal, so on a GH#186 device every bash died with
         // 135/139. Same narrow gate as the others (SeccompFallbackPolicy):
         // a normal failure, a timeout (124) or a user Stop (130) never
         // qualifies, and it fires at most once per command.
-        val firstDurationMs = System.currentTimeMillis() - startTime
+        val firstDurationMs = android.os.SystemClock.elapsedRealtime() - startTime
         if (SeccompFallbackPolicy.shouldRetryWithoutSeccomp(
                 exitCode = exitCode,
                 durationMs = firstDurationMs,
@@ -134,7 +151,10 @@ object ExecutionCoordinator {
             rawOutput = retried.first
             exitCode = retried.second
         }
-        val durationMs = System.currentTimeMillis() - startTime
+        val durationMs = android.os.SystemClock.elapsedRealtime() - startTime
+        if (captureBashOutput) return try {
+            capturedBashResult(capture!!, exitCode, durationMs, fsSessionId ?: sessionId, timedOut, cancelled)
+        } finally { capture?.discard() }
         val sanitized = TerminalSanitizer.sanitize(rawOutput)
         val truncated = TerminalSanitizer.truncateIfNeeded(sanitized)
         val output = if (exitCode != 0 && exitCode != 124) {
@@ -143,6 +163,47 @@ object ExecutionCoordinator {
             truncated
         }
         return CommandResult(output = output, exitCode = exitCode, durationMs = durationMs)
+    }
+
+    private suspend fun capturedBashResult(raw: com.openminis.app.tools.PiBashCapture, exitCode: Int, durationMs: Long,
+        sessionId: String, timedOut: Boolean, cancelled: Boolean): CommandResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        var output = raw
+        val coroutine = kotlinx.coroutines.currentCoroutineContext()
+        try {
+            val values = if (com.openminis.app.data.EnvVarPrivacyStore.isEnabled)
+                envVarRepository?.allAsDict()?.values.orEmpty() else emptyList()
+            val masked = raw.redact(values) { coroutine.ensureActive() }
+            output = masked.first
+            var fullPath: String? = null
+            if (output.modelTruncated && output.file != null) {
+                val path = "/var/minis/offloads/bash-${java.util.UUID.randomUUID()}.log"
+                val target = PRootKernel.resolveSessionHostPath(sessionId, path, appContext)
+                if (target != null) runCatching {
+                    target.parentFile?.mkdirs()
+                    output.file!!.inputStream().use { input -> target.outputStream().use { destination ->
+                        val buffer = ByteArray(8192)
+                        while (true) { coroutine.ensureActive(); val n = input.read(buffer); if (n < 0) break; destination.write(buffer, 0, n) }
+                    } }
+                    fullPath = path
+                }.onFailure { error ->
+                    runCatching { target.delete() }
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                }
+            }
+            val result = com.openminis.app.tools.PiBashOutput.format(output, exitCode, durationMs, fullPath,
+                executionFailed = exitCode < 0 || timedOut || cancelled)
+            val (text, urls) = com.openminis.app.terminal.MinisUrlMarker.extract(result.text)
+            urls.forEach { com.openminis.app.terminal.MinisOpenUrlBroker.offer(it) }
+            var modelText = text
+            if (timedOut) modelText += "\n\n[Command timed out]"
+            if (cancelled) modelText += "\n\n[Cancelled]"
+            if (masked.second > 0) modelText += "\n\n" + com.openminis.app.data.EnvVarRedactor.SYSTEM_REMINDER
+            val structured = result.structured?.let { json -> org.json.JSONObject(json).also {
+                it.put("output", com.openminis.app.terminal.MinisUrlMarker.stripMarkers(it.getString("output")))
+            }.toString() }
+            return@withContext CommandResult(modelText, exitCode, durationMs, structuredContentJson = structured,
+                fullOutputPath = fullPath, timedOut = timedOut)
+        } finally { output.discard(); raw.discard() }
     }
 
     private lateinit var appContext: Context
@@ -184,7 +245,7 @@ object ExecutionCoordinator {
      * helper the bind mounts come from `fsSessionId ?: sessionId` (the
      * PARENT). A native offload that resolves `/var/minis/attachments` with
      * the env id therefore writes into the helper's own directory, which
-     * neither the helper's shell nor read_image (called with the parent id)
+     * neither the helper's shell nor read (called with the parent id)
      * can see. Offloads map the env id through here first — the same
      * `fsSessionId ?: sessionId` rule [executeFresh] mounts with.
      */
@@ -226,6 +287,7 @@ object ExecutionCoordinator {
          *  binds (a helper's PARENT). The shell process itself stays keyed by
          *  [sessionId], so stop / cleanup never reach the parent's shell. */
         fsSessionId: String? = null,
+        captureBashOutput: Boolean = false,
     ): CommandResult {
         // [T-android-concurrent-shell] Pick a FREE shell from this session's
         // pool instead of queueing behind its one shell.
@@ -303,8 +365,8 @@ object ExecutionCoordinator {
             tag = sessionId,
             isStartFailure = ::isStartFailure,
         ) {
-            if (executionStrategy == ShellExecutionStrategy.FRESH_PROCESS) {
-                executeFresh(sessionId, command, timeout, lineCallback, fsSessionId)
+            if (captureBashOutput || executionStrategy == ShellExecutionStrategy.FRESH_PROCESS) {
+                executeFresh(sessionId, command, timeout, lineCallback, fsSessionId, captureBashOutput)
             } else {
                 executeWarm(sessionId, command, timeout, lineCallback, fsSessionId)
             }
@@ -358,7 +420,7 @@ object ExecutionCoordinator {
         return try {
             val startTime = System.currentTimeMillis()
 
-            // [diag] trace the sessionId that shell_execute is dispatched with —
+            // [diag] trace the sessionId that bash is dispatched with —
             // suspected source of the Chinese-emoji filename vanishing bug
             Log.w(TAG, "[diag] execute sessionId=$sessionId cmd=${command.take(120).replace('\n', ' ')}")
 
@@ -419,7 +481,7 @@ object ExecutionCoordinator {
      * Each is a proot process holding the session's bind mounts, so this is
      * real memory and real PIDs on a phone — not a free knob. Four covers the
      * observed fan-out (this device's history: of 88,839 tool-carrying turns,
-     * the widest were a handful of 5-call turns, and shell_execute appears in
+     * the widest were a handful of 5-call turns, and bash appears in
      * at most a few of those at once) while staying well under
      * ChatViewModel.MAX_CONCURRENT_TOOLS, which bounds the whole turn anyway.
      * A 5th concurrent shell command simply waits for a slot — the pre-change

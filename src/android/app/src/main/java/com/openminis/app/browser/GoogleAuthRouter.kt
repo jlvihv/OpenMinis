@@ -18,7 +18,7 @@ import java.net.URI
  *
  * After the user finishes auth in the Custom Tab, cookies stay in
  * Chrome (not in our WebView). For the user's own browsing this is a
- * one-time flow; for `browser_use` agent calls the LLM should be told
+ * one-time flow; for `browser` agent calls the LLM should be told
  * the page can't be agentically traversed and to ask the user to copy
  * results back into chat — see ChatViewModel.buildSystemPrompt.
  */

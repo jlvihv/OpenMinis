@@ -543,7 +543,6 @@ data class ModelEntry(
                 // user who ticked audio-input by hand stored the suffixed spelling
                 // ("audio_input", the OpenAI/OpenRouter form the detail screen
                 // writes) and every `contains("audio")` reader — hasAudioInput,
-                // hasImageInput, the Vision Group filter — compared it against the
                 // bare name and answered false. The switch showed ON while the
                 // capability stayed off, so the manual override silently did
                 // nothing: exactly the workaround a user reaches for when
@@ -575,7 +574,6 @@ data class ProviderConfig(
     // Legacy groups are read only for migration from older backups.
     val modelGroups: MutableList<ModelGroup> = mutableListOf(),
     var defaultModelEntryId: String? = null,
-    var visionModelEntryId: String? = null,
     var titleModelEntryId: String? = null,
     var subModelEntryId: String? = null,
     var defaultThinkingLevel: ThinkingLevel? = null,
@@ -589,12 +587,6 @@ data class ProviderConfig(
     // declared defaults), so adding them is downgrade/round-trip safe.
     var voiceInputGroupId: String? = null,
     var voiceOutputGroupId: String? = null,
-    // [T-android-vision-group / GH#182] Vision Group binding — the group whose
-    // vision-capable members read images on behalf of a main model that cannot
-    // see pixels. Per-device pointer at an ordinary ModelGroup, mirroring
-    // voiceInputGroupId (meta KV row, not synced CRDT member maps). Absent in
-    // old persisted JSON → deserializes to null (ignoreUnknownKeys + default).
-    var visionGroupId: String? = null,
     // [T-sub-agents-v1] The named sub agents the main model can delegate to.
     // Mirrors iOS ProviderConfig.subAgents — deliberately carried on the
     // existing provider-config blob rather than as a new synced type, so it

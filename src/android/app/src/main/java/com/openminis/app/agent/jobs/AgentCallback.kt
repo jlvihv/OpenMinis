@@ -10,7 +10,7 @@ package com.openminis.app.agent.jobs
 //
 //   <agent_callback kind="finished" job="…" session="…" title="…"
 //                   status="done" model="primary" elapsed="1m02s">
-//   <summary>tools browser_use×2 · turns 4 · tokens in 12k / out 2k</summary>
+//   <summary>tools browser×2 · turns 4 · tokens in 12k / out 2k</summary>
 //   <result>
 //   …the agent's final answer…
 //   </result>

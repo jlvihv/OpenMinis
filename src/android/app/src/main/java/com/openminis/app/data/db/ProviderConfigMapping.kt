@@ -44,8 +44,6 @@ object ProviderConfigMetaKeys {
     // Meta KV rows are additive — no Room schema migration needed.
     const val VOICE_INPUT_GROUP_ID = "voice_input_group_id"
     const val VOICE_OUTPUT_GROUP_ID = "voice_output_group_id"
-    // [T-android-vision-group / GH#182] Vision Group pointer (per-device meta KV).
-    const val VISION_GROUP_ID = "vision_group_id"
     /**
      * [T-subagent-own-store] The sub agent roster, as a JSON array.
      *
@@ -185,7 +183,6 @@ fun ProviderConfig.toSnapshot(
     subModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("sub_model_entry_id", idMap[it] ?: it)) }
     titleModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("title_model_entry_id", idMap[it] ?: it)) }
     defaultModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("default_model_entry_id", idMap[it] ?: it)) }
-    visionModelEntryId?.let { metaRows.add(ProviderConfigMetaEntity("vision_model_entry_id", idMap[it] ?: it)) }
     defaultThinkingLevel?.let { metaRows.add(ProviderConfigMetaEntity("default_thinking_level", it.name)) }
     defaultContextLimitTokens?.let { metaRows.add(ProviderConfigMetaEntity("default_context_limit_tokens", it.toString())) }
     defaultPrimaryGroupId?.let {
@@ -199,9 +196,6 @@ fun ProviderConfig.toSnapshot(
     }
     voiceOutputGroupId?.let {
         metaRows.add(ProviderConfigMetaEntity(ProviderConfigMetaKeys.VOICE_OUTPUT_GROUP_ID, it))
-    }
-    visionGroupId?.let {
-        metaRows.add(ProviderConfigMetaEntity(ProviderConfigMetaKeys.VISION_GROUP_ID, it))
     }
     // [T-subagent-own-store] Always written, including when empty: an absent
     // row is indistinguishable from "this build did not know about sub agents",
@@ -311,14 +305,12 @@ fun ProviderConfigSnapshot.toProviderConfig(jsonForBlobs: Json): ProviderConfig 
         titleModelEntryId = metaMap["title_model_entry_id"],
         subModelEntryId = metaMap["sub_model_entry_id"],
         defaultModelEntryId = metaMap["default_model_entry_id"],
-        visionModelEntryId = metaMap["vision_model_entry_id"],
         defaultThinkingLevel = metaMap["default_thinking_level"]?.let { runCatching { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }.getOrNull() },
         defaultContextLimitTokens = metaMap["default_context_limit_tokens"]?.toIntOrNull(),
         defaultPrimaryGroupId = metaMap[ProviderConfigMetaKeys.DEFAULT_PRIMARY_GROUP_ID],
         defaultSubGroupId = metaMap[ProviderConfigMetaKeys.DEFAULT_SUB_GROUP_ID],
         voiceInputGroupId = metaMap[ProviderConfigMetaKeys.VOICE_INPUT_GROUP_ID],
         voiceOutputGroupId = metaMap[ProviderConfigMetaKeys.VOICE_OUTPUT_GROUP_ID],
-        visionGroupId = metaMap[ProviderConfigMetaKeys.VISION_GROUP_ID],
         agentLoopModelEntryIds = entryLoopIds,
         agentLoopGroupIds = groupLoopIds,
         // [T-subagent-own-store] Restored from the meta row; a build that

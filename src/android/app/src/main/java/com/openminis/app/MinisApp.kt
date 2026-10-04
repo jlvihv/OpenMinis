@@ -37,7 +37,7 @@ import com.openminis.app.sandbox.PRootKernel
 import com.openminis.app.sandbox.RootfsManager
 import com.openminis.app.sandbox.offload.AccessibilityOffloadHandler
 import com.openminis.app.sandbox.offload.AlarmOffloadHandler
-import com.openminis.app.sandbox.offload.BrowserUseOffloadHandler
+import com.openminis.app.sandbox.offload.BrowserOffloadHandler
 import com.openminis.app.sandbox.offload.CalendarOffloadHandler
 import com.openminis.app.sandbox.offload.ClipboardOffloadHandler
 import com.openminis.app.sandbox.offload.ContactsOffloadHandler
@@ -626,13 +626,13 @@ class MinisApp : Application(), ImageLoaderFactory {
         networkMonitor.start(this)
 
         // Register global /var/minis/{soul,skills,shared} bind mounts up-front
-        // so direct file I/O tools (file_read) resolve these paths even before
+        // so direct file I/O tools (read) resolve these paths even before
         // PRoot has booted or any shell has started.
         PRootKernel.registerGlobalBindMounts(this)
 
         // T219-1: load user-mounted external folders and seed PRoot's
         // bindMounts before the first proot invocation, so the very first
-        // `shell_execute` already has `/var/minis/mounts/<name>/` visible.
+        // `bash` already has `/var/minis/mounts/<name>/` visible.
         // Entries whose SAF tree URI didn't resolve to a real POSIX path
         // (cloud providers, unmounted SD card) are silently skipped by
         // bindMountSpecs.
@@ -690,7 +690,7 @@ class MinisApp : Application(), ImageLoaderFactory {
             "minis-config",
             com.openminis.app.sandbox.offload.ConfigOffloadHandler(),
         )
-        NativeOffloadServer.register("minis-browser-use", BrowserUseOffloadHandler(this))
+        NativeOffloadServer.register("minis-browser-use", BrowserOffloadHandler(this))
         // T188: minis-sessions-cli — agent-side query of chat history.
         // Registers next to the other minis-* tools so PRootKernel.
         // installHandlerStubs() picks it up on the next rootfs boot

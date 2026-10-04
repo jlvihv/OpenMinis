@@ -52,10 +52,10 @@ data class PrefilledToolCall(
         return when (toolName) {
             SHELL_TOOL -> when {
                 a.optString("command", "").isBlank() -> "shell prefill needs a non-empty command"
-                a.optString("command", "").length > MAX_COMMAND_LENGTH ->
-                    "shell command is longer than $MAX_COMMAND_LENGTH characters; put the script in a file and run that file"
-                a.has("timeout") && a.optInt("timeout", -1) !in TIMEOUT_RANGE_SEC ->
-                    "shell timeout must be between ${TIMEOUT_RANGE_SEC.first}s and ${TIMEOUT_RANGE_SEC.last}s"
+                a.opt("command") !is String -> "bash command must be a string"
+                a.has("timeout") && !a.isNull("timeout") && (a.opt("timeout") !is Number ||
+                    !a.getDouble("timeout").isFinite() || a.getDouble("timeout") <= 0 || a.getDouble("timeout") * 1000 > Int.MAX_VALUE) ->
+                    "bash timeout must be positive and at most 2147483.647 seconds"
                 else -> null
             }
             else -> null
@@ -67,11 +67,7 @@ data class PrefilledToolCall(
         .put("args", args())
 
     companion object {
-        const val SHELL_TOOL = "shell_execute"
-
-        /** Same limits as iOS ScheduledPresetToolCall. */
-        const val MAX_COMMAND_LENGTH = 16_000
-        val TIMEOUT_RANGE_SEC: IntRange = 1..3600
+        const val SHELL_TOOL = "bash"
 
         /**
          * Tools a task may prefill. Extending this is a matter of adding the
@@ -80,20 +76,11 @@ data class PrefilledToolCall(
          */
         val SUPPORTED_TOOLS: Set<String> = setOf(SHELL_TOOL)
 
-        /** Short names accepted on the CLI, mapped to the tool's real name. */
-        private val ALIASES = mapOf("shell" to SHELL_TOOL, "sh" to SHELL_TOOL, "bash" to SHELL_TOOL)
-
-        fun canonicalToolName(raw: String): String {
-            val t = raw.trim()
-            return ALIASES[t.lowercase()] ?: t
-        }
-
         /**
          * A shell prefill. [title] fills `tool_title` (the card header) when
-         * the caller gave none, since the tool schema requires one and the
-         * model never got to write it.
+         * the caller gave none, so the card has a useful label before any model turn.
          */
-        fun shell(command: String, title: String? = null, timeoutSec: Int? = null): PrefilledToolCall =
+        fun shell(command: String, title: String? = null, timeoutSec: Number? = null): PrefilledToolCall =
             of(SHELL_TOOL, JSONObject().put("command", command).apply { timeoutSec?.let { put("timeout", it) } }, title)
 
         /**
@@ -102,7 +89,7 @@ data class PrefilledToolCall(
          * the shell command so the card never shows a bare tool name.
          */
         fun of(toolName: String, args: JSONObject, title: String? = null): PrefilledToolCall {
-            val name = canonicalToolName(toolName)
+            val name = toolName.trim()
             val copy = JSONObject(args.toString())
             if (copy.optString("tool_title", "").isBlank()) {
                 val fallback = title?.trim()?.takeIf { it.isNotEmpty() }

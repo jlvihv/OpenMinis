@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Ana ekrana ekle</string>
     <string name="webpreview_pin_to_home_requested">Kısayol istendi — başlatıcınızda onaylayın</string>
     <string name="webpreview_pin_to_home_unsupported">Başlatıcınız sabitlenmiş kısayolları desteklemiyor</string>
-    <string name="browser_use_tab_busy_timeout">Şu anda başka bir araç %1$d numaralı tarayıcı sekmesini kullanıyor ve bu istek %2$d saniye içinde sıra alamadı. Aynı sekmeyi birden fazla aracın aynı anda kullanması desteklenmiyor. Lütfen yeni bir sekme açıp (action: new_tab) işleminizi orada yineleyin.</string>
+    <string name="browser_tab_busy_timeout">Şu anda başka bir araç %1$d numaralı tarayıcı sekmesini kullanıyor ve bu istek %2$d saniye içinde sıra alamadı. Aynı sekmeyi birden fazla aracın aynı anda kullanması desteklenmiyor. Lütfen yeni bir sekme açıp (action: new_tab) işleminizi orada yineleyin.</string>
     <string name="filebrowser_title">Dosyalar</string>
     <string name="filebrowser_empty_folder">Klasör boş</string>
     <string name="filebrowser_delete_title">Silinsin mi: \"%1$s\"</string>

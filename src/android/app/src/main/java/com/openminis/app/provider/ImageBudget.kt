@@ -76,7 +76,7 @@ object ImageBudget {
      * Cumulative inline-image bytes across ALL messages in a single
      * request body. Mirrors the per-message cap but applies at the
      * request boundary so a long history accumulating images from
-     * multiple turns (browser screenshots, attachments, read_image
+     * multiple turns (browser screenshots, attachments, read
      * results) cannot push the request past the cap that triggered
      * factory.pub / Anthropic gateways to silently return 200 +
      * empty SSE with `finish_reason=stop`. Eldest images are elided
@@ -631,12 +631,12 @@ object ImageBudget {
      * Build the text placeholder a provider emits in place of an elided
      * image. The model gets a clear, actionable hint: this image was
      * dropped to fit the budget, and (if known) the linux path where the
-     * bytes are still readable via [read_image]. Without a path the model
+     * bytes are still readable via [read]. Without a path the model
      * just sees that an image was elided and can ask the user to re-attach.
      */
     fun elidedImagePlaceholder(linuxPath: String?): String {
         return if (linuxPath != null) {
-            "[image elided to fit 25MB request budget. Original at $linuxPath — re-fetch with `read_image $linuxPath` if you need to see it.]"
+            "[image elided to fit 25MB request budget. Original at $linuxPath — re-fetch with `read $linuxPath` if you need to see it.]"
         } else {
             "[image elided to fit 25MB request budget. Original bytes no longer addressable; ask the user to re-attach if needed.]"
         }

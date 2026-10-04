@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Tambah ke skrin Utama</string>
     <string name="webpreview_pin_to_home_requested">Pintasan diminta — sahkan pada pelancar anda</string>
     <string name="webpreview_pin_to_home_unsupported">Pelancar anda tidak menyokong pintasan yang disematkan</string>
-    <string name="browser_use_tab_busy_timeout">Alat lain sedang mengendalikan tab pelayar %1$d, dan permintaan ini tidak mendapat giliran dalam %2$d saat. Beberapa alat mengendalikan tab yang sama serentak tidak disokong. Sila buka tab baharu (action: new_tab) dan ulangi tindakan anda di sana.</string>
+    <string name="browser_tab_busy_timeout">Alat lain sedang mengendalikan tab pelayar %1$d, dan permintaan ini tidak mendapat giliran dalam %2$d saat. Beberapa alat mengendalikan tab yang sama serentak tidak disokong. Sila buka tab baharu (action: new_tab) dan ulangi tindakan anda di sana.</string>
     <string name="filebrowser_title">Fail</string>
     <string name="filebrowser_empty_folder">Folder kosong</string>
     <string name="filebrowser_delete_title">Padam \"%1$s\"?</string>

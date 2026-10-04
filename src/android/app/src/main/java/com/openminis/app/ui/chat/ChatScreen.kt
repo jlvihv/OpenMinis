@@ -544,7 +544,7 @@ fun ChatScreen(
     onOpenTerminal: () -> Unit = {},
     /** Open the in-app terminal with [command] pre-filled at the prompt
      *  (no trailing newline — the user reviews and presses Enter manually).
-     *  Wired to the top-right Terminal button on a shell_execute ToolDetailSheet. */
+     *  Wired to the top-right Terminal button on a bash ToolDetailSheet. */
     onOpenTerminalWithCommand: (command: String) -> Unit = {},
     /** [T-p2-agent-series] Open the full-screen read-only transcript of an
      *  agent's child session (from the tool sheet's chat-bubble button). */

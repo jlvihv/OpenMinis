@@ -116,16 +116,7 @@ val LLMModel.hasAudioInput: Boolean
 val LLMModel.hasAudioOutput: Boolean
     get() = effectiveOutputModalities?.contains("audio") == true
 
-/**
- * True when this model natively consumes images (a vision-capable model).
- * [T-android-vision-group] The Vision Group resolver filters group members by
- * this predicate. Normalizes so "image_input" (OpenAI/OpenRouter suffix form)
- * and bare "image" (models.dev) both match.
- *
- * [T-android-modality-provider-fallback] Effective list, so an un-catalogued
- * Anthropic/OpenAI/OpenRouter/Google model is vision-capable by provider
- * default instead of silently failing the Vision Group filter.
- */
+
 val LLMModel.hasImageInput: Boolean
     get() = effectiveInputModalities?.contains("image") == true
 

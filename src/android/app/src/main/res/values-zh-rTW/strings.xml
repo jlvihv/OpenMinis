@@ -376,7 +376,7 @@
     <string name="webpreview_pin_to_home">加入主畫面</string>
     <string name="webpreview_pin_to_home_requested">已要求建立捷徑，請在啟動器確認</string>
     <string name="webpreview_pin_to_home_unsupported">目前啟動器不支援釘選捷徑</string>
-    <string name="browser_use_tab_busy_timeout">另一個工具正在操作瀏覽器分頁 %1$d，此請求在 %2$d 秒內未能取得使用權。不支援多個工具同時操作同一個分頁。請開啟新分頁（action: new_tab）並在該分頁重試。</string>
+    <string name="browser_tab_busy_timeout">另一個工具正在操作瀏覽器分頁 %1$d，此請求在 %2$d 秒內未能取得使用權。不支援多個工具同時操作同一個分頁。請開啟新分頁（action: new_tab）並在該分頁重試。</string>
     <string name="filebrowser_title">檔案</string>
     <string name="filebrowser_empty_folder">空資料夾</string>
     <string name="filebrowser_delete_title">刪除 “%1$s”？</string>

@@ -5,7 +5,7 @@ import com.openminis.app.MinisApp
 import com.openminis.app.browser.BrowserAction
 import com.openminis.app.browser.BrowserActionInput
 import com.openminis.app.browser.BrowserTabPool
-import com.openminis.app.browser.BrowserUseManager
+import com.openminis.app.browser.BrowserManager
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -82,7 +82,7 @@ internal object BrowserDebugMethods {
         }
     }
 
-    private suspend fun readViewport(mgr: BrowserUseManager): JSONObject {
+    private suspend fun readViewport(mgr: BrowserManager): JSONObject {
         // Mirror navigationMetadata's probe — same shape iOS exposes under
         // `debug.browser.pageInfo.viewport`.
         val js = "JSON.stringify({" +
@@ -136,7 +136,7 @@ internal object BrowserDebugMethods {
         val tab = resolveTab(pool, params)
         val res = tab.manager.execute(BrowserActionInput(action = BrowserAction.GET_READABLE))
         if (!res.success) throw RPCException(-32000, res.text)
-        // BrowserUseManager.getReadable returns formatted text; preserve the
+        // BrowserManager.getReadable returns formatted text; preserve the
         // same envelope iOS exposes (text + length + tabId).
         return JSONObject().apply {
             put("tabId", tab.id)

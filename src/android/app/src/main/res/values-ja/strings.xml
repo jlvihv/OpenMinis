@@ -363,7 +363,7 @@
     <string name="webpreview_pin_to_home">ホーム画面に追加</string>
     <string name="webpreview_pin_to_home_requested">ショートカットを要求しました。ランチャー側で確認してください</string>
     <string name="webpreview_pin_to_home_unsupported">お使いのランチャーは固定ショートカットに対応していません</string>
-    <string name="browser_use_tab_busy_timeout">別のツールがブラウザタブ %1$d を操作中で、このリクエストは %2$d 秒以内に順番を取得できませんでした。複数のツールが同じタブを同時に操作することはサポートされていません。新しいタブ（action: new_tab）を開き、そちらで操作をやり直してください。</string>
+    <string name="browser_tab_busy_timeout">別のツールがブラウザタブ %1$d を操作中で、このリクエストは %2$d 秒以内に順番を取得できませんでした。複数のツールが同じタブを同時に操作することはサポートされていません。新しいタブ（action: new_tab）を開き、そちらで操作をやり直してください。</string>
     <string name="filebrowser_title">ファイル</string>
     <string name="filebrowser_empty_folder">空のフォルダ</string>
     <string name="filebrowser_delete_title">“%1$s” を削除しますか？</string>

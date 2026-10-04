@@ -426,7 +426,7 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
          *   --shell-timeout <dur>      alias --command-timeout; 90 / 90s / 2m / 1h,
          *                              1s..1h (the shell tool's own ceiling)
          *   --tool <name> --tool-args '<json>'   the general form; only
-         *                              shell_execute (alias shell/sh/bash) today,
+         *                              bash (alias shell/sh/bash) today,
          *                              args limited to command / timeout / tool_title
          *
          * The general form exists so another tool can be enabled later by adding
@@ -449,14 +449,14 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
             if (command != null && toolArgs != null) {
                 throw IllegalArgumentException("use either --command or --tool/--tool-args, not both")
             }
-            val toolName = tool?.let { PrefilledToolCall.canonicalToolName(it) } ?: PrefilledToolCall.SHELL_TOOL
+            val toolName = tool?.trim() ?: PrefilledToolCall.SHELL_TOOL
             if (toolName !in PrefilledToolCall.SUPPORTED_TOOLS) {
                 throw IllegalArgumentException(
-                    "--tool $tool is not supported as a prefilled tool yet; only shell_execute (alias: shell) is",
+                    "--tool $tool is not supported as a prefilled tool yet; only bash is",
                 )
             }
-            var timeoutSec: Int? = timeoutRaw?.let {
-                parseDurationSec(it) ?: throw IllegalArgumentException("--command-timeout must be a duration like 90s, 2m, 1h")
+            var timeoutSec: Double? = timeoutRaw?.let {
+                parseDurationSec(it)?.toDouble() ?: throw IllegalArgumentException("--command-timeout must be a duration like 90s, 2m, 1h")
             }
             var cmd = command
             var title: String? = null
@@ -469,7 +469,7 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
                 val unknown = obj.keys().asSequence().toSet() - setOf("command", "timeout", "tool_title")
                 if (unknown.isNotEmpty()) {
                     throw IllegalArgumentException(
-                        "--tool-args: unsupported key(s) ${unknown.sorted().joinToString()} for shell_execute (allowed: command, timeout)",
+                        "--tool-args: unsupported key(s) ${unknown.sorted().joinToString()} for bash (allowed: command, timeout)",
                     )
                 }
                 cmd = obj.opt("command") as? String
@@ -477,18 +477,14 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
                 if (obj.has("timeout")) {
                     val t = obj.opt("timeout") as? Number
                         ?: throw IllegalArgumentException("--tool-args \"timeout\" must be a number of seconds")
-                    // [T-android-scheduled-duration-finite] Through a Double
-                    // and saturated: Number.toInt() on a Long wraps, so
-                    // {"timeout": 4294967356} (2^32 + 60) came out as 60 and
-                    // passed the 1..3600 check below.
-                    if (timeoutSec == null) timeoutSec = saturatingSeconds(t.toDouble())
+                    if (timeoutSec == null) timeoutSec = t.toDouble()
                 }
                 title = obj.optString("tool_title", "").ifBlank { null }
             }
             if (cmd.isNullOrBlank()) throw IllegalArgumentException("--command needs a shell command")
             val t = timeoutSec
-            if (t != null && t !in PrefilledToolCall.TIMEOUT_RANGE_SEC) {
-                throw IllegalArgumentException("--command-timeout must be between 1s and 1h")
+            if (t != null && (!t.isFinite() || t <= 0 || t * 1000 > Int.MAX_VALUE)) {
+                throw IllegalArgumentException("--command-timeout must be positive and at most 2147483.647 seconds")
             }
             val call = PrefilledToolCall.shell(cmd, title = title ?: label.ifBlank { null }, timeoutSec = t)
             call.validationError()?.let { throw IllegalArgumentException(it) }
@@ -540,7 +536,7 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
                    [--model <modelId>] [--thinking off|low|medium|high|xhigh|max|ultra]
                    [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--disabled]
                    [--command "<shell command>" [--command-timeout 2m]]   prefilled first step
-                   [--tool shell_execute --tool-args '{"command":"..."}']
+                   [--tool bash --tool-args '{"command":"..."}']
             delete  --id <taskId>
             enable  --id <taskId>          re-enabling an --after/--interval task starts it over
             disable --id <taskId>
@@ -566,7 +562,7 @@ class ScheduledTaskOffloadHandler(private val context: Context) : NativeOffloadH
               two. Use it when the command is the same every time (fetch a page, check a
               status, run a script). --command-timeout (alias --shell-timeout) takes 90s,
               2m, 1h (1s..1h; default 15m). --tool/--tool-args is the general form; only
-              shell_execute is supported today (args: command, timeout).
+              bash is supported today (args: command, timeout).
               A failing command is not a failed task: the model sees its output and exit
               status and decides what to do (explain, retry, or report).
 

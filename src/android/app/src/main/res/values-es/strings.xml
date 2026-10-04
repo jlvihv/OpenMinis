@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Añadir a la pantalla de inicio</string>
     <string name="webpreview_pin_to_home_requested">Acceso directo solicitado: confírmalo en tu launcher</string>
     <string name="webpreview_pin_to_home_unsupported">Tu launcher no admite accesos directos fijados</string>
-    <string name="browser_use_tab_busy_timeout">Otra herramienta está operando la pestaña %1$d del navegador y esta solicitud no pudo obtener un turno en %2$d segundos. No se admite que varias herramientas operen la misma pestaña a la vez. Abre una pestaña nueva (action: new_tab) y reintenta la acción allí.</string>
+    <string name="browser_tab_busy_timeout">Otra herramienta está operando la pestaña %1$d del navegador y esta solicitud no pudo obtener un turno en %2$d segundos. No se admite que varias herramientas operen la misma pestaña a la vez. Abre una pestaña nueva (action: new_tab) y reintenta la acción allí.</string>
     <string name="filebrowser_title">Archivos</string>
     <string name="filebrowser_empty_folder">Carpeta vacía</string>
     <string name="filebrowser_delete_title">¿Eliminar \"%1$s\"?</string>

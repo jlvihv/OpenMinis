@@ -2369,7 +2369,7 @@ class OpenAIProvider private constructor(
                         //
                         //   assistant  tool_calls:[call_01, call_02]
                         //   tool       call_01
-                        //   user       [Image returned by read_image]   <-- splits the run
+                        //   user       [Image returned by read]   <-- splits the run
                         //   tool       call_02
                         //
                         // OpenAI-compatible endpoints require the `tool` replies
@@ -2393,7 +2393,7 @@ class OpenAIProvider private constructor(
                                 put("content", tr.content)
                             })
                             // [T-android-toolresult-image-dropped] THE reported bug.
-                            // read_image hands its pixels back on the ToolResult
+                            // read hands its pixels back on the ToolResult
                             // (ChatViewModel sets imageData on the part), but this
                             // loop only ever emitted `content`, so on a native-vision
                             // model the bytes were dropped at the provider boundary
@@ -2418,9 +2418,9 @@ class OpenAIProvider private constructor(
                                         put(JSONObject().apply {
                                             put("type", "text")
                                             // Name the call, not just the tool.
-                                            // Two parallel read_image results
+                                            // Two parallel read results
                                             // both said "[Image returned by
-                                            // read_image]", so once the carriers
+                                            // read]", so once the carriers
                                             // are grouped after the run the model
                                             // had nothing to tell them apart by.
                                             put(
@@ -2492,8 +2492,7 @@ class OpenAIProvider private constructor(
                                             } else {
                                                 // T264: target model has no vision modality —
                                                 // emit a text placeholder in place of the pixels.
-                                                // [T-android-vision-group / GH#182] Vision-Group
-                                                // read_image hint when seeded (carries the path);
+                                                // read hint when seeded (carries the path);
                                                 // else the historical literal.
                                                 contentArray.put(JSONObject().apply {
                                                     put("type", "text")
@@ -2563,8 +2562,8 @@ class OpenAIProvider private constructor(
                                 // possible at all. The note explicitly says this
                                 // is the same image shown above, not another one
                                 // — without that, N images + N notes read as 2N.
-                                com.openminis.app.tools.VisionModelResolver
-                                    .visionImagePathNote(part.linuxPath)
+                                com.openminis.app.tools.ImageReader
+                                    .pathNote(part.linuxPath)
                                     ?.let { note ->
                                         contentArray.put(JSONObject().apply {
                                             put("type", "text")
@@ -2574,13 +2573,11 @@ class OpenAIProvider private constructor(
                             } else {
                                 // T264: target model has no vision modality — emit
                                 // a text placeholder in place of the pixels.
-                                // [T-android-vision-group / GH#182] When a Vision
                                 // Group is configured, ChatViewModel seeds
-                                // part.noVisionPlaceholder with a read_image call
+                                // part.noVisionPlaceholder with a read call
                                 // hint (carrying the image path) so the model
                                 // routes the image through the group instead of
                                 // being told it can't see it. Null → the historical
-                                // iOS-parity literal (no Vision Group configured).
                                 contentArray.put(JSONObject().apply {
                                     put("type", "text")
                                     put("text", part.noVisionPlaceholder
@@ -3280,20 +3277,7 @@ class OpenAIProvider private constructor(
         systemPrompt: String?,
         maxTokens: Int,
         stream: Boolean,
-        /**
-         * [T-android-responses-toplevel-images] Images passed as the top-level
-         * argument rather than on `msg.contentParts`, attached to the LAST user
-         * message — the same contract [buildRequestBody] implements.
-         *
-         * This parameter did not exist, and that was a silent data loss: every
-         * caller that supplies images this way (minis-model-use's `image_url`
-         * blocks, VisionModelResolver.describeOnce, any direct
-         * sendMessage(imageParts=…)) had its pixels dropped on the floor the
-         * moment the provider was on the Responses path, with no error. The
-         * user-visible symptom was a vision model replying "no image was
-         * provided" — reported against a Vision Group whose describing model
-         * ran on Responses.
-         */
+
         imageParts: List<LLMMessage.ImagePart> = emptyList(),
         tools: List<AgentToolDefinition> = emptyList(),
         thinkingLevel: ThinkingLevel = ThinkingLevel.OFF,
@@ -3522,16 +3506,16 @@ class OpenAIProvider private constructor(
                         //
                         // Emitting a result's carrier right after its output put
                         // a `user` item BETWEEN parallel outputs:
-                        //   function_call        call_00 (read_image)
-                        //   function_call        call_01 (shell_execute)
+                        //   function_call        call_00 (read)
+                        //   function_call        call_01 (bash)
                         //   function_call_output call_00
-                        //   user  [Image returned by read_image]   <-- splits the run
+                        //   user  [Image returned by read]   <-- splits the run
                         //   function_call_output call_01
                         // and DeepSeek's /v1/responses rejected the request with
                         // `[400] No tool output found for tool call call_01_…`
-                        // (field report: deepseek-flash, a read_image run in
+                        // (field report: deepseek-flash, a read run in
                         // parallel with a shell command). One call never splits
-                        // anything, which is why single read_image turns worked.
+                        // anything, which is why single read turns worked.
                         val imageCarriers = mutableListOf<JSONObject>()
                         for (tr in msg.contentParts.filterIsInstance<AgentContentPart.ToolResult>()) {
                             val (callId, _) = splitResponsesAPIIds(tr.id)
@@ -3543,7 +3527,7 @@ class OpenAIProvider private constructor(
                             })
                             // [T-android-toolresult-image-dropped] Same defect as the
                             // Chat Completions branch: function_call_output takes a
-                            // string `output`, so read_image's pixels had nowhere to
+                            // string `output`, so read's pixels had nowhere to
                             // go and were silently dropped. Emit them as a following
                             // user turn carrying an input_image block.
                             val trBytes = tr.imageData
@@ -3576,7 +3560,7 @@ class OpenAIProvider private constructor(
                         // outer `content` was a flat concatenated string and
                         // image bytes never reached the wire (the textual
                         // [attached image: …] caption was the only hint, and
-                        // the model fell back to read_image / shell_execute
+                        // the model fell back to read / bash
                         // groping for a path it could see). Mirrors iOS
                         // convertMessagesResponsesAPI's image handling.
                         val textParts = msg.contentParts.filterIsInstance<AgentContentPart.Text>()
@@ -3613,8 +3597,7 @@ class OpenAIProvider private constructor(
                                             )
                                         } else {
                                             // T264: target model has no vision modality —
-                                            // emit a text placeholder. [T-android-vision-group
-                                            // / GH#182] Vision-Group read_image hint when
+                                            // / GH#182] Vision-Group read hint when
                                             // seeded (carries the path); else the historical
                                             // literal. Note: Responses API uses "input_text"
                                             // type (vs "text" on Chat Completions).
@@ -3732,7 +3715,6 @@ class OpenAIProvider private constructor(
             } else if (attachTopLevelImages) {
                 // [T-android-responses-toplevel-images] THE reported bug's path.
                 // A plain (contentParts-free) user message plus top-level
-                // images — what VisionModelResolver.describeOnce and
                 // minis-model-use's image_url blocks produce. This builder had
                 // no imageParts parameter at all, so the message was emitted as
                 // a bare text string and the pixels never reached the wire. The

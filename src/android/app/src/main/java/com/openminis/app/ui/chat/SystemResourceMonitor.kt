@@ -40,7 +40,7 @@ import java.io.File
  *   construction returns 0% — there's no prior baseline to diff against.
  *
  *   T303 history: T244 (commit 8750340) had switched to `/proc/stat` to
- *   capture the system-wide load thinking shell_execute child processes
+ *   capture the system-wide load thinking bash child processes
  *   wouldn't be attributed to the app — but in practice `/proc/stat` is
  *   permission-denied to apps on Android 8+, so the read silently failed
  *   and the HUD read "CPU 0%" under any load. PRoot on Android works via
@@ -171,7 +171,7 @@ class SystemResourceMonitor {
      * fields are 0-indexed: state=0, ppid=1, ..., utime=11, stime=12.
      *
      * cutime/cstime (waited-for-children CPU) are intentionally excluded —
-     * shell_execute doesn't actually fork (PRoot uses ptrace), so the work
+     * bash doesn't actually fork (PRoot uses ptrace), so the work
      * runs inside the app's own utime/stime; folding cutime in would only
      * double-count any genuine child reaper work.
      */

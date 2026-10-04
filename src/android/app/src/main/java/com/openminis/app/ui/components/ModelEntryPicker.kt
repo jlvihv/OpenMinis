@@ -74,7 +74,6 @@ import com.openminis.app.data.model.normalizeModalities
 enum class PickerModalityFilter {
     AUDIO_INPUT,
     AUDIO_OUTPUT,
-    // [T-android-vision-group] Vision scenario: only image-consuming entries
     // qualify. No System virtual entry — there is no on-device vision engine.
     IMAGE_INPUT;
 

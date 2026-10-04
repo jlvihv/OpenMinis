@@ -148,7 +148,7 @@ fun SkillsManagementScreen(
 
     // T-skillscan: rescan on screen entry so a skill that was installed in
     // the active chat (e.g. via shell `git clone` into skillsDir, which
-    // bypasses the SKILL.md file_write hook) is picked up the moment the
+    // bypasses the SKILL.md write hook) is picked up the moment the
     // user opens this list, instead of requiring a process restart.
     LaunchedEffect(Unit) {
         skillRepository.reloadFromDisk()

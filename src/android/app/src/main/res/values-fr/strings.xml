@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Ajouter à l\'écran d\'accueil</string>
     <string name="webpreview_pin_to_home_requested">Raccourci demandé — confirmez dans votre lanceur</string>
     <string name="webpreview_pin_to_home_unsupported">Votre lanceur ne prend pas en charge les raccourcis épinglés</string>
-    <string name="browser_use_tab_busy_timeout">Un autre outil utilise actuellement l\'onglet de navigateur %1$d, et cette requête n\'a pas pu obtenir son tour en %2$d secondes. Plusieurs outils utilisant le même onglet en même temps ne sont pas pris en charge. Ouvrez un nouvel onglet (action : new_tab) et réessayez votre action là-bas.</string>
+    <string name="browser_tab_busy_timeout">Un autre outil utilise actuellement l\'onglet de navigateur %1$d, et cette requête n\'a pas pu obtenir son tour en %2$d secondes. Plusieurs outils utilisant le même onglet en même temps ne sont pas pris en charge. Ouvrez un nouvel onglet (action : new_tab) et réessayez votre action là-bas.</string>
     <string name="filebrowser_title">Fichiers</string>
     <string name="filebrowser_empty_folder">Dossier vide</string>
     <string name="filebrowser_delete_title">Supprimer « %1$s » ?</string>

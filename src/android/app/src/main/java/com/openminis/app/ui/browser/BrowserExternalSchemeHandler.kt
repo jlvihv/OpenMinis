@@ -82,7 +82,7 @@ object BrowserExternalSchemeHandler {
 
         /**
          * The agent is driving a background/headless WebView
-         * ([com.openminis.app.browser.BrowserUseManager]) and the PAGE chose
+         * ([com.openminis.app.browser.BrowserManager]) and the PAGE chose
          * to navigate. The user is not watching and did not ask, so unknown
          * app schemes stay blocked — this is T318's original case.
          */

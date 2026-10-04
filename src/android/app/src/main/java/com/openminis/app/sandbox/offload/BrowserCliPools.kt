@@ -12,20 +12,20 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * [T-android-browser-cli-own-pool] Which tab pool a `minis-browser-use` call
- * drives. Port of iOS `BrowserUseOffloadBridge.pool(for:)`.
+ * drives. Port of iOS `BrowserOffloadBridge.pool(for:)`.
  *
  * The CLI used to run every call on `MinisApp.sharedBrowserTabPool`, one pool
  * for the whole process. Shells from different chats run concurrently, so
  * chats scripting the browser (for example two chats on two shopping sites)
  * navigated each other's page, and read text and screenshots from whichever
  * site the other chat had just opened. It also meant a chat's agent
- * (`browser_use`) and its shell (`minis-browser-use`) saw different tabs.
+ * (`browser`) and its shell (`minis-browser-use`) saw different tabs.
  *
  * Now the call runs on the CALLING chat's pool:
  *  1. The live ChatViewModel of the caller (`MINIS_CHAT_SESSION_ID`, set per
  *     process by the shell). A sub agent's view model has adopted its
  *     parent's pool, so a sub agent lands on the parent's tab set, as its
- *     `browser_use` does.
+ *     `browser` does.
  *  2. The live view model of the session whose files are mounted
  *     ([ExecutionCoordinator.mountedSessionIdFor]: the parent for a helper
  *     whose own view model is gone).

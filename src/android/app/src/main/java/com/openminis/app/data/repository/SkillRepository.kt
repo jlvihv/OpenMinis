@@ -1273,7 +1273,7 @@ class SkillRepository(private val context: Context) {
      * Re-scan `skillsDir` and the SQLite registry, re-publishing the
      * resulting list via the [skills] StateFlow. Mirrors iOS
      * `SkillStore.reload()` (Agent/Session/SkillStore.swift). Use this after
-     * an out-of-band install (agent shell `git clone`, agent file_write of a
+     * an out-of-band install (agent shell `git clone`, agent write of a
      * SKILL.md, on Skills screen entry) so newly dropped directories are
      * promoted from disk into the registry without requiring an app restart.
      *
@@ -1290,7 +1290,7 @@ class SkillRepository(private val context: Context) {
      * [T-android-skill-scan-parity] Queue a background rescan. Mirrors how iOS
      * keeps disk work off the send path: SkillStore.skillPromptFragment() only
      * reads the in-memory list, and disk is reconciled on discrete events
-     * (foreground, file_write/file_edit of a SKILL.md, the debounced fakefs
+     * (foreground, write/edit of a SKILL.md, the debounced fakefs
      * notifier after shell activity, backup restore).
      *
      * Requests are conflated and served one at a time on [Dispatchers.IO].

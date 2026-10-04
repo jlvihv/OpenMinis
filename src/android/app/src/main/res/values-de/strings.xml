@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Zum Startbildschirm hinzufügen</string>
     <string name="webpreview_pin_to_home_requested">Verknüpfung angefordert — bitte im Launcher bestätigen</string>
     <string name="webpreview_pin_to_home_unsupported">Ihr Launcher unterstützt keine angehefteten Verknüpfungen</string>
-    <string name="browser_use_tab_busy_timeout">Ein anderes Werkzeug verwendet derzeit Browser-Tab %1$d, und diese Anfrage kam innerhalb von %2$d Sekunden nicht an die Reihe. Mehrere Werkzeuge gleichzeitig im selben Tab werden nicht unterstützt. Öffnen Sie bitte einen neuen Tab (action: new_tab) und wiederholen Sie die Aktion dort.</string>
+    <string name="browser_tab_busy_timeout">Ein anderes Werkzeug verwendet derzeit Browser-Tab %1$d, und diese Anfrage kam innerhalb von %2$d Sekunden nicht an die Reihe. Mehrere Werkzeuge gleichzeitig im selben Tab werden nicht unterstützt. Öffnen Sie bitte einen neuen Tab (action: new_tab) und wiederholen Sie die Aktion dort.</string>
     <string name="filebrowser_title">Dateien</string>
     <string name="filebrowser_empty_folder">Leerer Ordner</string>
     <string name="filebrowser_delete_title">„%1$s“ löschen?</string>

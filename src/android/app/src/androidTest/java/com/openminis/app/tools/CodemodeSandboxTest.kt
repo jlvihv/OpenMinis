@@ -1,95 +1,136 @@
 package com.openminis.app.tools
 
 import androidx.test.platform.app.InstrumentationRegistry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import com.openminis.app.data.model.AgentToolDefinition
-import com.openminis.app.data.model.AgentToolParam
+import kotlinx.coroutines.*
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
-import java.util.concurrent.atomic.AtomicInteger
 
-/** Exercises Android JNI, native QuickJS, interrupts and nested calls. */
+/** Small ART/JNI smoke suite; host tests cannot validate Android native loading. */
 class CodemodeSandboxTest {
-    private suspend fun run(code: String, invoke: suspend (String, String, String) -> ToolExecutionResult = { _, _, _ -> ToolExecutionResult("ok", true) }): CodemodeTool.Result {
+    private suspend fun run(code: String): CodemodeTool.Result {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val tools = listOf(AgentToolDefinition("read", "Read data", mapOf("id" to AgentToolParam("integer", "id")), listOf("id")))
         return withContext(Dispatchers.Default) {
-            CodemodeTool.execute(context, code, "test", tools, JSONObject(),
-                spill = { text -> File(context.cacheDir, "codemode-test.txt").apply { writeText(text) }.path }, invoke = invoke)
+            CodemodeTool.execute(context, code, "smoke", listOf(AgentToolDefinition("read", "Read", emptyMap())),
+                JSONObject(), spill = { text -> File(context.cacheDir, "codemode-smoke.txt").apply { writeText(text) }.path },
+                invoke = { _, _, _ -> delay(10); ToolExecutionResult("ok", true) })
         }
     }
-
-    @Test fun parallelCallsUnicodeAndStore() = runBlocking {
-        val active = AtomicInteger()
-        val peak = AtomicInteger()
-        val result = run("const values = await Promise.all([tools.read({id:1}),tools.read({id:2})]); text(values); store('value', values); return '完成🌍';") { _, args, _ ->
-            val concurrent = active.incrementAndGet()
-            peak.updateAndGet { maxOf(it, concurrent) }
-            delay(50)
-            active.decrementAndGet()
-            ToolExecutionResult(JSONObject(args).getInt("id").toString(), true)
-        }
-        assertTrue(result.success)
-        assertEquals(2, peak.get())
-        assertTrue(result.output.contains("完成🌍"))
-        assertEquals(2, result.calls.size)
-        assertNotNull(result.storeWrites)
+    @Test fun nativeBridgeHandlesUnicodeAndParallelPromises() = runBlocking {
+        val result = run("const values = await Promise.all([tools.read({}), tools.read({})]); text(values); return '完成🌍';")
+        assertTrue(result.success); assertEquals(2, result.calls.size); assertTrue(result.output.contains("完成🌍"))
+        // Native decoder smoke checks share this small device suite, not a new test tree.
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val session = "read-smoke-${java.util.UUID.randomUUID()}"
+        val path = "/var/minis/workspace/image.png"
+        val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(session, path, context)!!
+        file.parentFile!!.mkdirs()
+        try {
+            val bitmap = android.graphics.Bitmap.createBitmap(4, 2, android.graphics.Bitmap.Config.ARGB_8888)
+            try { file.outputStream().use { assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) } }
+            finally { bitmap.recycle() }
+            val input = JSONObject().put("path", path).toString()
+            val resized = ReadTool.execute(input, session, context,
+                com.openminis.app.data.model.ModelImageResizeOptions(maxWidth = 2, maxHeight = 2), supportsImages = false)
+            assertTrue(resized.success); assertNotNull(resized.imageData)
+            assertTrue(resized.output.contains("displayed at 2x1")); assertTrue(resized.output.contains("Multiply coordinates by 2.00"))
+            assertTrue(resized.output.contains(ImageReader.NON_VISION_NOTE))
+            val omitted = ReadTool.execute(input, session, context,
+                com.openminis.app.data.model.ModelImageResizeOptions(maxBytes = 8))
+            assertTrue(omitted.success); assertNull(omitted.imageData); assertTrue(omitted.output.contains("Image omitted"))
+            val gif = android.util.Base64.decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", android.util.Base64.DEFAULT)
+            file.writeBytes(gif)
+            val preserved = ReadTool.execute(input, session, context)
+            assertTrue(preserved.success); assertEquals("image/gif", preserved.imageMimeType)
+            assertArrayEquals(gif, preserved.imageData)
+            val noisy = android.graphics.Bitmap.createBitmap(128, 64, android.graphics.Bitmap.Config.ARGB_8888)
+            val random = java.util.Random(7)
+            noisy.setPixels(IntArray(128 * 64) { random.nextInt() or (0xff shl 24) }, 0, 128, 0, 0, 128, 64)
+            try { file.outputStream().use { assertTrue(noisy.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) } }
+            finally { noisy.recycle() }
+            val bounded = ReadTool.execute(input, session, context,
+                com.openminis.app.data.model.ModelImageResizeOptions(maxBytes = 1024))
+            assertTrue(bounded.output, bounded.success); assertNotNull(bounded.imageData)
+            assertTrue(((bounded.imageData!!.size + 2) / 3) * 4 < 1024)
+            assertTrue(bounded.output.contains("displayed at"))
+            val oriented = android.graphics.Bitmap.createBitmap(4, 2, android.graphics.Bitmap.Config.ARGB_8888)
+            try { file.outputStream().use { assertTrue(oriented.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it)) } }
+            finally { oriented.recycle() }
+            androidx.exifinterface.media.ExifInterface(file).apply {
+                setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90.toString()); saveAttributes()
+            }
+            val rotated = ReadTool.execute(input, session, context,
+                com.openminis.app.data.model.ModelImageResizeOptions(maxWidth = 2, maxHeight = 2))
+            assertTrue(rotated.output, rotated.success); assertTrue(rotated.output.contains("original 2x4, displayed at 1x2"))
+            val rotatedBytes = requireNotNull(rotated.imageData)
+            android.graphics.BitmapFactory.decodeByteArray(rotatedBytes, 0, rotatedBytes.size).let {
+                assertEquals(1, it.width); assertEquals(2, it.height); it.recycle()
+            }
+        } finally { file.parentFile!!.parentFile!!.deleteRecursively() }
     }
-
-    @Test fun deadlineInterruptsInfiniteLoop() = runBlocking {
+    @Test fun deadlineInterruptsVmAndNextInvocationStillWorks() = runBlocking {
         val result = run("// @options: {\"timeout_ms\":200}\nwhile (true) {}")
-        assertFalse(result.success)
-        assertTrue(result.output.contains("timed out"))
-        assertTrue(run("return 'still alive'").success)
+        assertFalse(result.success); assertTrue(result.output.contains("timed out"))
+        assertTrue(run("return 'alive'").success)
+        checkRealCoreTools()
     }
-
-    @Test fun deadlineInterruptsPromiseLoop() = runBlocking {
-        val result = run("// @options: {\"timeout_ms\":200}\nwhile (true) await Promise.resolve()")
-        assertFalse(result.success)
-        assertTrue(result.output.contains("timed out"))
+    /** Real PRoot and file tools, in a disposable session; no provider requests. */
+    private suspend fun checkRealCoreTools() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val session = "core-smoke-${java.util.UUID.randomUUID()}"
+        val coordinator = com.openminis.app.sandbox.ExecutionCoordinator
+        val available = com.openminis.app.agent.shell.OnDemandBash.ensureBash(context,
+            com.openminis.app.agent.shell.OnDemandBash.Executor { cmd, timeout ->
+                coordinator.execute(session, cmd, timeout).exitCode
+            })
+        assertTrue("Bash unavailable: $available", available is com.openminis.app.agent.shell.OnDemandBash.Outcome.Available)
+        suspend fun bash(command: String, timeout: Long = 60_000) = coordinator.execute(
+            session, "cd /var/minis/workspace || exit; bash -c '" + command.replace("'", "'\\''") + "'",
+            timeout, captureBashOutput = true)
+        val root = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(session, "/var/minis/workspace", context)!!.parentFile!!
+        try {
+            val tools = AgentTools.makeAgentTools().filter { it.name in listOf("read", "write", "edit", "bash") }
+            val result = CodemodeTool.execute(context,
+                "await tools.write({path:'a.txt',content:'你好🌍'}); await tools.edit({path:'a.txt',edits:[{oldText:'你好',newText:'Hello'}]}); " +
+                    "const textResult=await tools.read({path:'a.txt'}); const shell=await tools.bash({command:'printf x >> counter; exit 119'}); return {textResult,exit:shell.exit_code};",
+                "core-smoke", tools, JSONObject(), spill = { error("Unexpected spill") },
+                invoke = { name, args, _ -> when (name) {
+                    "read" -> ReadTool.execute(args, session, context)
+                    "write" -> WriteTool.execute(args, session, context)
+                    "edit" -> EditTool.execute(args, session, context)
+                    "bash" -> bash(JSONObject(args).getString("command")).let { ToolExecutionResult(
+                        it.output, it.exitCode == 0, timedOut = it.timedOut, structuredContentJson = it.structuredContentJson) }
+                    else -> error("Unexpected tool")
+                } })
+            assertTrue(result.output, result.success)
+            assertTrue(result.output.contains("Hello🌍")); assertTrue(result.output.contains("119"))
+            assertEquals("x", java.io.File(root, "workspace/counter").readText())
+            val large = bash("printf HEAD_UNIQUE; head -c 1200000 /dev/zero | tr '\\000' x; printf TAIL_UNIQUE")
+            val json = JSONObject(large.structuredContentJson!!)
+            val scriptOutput = json.getString("output")
+            val diagnostic = "exit=${large.exitCode}; head=${scriptOutput.take(300)}; tail=${scriptOutput.takeLast(300)}"
+            assertTrue(diagnostic, scriptOutput.startsWith("HEAD_UNIQUE"))
+            assertTrue(diagnostic, scriptOutput.endsWith("TAIL_UNIQUE")); assertTrue(json.getBoolean("truncated"))
+            val archive = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(session, json.getString("full_output_path"), context)!!
+            assertEquals(1_200_022L, archive.length())
+            val stderr = bash("printf '[native_offload] user stderr\\n' >&2")
+            assertEquals("[native_offload] user stderr\n", JSONObject(stderr.structuredContentJson!!).getString("output"))
+            val normal124 = bash("printf '[Command timed out]'; exit 124")
+            assertFalse(normal124.timedOut); assertEquals(124, JSONObject(normal124.structuredContentJson!!).getInt("exit_code"))
+            val deadline = bash("sleep 5", 200)
+            assertTrue(deadline.output, deadline.timedOut); assertNull(deadline.structuredContentJson)
+            coroutineScope {
+                val pending = async(Dispatchers.IO) { bash("sleep 10") }
+                delay(500); withTimeout(5000) { pending.cancelAndJoin() }
+            }
+            assertEquals(0, bash("printf alive").exitCode)
+        } finally { coordinator.sessionDidTerminate(session); root.deleteRecursively() }
     }
-
-    @Test fun nativeStackGuardAndNoHostBindings() = runBlocking {
-        val recursion = run("function recur() { recur() } try { recur() } catch(e) { return e instanceof RangeError }")
-        assertTrue(recursion.success)
-        assertTrue(recursion.output.contains("true"))
-        val host = run("return [typeof java, typeof bridge, typeof std, typeof os, typeof WebAssembly, typeof fetch].every(t => t === 'undefined')")
-        assertTrue(host.success)
-        assertTrue(host.output.contains("true"))
-    }
-
-    @Test fun nativeSyntaxErrorIncludesHeader() = runBlocking {
-        val result = run("return (")
-        assertFalse(result.success)
-        assertTrue(result.output.contains("SyntaxError"))
-    }
-
-    @Test fun partialOutputAndNoStoreOnFailure() = runBlocking {
-        val result = run("text('partial'); store('x', 1); await tools.read({id:1}); throw Error('boom');")
-        assertFalse(result.success)
-        assertTrue(result.output.contains("partial"))
-        assertTrue(result.output.contains("boom"))
-        assertNull(result.storeWrites)
-    }
-
-    @Test fun cancellingParentStopsBusyVm() = runBlocking {
+    @Test fun parentCancellationStopsVm() = runBlocking {
         val task = async(Dispatchers.Default) { run("while (true) {}") }
-        delay(200)
-        task.cancel()
-        task.join()
-        assertTrue(task.isCancelled)
-    }
-
-    @Test fun largeOutputSurvivesNativeTransportAndSpills() = runBlocking {
-        val result = run("// @options: {\"max_output_tokens\":10}\ntext('中文🌍'.repeat(10000));")
-        assertTrue(result.success)
-        assertNotNull(result.fullOutputPath)
-        assertEquals("中文🌍".repeat(10000), File(result.fullOutputPath!!).readText())
+        delay(200); task.cancelAndJoin(); assertTrue(task.isCancelled)
     }
 }

@@ -289,6 +289,7 @@ internal fun ToolDetailSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var currentIdx by remember { mutableStateOf(initialIndex.coerceIn(0, toolBlocks.lastIndex.coerceAtLeast(0))) }
     val block = toolBlocks.getOrNull(currentIdx) ?: return onDismiss()
+    val displayKind = com.openminis.app.tools.CoreToolNames.presentation(block.toolName, block.imageFilePath != null)
 
     val isLive = block.toolStatus == ToolBlockStatus.RUNNING ||
         block.toolStatus == ToolBlockStatus.STREAMING ||
@@ -350,11 +351,11 @@ internal fun ToolDetailSheet(
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Action button: dispatches per tool kind.
-                //  - shell_execute → opens the in-app terminal pre-filled
+                //  - bash → opens the in-app terminal pre-filled
                 //    with the running command (mirrors iOS ToolLiveSheet
                 //    `Button { showTerminal = true }` →
                 //    `ISHTerminalView(initCommand: shell command)`).
-                //  - browser_use → fires Intent.ACTION_VIEW for the
+                //  - browser → fires Intent.ACTION_VIEW for the
                 //    resolved page URL so the user can jump to the system
                 //    browser (or any chooser) and continue from there.
                 //  - everything else → still copies the tool output to
@@ -362,13 +363,13 @@ internal fun ToolDetailSheet(
                 val clipboardManager = rememberTextClipboard()
                 val actionContext = LocalContext.current
                 var copyDone by remember { mutableStateOf(false) }
-                val isShellTool = block.toolName == "shell_execute"
-                val isBrowserTool = block.toolName == "browser_use"
+                val isShellTool = displayKind == "bash"
+                val isBrowserTool = block.toolName == "browser"
                 val toolArgsForAction = remember(block.toolArgs) {
                     try { org.json.JSONObject(block.toolArgs) } catch (_: Exception) { org.json.JSONObject() }
                 }
                 // Resolve the browser URL the same way the inline preview does
-                // (block.browserURL → args.url → most-recent prior browser_use
+                // (block.browserURL → args.url → most-recent prior browser
                 // block) so the top-right action lines up with the URL pill
                 // shown below.
                 val browserActionUrl = remember(block.id, block.browserURL, block.toolArgs, toolBlocks) {
@@ -381,7 +382,7 @@ internal fun ToolDetailSheet(
                             if (idx > 0) {
                                 (idx - 1 downTo 0).firstNotNullOfOrNull { i ->
                                     val prev = toolBlocks[i]
-                                    if (prev.toolName != "browser_use") return@firstNotNullOfOrNull null
+                                    if (prev.toolName != "browser") return@firstNotNullOfOrNull null
                                     prev.browserURL?.takeIf { it.isNotEmpty() }
                                         ?: try {
                                             org.json.JSONObject(prev.toolArgs)
@@ -421,14 +422,14 @@ internal fun ToolDetailSheet(
                                 // Mirror iOS ToolLiveSheet: nav-bar globe
                                 // routes back into the Session WebView pool
                                 // (BrowserTabPool.selectOrCreateTabForURL)
-                                // so an existing browser_use tab for this
+                                // so an existing browser tab for this
                                 // URL is reused; otherwise a new tab is
                                 // spawned and loaded. Avoids dumping the
                                 // user into a system chooser for what is
                                 // already a live in-app browser session.
                                 AppLogger.info(
                                     "ChatScreen",
-                                    "browser_use action → open in session pool: ${browserActionUrl.take(160)}",
+                                    "browser action → open in session pool: ${browserActionUrl.take(160)}",
                                 )
                                 onOpenBrowserForUrl(browserActionUrl)
                             } else if (block.content.isNotEmpty()) {
@@ -478,12 +479,12 @@ internal fun ToolDetailSheet(
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
-                when (block.toolName) {
+                when (displayKind) {
                     // ── Agent: stacked cards (header · current tool · screenshot · result) ──
                     com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME -> HelperDetailContent(block)
 
                     // ── Shell: black rounded terminal card (mirrors iOS ToolLiveSheet) ──
-                    "shell_execute" -> {
+                    "bash" -> {
                         val command = extractShellCommand(toolArgsObj, block)
                         // T141: monitor active only while the tool is still running;
                         // sheet may stay open after the run completes (user reading
@@ -619,14 +620,14 @@ internal fun ToolDetailSheet(
                     // diff body (no inter-line gaps), and a `Edited <path> (detail)`
                     // footer once the tool finishes. minHeight=cardWidth × 3/4 keeps
                     // small diffs from collapsing into a thin stripe.
-                    "file_edit" -> {
+                    "edit" -> {
                         val path = toolArgsObj.optString("path", "")
                             .ifEmpty { extractPartialJsonString("path", block.toolArgs) ?: "" }
                         val fileName = if (path.contains("/")) path.substringAfterLast("/") else path
-                        val oldStr = toolArgsObj.optString("old_string", "")
-                            .ifEmpty { extractPartialJsonString("old_string", block.toolArgs) ?: "" }
-                        val newStr = toolArgsObj.optString("new_string", "")
-                            .ifEmpty { extractPartialJsonString("new_string", block.toolArgs) ?: "" }
+                        val oldStr = com.openminis.app.tools.CoreToolNames.editPreview(toolArgsObj, "oldText")
+                            .ifEmpty { extractPartialJsonString("oldText", block.toolArgs) ?: "" }
+                        val newStr = com.openminis.app.tools.CoreToolNames.editPreview(toolArgsObj, "newText")
+                            .ifEmpty { extractPartialJsonString("newText", block.toolArgs) ?: "" }
 
                         // T126-fix: ChatPalette.isDark follows the in-app theme
                         // override, isSystemInDarkTheme() doesn't.
@@ -804,11 +805,11 @@ internal fun ToolDetailSheet(
                     }
 
                     // ── File Read / File Write: editor-style with title bar (mirrors iOS fileEditorContent) ──
-                    "file_read", "file_write" -> {
+                    "read", "write" -> {
                         val path = toolArgsObj.optString("path", "")
                             .ifEmpty { extractPartialJsonString("path", block.toolArgs) ?: "" }
                         val fileName = if (path.contains("/")) path.substringAfterLast("/") else path
-                        val displayText = if (block.toolName == "file_write") {
+                        val displayText = if (displayKind == "write") {
                             toolArgsObj.optString("content", "")
                                 .ifEmpty { extractPartialJsonString("content", block.toolArgs) ?: "" }
                                 .ifEmpty { block.content }
@@ -817,7 +818,7 @@ internal fun ToolDetailSheet(
                         }
                         EditorCard(
                             title = fileName.ifEmpty { "file" },
-                            icon = if (block.toolName == "file_read") Icons.Default.Description
+                            icon = if (displayKind == "read") Icons.Default.Description
                                    else Icons.AutoMirrored.Filled.NoteAdd,
                             iconTint = ChatColors.secondaryText,
                             titleColor = ChatColors.primaryText,
@@ -826,13 +827,13 @@ internal fun ToolDetailSheet(
                             bodyColor = ChatColors.primaryText,
                             isStreaming = isLive,
                             scrollState = outputScrollState,
-                            trailingText = if (block.toolName == "file_write" &&
+                            trailingText = if (displayKind == "write" &&
                                 block.content.isNotEmpty() && block.content != displayText) block.content else null,
                         )
                     }
 
                     // ── Browser: action capsule + URL bar + screenshot + result text ──
-                    "browser_use" -> {
+                    "browser" -> {
                         val action = toolArgsObj.optString("action", "")
                         val argsUrl = toolArgsObj.optString("url", "")
                         // Resolved URL: prefer block.browserURL (actual page URL), fallback to args URL,
@@ -853,7 +854,7 @@ internal fun ToolDetailSheet(
                             } ?: ""
                         // Preview priority (matches iOS): live WebView snapshot while the
                         // tool is running → current block's saved imageFilePath → most
-                        // recent preceding browser_use block's screenshot.
+                        // recent preceding browser block's screenshot.
                         val liveBitmap = rememberBrowserLiveSnapshot(block)
                         // T285: decode off main thread. Pre-T285 this was a
                         // synchronous BitmapFactory.decodeFile inside `remember{}`
@@ -862,9 +863,9 @@ internal fun ToolDetailSheet(
                         // any concurrent navigation transition (chat → image
                         // preview is the worst case because that recomposition
                         // runs the same frame the destination begins to slide in).
-                        // Preserve the look-back-to-prev-browser_use semantics:
+                        // Preserve the look-back-to-prev-browser semantics:
                         // try the current block's screenshot first, fall back to
-                        // the most recent prior browser_use block's screenshot.
+                        // the most recent prior browser block's screenshot.
                         val savedBitmap by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(
                             initialValue = null,
                             block.imageFilePath,
@@ -878,7 +879,7 @@ internal fun ToolDetailSheet(
                                     if (blockIdx <= 0) null
                                     else (blockIdx - 1 downTo 0).firstNotNullOfOrNull { i ->
                                         val prev = toolBlocks[i]
-                                        if (prev.toolName == "browser_use" && prev.imageFilePath != null) {
+                                        if (prev.toolName == "browser" && prev.imageFilePath != null) {
                                             DisplayBitmapLimits.decodeFileBounded(prev.imageFilePath)
                                         } else null
                                     }
@@ -1024,8 +1025,8 @@ internal fun ToolDetailSheet(
                         }
                     }
 
-                    // ── read_image: inline image preview + metadata (iOS parity) ──
-                    "read_image" -> {
+                    // ── read: inline image preview + metadata (iOS parity) ──
+                    "image" -> {
                         val imgPath = block.imageFilePath
                         // T285: async decode (was sync inside remember{}, blocking the
                         // composition thread when the chat list scrolled into view).
@@ -1054,7 +1055,7 @@ internal fun ToolDetailSheet(
                                 // fillMaxWidth and lays out at native px height, so
                                 // a wide screenshot rendered small/letterboxed at
                                 // the top with dead space below (same fix the
-                                // browser_use screenshot branch already applies).
+                                // browser screenshot branch already applies).
                                 val aspect = bmp.width.toFloat() / bmp.height.coerceAtLeast(1)
                                 Image(
                                     bitmap = bmp.asImageBitmap(),
@@ -1091,7 +1092,7 @@ internal fun ToolDetailSheet(
                                     .padding(16.dp),
                             ) {
                                 // T38: linkify URLs in fallback tool-result text so curl /
-                                // file_read / generic command output produces tappable links
+                                // read / generic command output produces tappable links
                                 // that route through the in-app web preview.
                                 // [T-android-tool-result-lazy-render] Reveal large
                                 // generic output incrementally (LazyRevealToolText
@@ -1356,7 +1357,7 @@ internal fun extractPartialJsonString(key: String, json: String): String? {
 }
 
 /**
- * Shared editor-card layout used by file_read / file_write / memory_* detail
+ * Shared editor-card layout used by read / write / memory_* detail
  * views. Mirrors iOS `fileEditorContent` + `memoryEditorContent` from
  * ToolLiveSheet.swift: an inner card with:
  *  - 10dp rounded corners + 0.5dp outline

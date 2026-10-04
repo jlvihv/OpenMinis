@@ -206,7 +206,7 @@ object PRootKernel {
         // proxy toggles without a restart.
         customEnvironment.putAll(systemProxyEnv(context))
 
-        // Register global bind mounts so direct file I/O tools (file_read, file_edit)
+        // Register global bind mounts so direct file I/O tools (read, edit)
         // can resolve /var/minis/{soul,skills,shared}/... (idempotent).
         registerGlobalBindMounts(context)
 
@@ -255,7 +255,7 @@ object PRootKernel {
 
     /**
      * Register the global (session-independent) Minis bind mounts so direct
-     * file I/O tools (file_read, file_edit) can resolve
+     * file I/O tools (read, edit) can resolve
      * `/var/minis/{soul,skills,shared}/...` without needing PRoot to be
      * booted or any shell to have started. Safe to call repeatedly.
      */
@@ -283,7 +283,7 @@ object PRootKernel {
     // Linux prefix every external mount lives under inside the rootfs.
     // PRoot's `-b host:linux` flag is per-invocation, so the diff-sync
     // applied via [applyMountedFoldersSnapshot] only affects subsequent
-    // shell_execute calls — live processes won't observe a CRUD mid-flight.
+    // bash calls — live processes won't observe a CRUD mid-flight.
     private const val MOUNTS_LINUX_PREFIX = "/var/minis/mounts/"
 
     // Sentinel in the read-only write-guard wrapper scripts so we can recognize
@@ -340,7 +340,7 @@ object PRootKernel {
         materializeMountTargets(context, desired.keys)
 
         // T219-4: raw shell writes (touch/cp/mv/tee/… and `>` redirects) bypass
-        // the FileWriteTool/FileEditTool read-only guard because proot `-b` has no
+        // the WriteTool/EditTool read-only guard because proot `-b` has no
         // read-only modifier. Install shell wrappers that reject writes whose
         // target lands under an effectively-read-only mount, so the agent gets a
         // clear "read-only mounted folder" error in the shell instead of a write
@@ -400,8 +400,8 @@ object PRootKernel {
 
     /**
      * True when [linuxPath] resolves under a `/var/minis/mounts/<name>`
-     * mount whose effective writability is false. Used by [FileWriteTool]
-     * and [FileEditTool] to short-circuit before touching disk; mirrors
+     * mount whose effective writability is false. Used by [WriteTool]
+     * and [EditTool] to short-circuit before touching disk; mirrors
      * iOS `MountedFolderCoordinator.isLinuxPathUnderReadOnlyMount`.
      *
      * The shell can technically still write through a PRoot bind because

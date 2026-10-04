@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Parsed input for a browser_use tool call, mirroring iOS BrowserActionInput.
+ * Parsed input for a browser tool call, mirroring iOS BrowserActionInput.
  */
 data class BrowserActionInput(
     val action: BrowserAction,

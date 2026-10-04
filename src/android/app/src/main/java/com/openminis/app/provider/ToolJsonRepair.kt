@@ -15,9 +15,11 @@ import org.json.JSONObject
  *
  * 1. Truncation repair — if [args] is empty but [rawTail] looks like a JSON object
  *    that just got cut, retry parsing with a small set of closure suffixes appended.
- * 2. Type coercion — for each required field present but not a String, coerce via
- *    `toString()` so the downstream blank-string preflight check has something usable.
- * 3. Fuzzy field-name match — for each missing required field, look for a sibling key
+ * Core tools stop after transport recovery: their declared types and field names
+ * are validated as supplied, with no coercion or argument adapters.
+ * 2. Other Android tools: coerce only required fields declared as strings.
+ *    Structured arrays/objects and numeric/boolean fields retain their types.
+ * 3. Other Android tools: for each missing required field, look for a sibling key
  *    whose Levenshtein distance is exactly 1 and rename it. Catches one-off typos
  *    like `comand` → `command`.
  *
@@ -59,9 +61,13 @@ object ToolJsonRepair {
             }
         }
 
-        // Strategy 2: type coercion on required fields.
+        // New core contracts are strict. In particular, edits must stay a real
+        // array; coercing it here would reject a valid model response downstream.
+        if (toolName in setOf("read", "write", "edit", "bash", "codemode")) return repairs
+
+        // Other Android tools may repair scalar strings, never structured values.
         for (field in toolDef.required) {
-            if (!args.has(field)) continue
+            if (toolDef.parameters[field]?.type != "string" || !args.has(field)) continue
             val raw = args.opt(field) ?: continue
             if (raw is String) continue
             if (raw === JSONObject.NULL) continue

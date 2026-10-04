@@ -30,7 +30,7 @@ import java.util.Date
  * see that.
  *
  * Arbitration is ported verbatim from iOS `BrowserTabPoolRegistry.requestSlot`
- * (`src/ios/Agent/BrowserUse/BrowserTabPool.swift`) — the semantics are
+ * (`src/ios/Agent/Browser/BrowserTabPool.swift`) — the semantics are
  * already settled there and are deliberately not re-litigated:
  *
  *  1. under [GLOBAL_TAB_CAP] -> admit

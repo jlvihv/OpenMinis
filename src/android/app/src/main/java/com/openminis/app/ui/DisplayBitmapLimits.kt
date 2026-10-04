@@ -73,7 +73,7 @@ object DisplayBitmapLimits {
      * [T-android-tool-thumb-fullres-decode] Longest-edge ceiling for a bitmap
      * that is only ever drawn as a small thumbnail (tool-call preview tiles).
      *
-     * The tool thumbnails for `browser_use` / `read_image` decoded the saved
+     * The tool thumbnails for `browser` / `read` decoded the saved
      * screenshot with a bare `BitmapFactory.decodeFile` — a 1080x2400 capture
      * is ~10 MB of ARGB_8888, and bitmap pixels live in the NATIVE heap on
      * Android 8+, invisible to the Java heap and to ART's GC pressure. In a

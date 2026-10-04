@@ -42,7 +42,7 @@ data class LLMMessage(
          * iSH-visible linux path the bytes were originally persisted to, if
          * any. Used by [ImageBudget.planRequestBudget] to emit an
          * agent-readable text placeholder (`[image elided… original at <path>;
-         * re-fetch with read_image]`) instead of the bytes when the request
+         * re-fetch with read]`) instead of the bytes when the request
          * payload exceeds the per-request image budget. `null` for images
          * that were never offloaded (extremely rare; spillover writer in
          * ImageBudget handles those at drop time).
@@ -51,16 +51,7 @@ data class LLMMessage(
          * persisted history that round-trips through new code stays valid.
          */
         val linuxPath: String? = null,
-        /**
-         * [T-android-vision-group / GH#182] Text a provider substitutes for the
-         * pixels when the target model has NO native image input (the T264
-         * placeholder path). Seeded by ChatViewModel ONLY when a Vision Group is
-         * configured: it names the image path and instructs the model to call
-         * read_image, so a text-only model routes the image through the Vision
-         * Group instead of being told "I can't see it". Null → provider emits its
-         * default "does not support vision input" literal (current behaviour when
-         * no Vision Group is set).
-         */
+
         val noVisionPlaceholder: String? = null,
     )
 

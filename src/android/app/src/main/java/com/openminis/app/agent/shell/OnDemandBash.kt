@@ -12,8 +12,8 @@ import java.net.URL
 /**
  * Confirms/installs bash on demand with the design-review guards
  * (T-bash-on-demand §2/§3, F2/M5). Isomorphic to iOS OnDemandBash.swift:
- *   - tri-state availability cache (unavailable has a 10-min TTL; available
- *     self-heals on a later 127),
+ *   - unavailable results have a 10-min TTL; successful availability is
+ *     re-probed before user code runs, never inferred from its exit status,
  *   - host-side 5s network precheck before running apk (F2),
  *   - persistent failure backoff (24h / 3-strikes) via SharedPreferences (F2),
  *   - one install attempt per process launch.
@@ -23,7 +23,7 @@ import java.net.URL
  */
 object OnDemandBash {
 
-    private const val TAG = "Bashism"
+    private const val TAG = "BashInstaller"
     private const val PREFS = "bash_install"
     private const val KEY_FAIL_COUNT = "failCount"
     private const val KEY_LAST_FAIL = "lastFailAt"
@@ -55,7 +55,7 @@ object OnDemandBash {
 
     suspend fun ensureBash(context: Context, executor: Executor): Outcome = lock.withLock {
         when (val a = availability) {
-            is Availability.Available -> return Outcome.Available
+            is Availability.Available -> {} // Bash may have been removed since the previous call.
             is Availability.Unavailable -> {
                 if (System.currentTimeMillis() < a.until) return Outcome.Unavailable("bash not installed")
                 availability = Availability.Unknown // TTL expired — re-probe
@@ -100,9 +100,6 @@ object OnDemandBash {
         Log.e(TAG, "bash install failed (rc=$rc)")
         return Outcome.Unavailable("apk add bash failed (rc=$rc)")
     }
-
-    /** Called when `bash <file>` itself returned 127 (user apk del'd) — M5. */
-    suspend fun markDisappeared() = lock.withLock { availability = Availability.Unknown }
 
     private fun markUnavailable() {
         availability = Availability.Unavailable(System.currentTimeMillis() + UNAVAILABLE_TTL_MS)

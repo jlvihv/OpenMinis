@@ -359,7 +359,7 @@
     <string name="webpreview_pin_to_home">홈 화면에 추가</string>
     <string name="webpreview_pin_to_home_requested">바로가기를 요청했습니다. 런처에서 확인하세요</string>
     <string name="webpreview_pin_to_home_unsupported">사용 중인 런처는 바로가기 고정을 지원하지 않습니다</string>
-    <string name="browser_use_tab_busy_timeout">다른 도구가 브라우저 탭 %1$d을(를) 사용 중이며, 이 요청은 %2$d초 안에 차례를 얻지 못했습니다. 여러 도구가 같은 탭을 동시에 사용하는 것은 지원되지 않습니다. 새 탭(action: new_tab)을 열고 거기서 다시 시도하세요.</string>
+    <string name="browser_tab_busy_timeout">다른 도구가 브라우저 탭 %1$d을(를) 사용 중이며, 이 요청은 %2$d초 안에 차례를 얻지 못했습니다. 여러 도구가 같은 탭을 동시에 사용하는 것은 지원되지 않습니다. 새 탭(action: new_tab)을 열고 거기서 다시 시도하세요.</string>
     <string name="filebrowser_title">파일</string>
     <string name="filebrowser_empty_folder">빈 폴더</string>
     <string name="filebrowser_delete_title">“%1$s” 삭제하시겠습니까?</string>

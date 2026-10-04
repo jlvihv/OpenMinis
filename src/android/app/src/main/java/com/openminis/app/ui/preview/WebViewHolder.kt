@@ -179,7 +179,7 @@ class WebViewHolder(
                 // `window.innerHeight` on first paint cache the wrong
                 // coordinates inline. Android WebView, unlike desktop
                 // Chrome, does NOT auto-dispatch a viewport `resize` when
-                // the container resizes. Mirror what BrowserUseManager
+                // the container resizes. Mirror what BrowserManager
                 // does (T-webview-popup-d3c6e10f): post a synthetic
                 // `resize` after first commit so vh/innerHeight readers
                 // recompute against the stabilised height.
@@ -208,7 +208,7 @@ class WebViewHolder(
             // vanished and confirm() silently took the cancel branch. This is
             // the user-facing preview, where a human IS present, so the fix is
             // to show the dialog and block the page on their answer. The agent
-            // browser does the opposite by design; see BrowserUseManager.
+            // browser does the opposite by design; see BrowserManager.
             //
             // The dialog context must come from `view?.context`, NOT the
             // holder's stored context: the WebView is constructed with the
@@ -371,7 +371,7 @@ class WebViewHolder(
      * "Desktop site" behavior: Chrome 134 desktop UA, CSS viewport 1280×800,
      * with `setInitialScale` shrunk so the 1280-wide CSS viewport fits the
      * physical container width — the same shrink-to-fit math used in
-     * `BrowserUseManager.applyShrinkToFit`.
+     * `BrowserManager.applyShrinkToFit`.
      */
     fun toggleDesktopMode() {
         desktopMode = !desktopMode
@@ -399,7 +399,7 @@ class WebViewHolder(
 
     /**
      * Compute setInitialScale so a page authored at [cssWidth] CSS pixels
-     * fits the WebView's container width. Mirrors `BrowserUseManager`'s
+     * fits the WebView's container width. Mirrors `BrowserManager`'s
      * applyShrinkToFit.
      */
     private fun applyShrinkToFit(cssWidth: Int) {

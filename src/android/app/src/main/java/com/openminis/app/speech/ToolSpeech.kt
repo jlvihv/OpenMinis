@@ -30,7 +30,7 @@ object ToolSpeech {
     /**
      * Build the announcement for a tool call.
      *
-     * @param name tool name as the model called it (`shell_execute`, `file_read`…)
+     * @param name tool name as the model called it (`bash`, `read`…)
      * @param argsJson raw JSON arguments; malformed or partial JSON is tolerated
      *   and simply yields no argument fallback.
      * @param title the model's own `tool_title` summary, when it supplied one.
@@ -45,27 +45,27 @@ object ToolSpeech {
         val detail = clip(title)
 
         return when (name) {
-            "shell_execute" -> {
+            "bash" -> {
                 val d = detail ?: clip(args?.optString("command")) ?: ""
                 if (zh) "正在执行脚本:$d" else "Executing script: $d"
             }
-            "file_read" -> {
+            "read" -> {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在读取文件:$d" else "Reading file: $d"
             }
-            "file_write" -> {
+            "write" -> {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在写入文件:$d" else "Writing file: $d"
             }
-            "file_edit" -> {
+            "edit" -> {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在编辑文件:$d" else "Editing file: $d"
             }
-            "browser_use" -> {
+            "browser" -> {
                 val d = detail ?: clip(args?.optString("action")) ?: ""
                 if (zh) "正在操作浏览器:$d" else "Using browser: $d"
             }
-            "read_image" -> {
+            "image" -> {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在读取图片:$d" else "Reading image: $d"
             }

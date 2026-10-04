@@ -33,7 +33,7 @@ NEWLINE: /\r?\n/
 SOURCE: /[\s\S]+/
 """.trimIndent()
 
-    data class Source(val code: String, val maxOutputTokens: Long = 10_000, val timeoutMs: Long? = null)
+    data class Source(val code: String, val maxOutputTokens: Long = 10_000, val timeoutMs: Long? = null, val toolTitle: String? = null)
     data class Call(val id: String, val name: String, val args: String, @Volatile var status: String = "running", @Volatile var durationMs: Long? = null, @Volatile var error: String? = null)
     data class Output(val type: String, val text: String? = null, val data: String? = null, val mimeType: String? = null)
     data class Result(val output: String, val success: Boolean, val images: List<Output>, val storeWrites: String?, val calls: List<Call>, val fullOutputPath: String? = null)
@@ -49,6 +49,16 @@ SOURCE: /[\s\S]+/
         }.joinToString("")
     }
 
+    /** Android UI metadata lives in the raw-source header, including custom Responses calls. */
+    fun titleFromSource(input: String): String? {
+        val first = input.substringBefore('\n').removeSuffix("\r").trimStart()
+        if (!first.startsWith("// @options:")) return null
+        val options = runCatching { JSONObject(first.substringAfter("// @options:").trim()) }.getOrNull() ?: return null
+        return (options.opt("tool_title") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    fun titleFromArguments(args: JSONObject): String? = titleFromSource(args.optString("code", ""))
+
     fun parseSource(input: String): Source {
         require(input.isNotBlank()) { "Expected JavaScript source text (non-empty). Provide JS only, optionally with a first line // @options: {\"max_output_tokens\": 1000}." }
         val newline = input.indexOf('\n')
@@ -61,8 +71,11 @@ SOURCE: /[\s\S]+/
             if (json is kotlinx.serialization.json.JsonObject) JSONObject(json.toString()) else null
         }
             catch (e: Exception) { throw IllegalArgumentException("@options must be valid JSON: ${e.message}") }
-        require(options != null) { "@options must be a JSON object with supported fields max_output_tokens and timeout_ms" }
-        for (key in options.keys()) require(key in listOf("max_output_tokens", "timeout_ms")) { "@options only supports max_output_tokens and timeout_ms; got $key" }
+        require(options != null) { "@options must be a JSON object with supported fields tool_title, max_output_tokens and timeout_ms" }
+        for (key in options.keys()) require(key in listOf("tool_title", "max_output_tokens", "timeout_ms")) { "@options only supports tool_title, max_output_tokens and timeout_ms; got $key" }
+        if (options.has("tool_title")) require(options.opt("tool_title") is String && titleFromSource(input) != null) {
+            "@options field tool_title must be a non-blank string"
+        }
         fun integer(key: String, default: Long?): Long? {
             if (!options.has(key)) return default
             val value = options.get(key)
@@ -74,29 +87,35 @@ SOURCE: /[\s\S]+/
         }
         val timeout = integer("timeout_ms", null)
         require(timeout == null || timeout in 1..2_147_483_647L) { "@options field timeout_ms must be a positive integer up to 2147483647" }
-        return Source(code, integer("max_output_tokens", 10_000)!!, timeout)
+        return Source(code, integer("max_output_tokens", 10_000)!!, timeout, titleFromSource(input))
     }
+
+    private fun scriptType(p: com.openminis.app.data.model.AgentToolParam): String =
+        p.enumValues?.joinToString(" | ") { JSONObject.quote(it) } ?: when (p.type) {
+            "integer", "number" -> "number"
+            "boolean" -> "boolean"
+            "string" -> "string"
+            "array" -> "Array<${p.items?.let(::scriptType) ?: "unknown"}>"
+            "object" -> "{ " + p.properties.orEmpty().entries.joinToString(" ") { (k, v) ->
+                "${JSONObject.quote(k)}${if (k in p.required.orEmpty()) "" else "?"}: ${scriptType(v)};" } + " }"
+            else -> "unknown"
+        }
 
     fun declaration(tool: AgentToolDefinition): String {
         val fields = tool.parameters.map { (name, p) ->
-            val type = p.enumValues?.joinToString(" | ") { JSONObject.quote(it) } ?: when (p.type) {
-                "integer", "number" -> "number"
-                "boolean" -> "boolean"
-                "string" -> "string"
-                else -> "unknown"
-            }
-            "  /** ${p.description.replace("*/", "* /")} */\n  ${JSONObject.quote(name)}${if (name in tool.required) "" else "?"}: $type;"
+            "  /** ${p.description.replace("*/", "* /")} */\n  ${JSONObject.quote(name)}${if (name in tool.required) "" else "?"}: ${scriptType(p)};"
         }.joinToString("\n")
-        return "${tool.description}\ndeclare const tools: { ${identifier(tool.name)}(args: {\n$fields\n}): Promise<string>; };"
+        val result = tool.outputSchema?.let(::scriptType) ?: "string"
+        return "${tool.description}\ndeclare const tools: { ${identifier(tool.name)}(args: {\n$fields\n}): Promise<$result>; };"
     }
 
     fun definition(tools: List<AgentToolDefinition>, inlineBudget: Int = 3000): AgentToolDefinition {
         val sections = mutableListOf("Run JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a QuickJS sandbox: top-level await and return work. No Node, file system, network, or timers.\n" +
-            "- await tools.<name>({ ...args }) resolves to a string and rejects with an Error on failure. Calls still running when the script ends are cancelled.\n" +
-            "- Optional first line: // @options: {\"max_output_tokens\": 10000, \"timeout_ms\": 60000}\n" +
+            "- await tools.<name>({ ...args }) resolves to its declared return type (most file tools return strings; bash returns a structured object) and rejects with an Error on failure. Calls still running when the script ends are cancelled.\n" +
+            "- Start with // @options: {\"tool_title\": \"Short user-facing description of the work\", \"max_output_tokens\": 10000, \"timeout_ms\": 60000}. Options are syntactically optional; always provide tool_title so the user can see what you are doing. This Android UI metadata is part of the raw JavaScript header, not a JSON wrapper.\n" +
             "Globals:\n- text(value), image(dataUrlOrImageBlock), console.log(...), and top-level return add output; exit() ends the script.\n" +
             "- store(key, value) and load(key) keep JSON values across codemode calls.\n" +
-            "- ALL_TOOLS, searchTools(query, { limit?, namespace? }), describeTool(name), describeNamespace(name): find unlisted tools.")
+            "- ALL_TOOLS is the tool catalog. Discovery functions are async: await searchTools(query, { limit?, namespace? }), await describeTool(name), await describeNamespace(name). Always await them before inspecting/printing their results; otherwise you only have a Promise, not a description.")
         var remaining = inlineBudget
         val declarations = tools.filter { it.name != NAME }.map { it.name to declaration(it) }
         val selected = mutableSetOf<String>()
@@ -173,7 +192,9 @@ SOURCE: /[\s\S]+/
                     val jobs = mutableListOf<kotlinx.coroutines.Job>()
                     try {
                         val data = JSONObject().put("code", parsed.code).put("store", store)
-                            .put("tools", JSONArray(callable.map { JSONObject().put("name", it.name).put("jsName", identifier(it.name)).put("description", declaration(it)) }))
+                            .put("tools", JSONArray(callable.map { tool ->
+                                JSONObject().put("name", tool.name).put("jsName", identifier(tool.name)).put("description", declaration(tool))
+                            }))
                             .put("globals", JSONArray(listOf("searchTools", "describeTool", "describeNamespace").map { JSONObject().put("name", it).put("spread", true) }))
                         sandbox.start(data)
                         while (true) {
@@ -198,8 +219,10 @@ SOURCE: /[\s\S]+/
                                         try {
                                             if (isTool) {
                                                 val result = invoke(name, args, record!!.id)
-                                                check(result.success) { result.output.ifEmpty { "Tool $name failed" } }
-                                                payload = JSONObject.quote(result.output)
+                                                val structured = callable.find { it.name == name }?.outputSchema != null && result.structuredContentJson != null
+                                                if (!structured) check(result.success) { result.output.ifEmpty { "Tool $name failed" } }
+                                                payload = if (structured) result.structuredContentJson else JSONObject.quote(result.output)
+                                                if (!result.success) { record.status = "error"; record.error = result.output.take(500) }
                                             } else {
                                                 val arguments = JSONArray(args)
                                                 val value: Any? = when (name) {
@@ -226,7 +249,7 @@ SOURCE: /[\s\S]+/
                                                 }
                                                 payload = when (value) { null -> null; is String -> JSONObject.quote(value); else -> value.toString() }
                                             }
-                                            record?.status = "ok"
+                                            if (record?.status != "error") record?.status = "ok"
                                         } catch (cancelled: CancellationException) {
                                             record?.status = "cancelled"
                                             // Parent/script cancellation propagates. A tool cancelling its
@@ -317,7 +340,8 @@ SOURCE: /[\s\S]+/
 
     fun renderDetails(detailsJson: String?): String {
         if (detailsJson == null) return ""
-        val calls = runCatching { JSONObject(detailsJson).getJSONArray("calls") }.getOrNull() ?: return ""
+        val details = runCatching { JSONObject(detailsJson) }.getOrNull() ?: return ""
+        val calls = details.optJSONArray("calls") ?: return details.optString("diff")
         return (0 until calls.length()).joinToString("\n") { index ->
             val call = calls.getJSONObject(index)
             "${call.getString("name")} (${call.getString("status")}) ${call.optString("args")}" +

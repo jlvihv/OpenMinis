@@ -70,31 +70,12 @@ enum class HelperWrapUpReason { TURNS, BUDGET }
 object HelperRunner {
     /**
      * [T-sub-agents-v1] The tool name the model sees and the name new blocks
-     * are written under: `subagent_task`.
+     * are written under: `subagent`.
      */
     const val TOOL_NAME = com.openminis.app.data.model.SubAgentDefinition.TOOL_NAME
 
-    /**
-     * [T-sub-agents-v1] The pre-rename names, still RECOGNISED but never
-     * emitted.
-     *
-     * iOS could rename without a shim because sub agents had not shipped there.
-     * On Android delegation DID ship, so transcripts on real devices already
-     * carry `delegate_task` / `agent_status` blocks. The renderer and the
-     * dispatcher both key off the tool name, so dropping the old names would
-     * turn every past delegation in a user's history from an agent card into an
-     * anonymous tool row, and would make a replayed call fall through to
-     * "Unknown tool".
-     *
-     * Recognition is one-way: nothing writes these, so the transcripts stop
-     * accumulating them.
-     */
-    const val LEGACY_TOOL_NAME = "delegate_task"
-    const val LEGACY_STATUS_TOOL_NAME = "agent_status"
-
-    /** True for the current name or either name a shipped build wrote. */
-    fun isSubAgentToolName(name: String?): Boolean =
-        name == TOOL_NAME || name == LEGACY_TOOL_NAME || name == LEGACY_STATUS_TOOL_NAME
+    /** Exact new API name; no historical dispatch aliases. */
+    fun isSubAgentToolName(name: String?): Boolean = name == TOOL_NAME
 
     // Limits (design §4.3) — enforced in code, not prompt.
     /**
@@ -302,7 +283,7 @@ object HelperRunner {
      * tabs. Telling the child the rule up front is what turns a refusal it
      * cannot interpret into a constraint it can plan around.
      *
-     * Gated on the browser switch: a child whose browser_use is off has no tabs
+     * Gated on the browser switch: a child whose browser is off has no tabs
      * and must not be told it has any — the same prompt/schema drift rule the
      * parent's browser bullet follows.
      */
@@ -370,7 +351,7 @@ object HelperRunner {
 
     /** Parent-only callback provenance/UI rules; delegation usage lives in the schema. */
     fun systemPromptBullet(enabled: Boolean): String = if (!enabled) "" else
-        "- subagent_task: <agent_callback> result/progress messages are written by the system, not typed by the user; the user sees it in the tool bar and can watch or stop it.\n"
+        "- subagent: <agent_callback> result/progress messages are written by the system, not typed by the user; the user sees it in the tool bar and can watch or stop it.\n"
 
     // ── Payloads (block content + tool_result JSON) ─────────────────────
 
@@ -488,11 +469,11 @@ object HelperRunner {
 
     // ── Control calls  [T-android-subagent-control-hidden] ─────────────────
 
-    /** What a `subagent_task` block actually was. */
+    /** What a `subagent` block actually was. */
     enum class SubAgentCall { DELEGATE, STATUS, RESUME, STEER, CANCEL }
 
     /**
-     * Classify a `subagent_task` block from its arguments, falling back to the
+     * Classify a `subagent` block from its arguments, falling back to the
      * shape of its result.
      *
      * A control call (status / steer / cancel / resume) is the model managing
@@ -764,8 +745,8 @@ object HelperRunner {
         .put("converted_from_wait", converted)
         .put(
             "note",
-            if (converted) "The user sent a new message while you were waiting, so this delegation was moved to the background. Answer the user now; the agent's result will arrive as a NEW MESSAGE in this conversation (prefixed [Background task finished …]) when it is done. Use agent_status if you need its current state."
-            else "The agent is running in the background. Its result will arrive as a NEW MESSAGE in this conversation (prefixed [Background task finished …]) when it is done — end this turn when you have nothing else to do. Use agent_status to check on it or cancel it; do not poll in a loop.",
+            if (converted) "The user sent a new message while you were waiting, so this delegation was moved to the background. Answer the user now; the agent's result will arrive as a NEW MESSAGE in this conversation (prefixed [Background task finished …]) when it is done. Use subagent with action=status if you need its current state."
+            else "The agent is running in the background. Its result will arrive as a NEW MESSAGE in this conversation (prefixed [Background task finished …]) when it is done — end this turn when you have nothing else to do. Use subagent with action=status or action=cancel; do not poll in a loop.",
         )
         .toString()
 

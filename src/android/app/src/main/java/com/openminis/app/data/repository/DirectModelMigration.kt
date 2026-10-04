@@ -53,7 +53,6 @@ internal fun migrateToDirectModels(context: Context, config: ProviderConfig, cre
     if (config.defaultContextLimitTokens == null) config.defaultContextLimitTokens = defaultGroup?.contextLimitTokens
     if (config.subModelEntryId == null) config.subModelEntryId = migrator.choose(config.defaultSubGroupId, allowSystem = false)
     if (config.titleModelEntryId == null) config.titleModelEntryId = migrator.choose(config.defaultSubGroupId, allowSystem = false, accepts = { it.model.outputModalities?.contains("text") != false })
-    if (config.visionModelEntryId == null) config.visionModelEntryId = migrator.choose(config.visionGroupId, allowSystem = false, accepts = { it.model.hasImageInput })
     val editor = prefs.edit()
     if (prefs.getString("voice.input.overrideEntryId", null) == null) {
         migrator.choose(config.voiceInputGroupId, accepts = { it.model.hasAudioInput })?.let { editor.putString("voice.input.overrideEntryId", it) }
@@ -79,6 +78,5 @@ internal fun migrateToDirectModels(context: Context, config: ProviderConfig, cre
     config.defaultSubGroupId = null
     config.voiceInputGroupId = null
     config.voiceOutputGroupId = null
-    config.visionGroupId = null
     return true
 }

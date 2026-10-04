@@ -428,10 +428,10 @@
     <string name="webpreview_pin_to_home_unsupported">Your launcher doesn\'t support pinned shortcuts</string>
 
     <!-- T-browser-use-per-tab-serial-android: returned to the model when a
-         browser_use call can't acquire the per-tab serial lock within the wait
+         browser call can't acquire the per-tab serial lock within the wait
          timeout (another tool is operating the same tab). Worded so the model
          retries on a NEW tab instead of re-contending the busy one. -->
-    <string name="browser_use_tab_busy_timeout">Another tool is currently operating browser tab %1$d, and this request could not get a turn within %2$d seconds. Multiple tools operating the same tab at once is not supported. Please open a new tab (action: new_tab) and retry your action there.</string>
+    <string name="browser_tab_busy_timeout">Another tool is currently operating browser tab %1$d, and this request could not get a turn within %2$d seconds. Multiple tools operating the same tab at once is not supported. Please open a new tab (action: new_tab) and retry your action there.</string>
 
     <!-- T172 — sandbox / sessions / browser / terminal i18n -->
     <string name="filebrowser_title">Files</string>
@@ -2050,11 +2050,8 @@
     <string name="model_selection_last_used">Use last selected model</string>
     <string name="model_selection_system">System engine</string>
     <string name="model_selection_disabled">Disabled</string>
-    <string name="model_selection_vision">Image understanding model</string>
-    <string name="model_selection_vision_hint">Used when the chat model cannot read images.</string>
     <string name="model_selection_agent">Models available to the assistant</string>
     <string name="model_selection_add_models">Add models</string>
-    <string name="model_selection_disable_vision">Disable image helper</string>
     <string name="model_selection_title_model">Title generation model</string>
     <string name="model_selection_chat_model">Use chat model</string>
     <!-- [T-p1-delegate-task] helper capsule / sheet -->

@@ -479,9 +479,9 @@ private fun ToolPreviewThumbnail(
     block: AssistantBlock,
     toolAccent: Color,
     onClick: () -> Unit,
-    // [T-android-browser-preview-thumb] For browser_use blocks whose action
+    // [T-android-browser-preview-thumb] For browser blocks whose action
     // does not produce a screenshot (get_readable, get_text, fetch, etc.),
-    // fall back to the most-recent prior browser_use screenshot — same
+    // fall back to the most-recent prior browser screenshot — same
     // semantics the expanded detail sheet uses. Resolved at the call site
     // because toolBlocks isn't in scope here.
     fallbackImagePath: String? = null,
@@ -498,11 +498,12 @@ private fun ToolPreviewThumbnail(
         try { org.json.JSONObject(block.toolArgs) } catch (_: Exception) { org.json.JSONObject() }
     }
 
-    // T141: shell_execute live HUD — CPU% + MEM ribbon at the thumbnail
+    // T141: bash live HUD — CPU% + MEM ribbon at the thumbnail
     // bottom while the tool is RUNNING/STREAMING/PENDING. Mirrors iOS
     // ToolLiveSheet.swift:1926 small overlay (5pt monospace, white .8 on
     // black .6).
-    val isShellTool = block.toolName == "shell_execute"
+    val displayKind = com.openminis.app.tools.CoreToolNames.presentation(block.toolName, block.imageFilePath != null)
+    val isShellTool = displayKind == "bash"
     val isLive = block.toolStatus == ToolBlockStatus.RUNNING ||
         block.toolStatus == ToolBlockStatus.STREAMING ||
         block.toolStatus == ToolBlockStatus.PENDING
@@ -518,7 +519,7 @@ private fun ToolPreviewThumbnail(
     //
     // [T-android-agent-inner-tool-front] Two ways to be a sub agent's tile now.
     // Once the punch-through above substitutes the CHILD's block, `block` is the
-    // child's shell_execute / browser_use — its toolName is no longer the agent
+    // child's bash / browser — its toolName is no longer the agent
     // tool, so the original predicate would go false exactly when the glow is
     // most warranted. `punchThroughDepth > 0` says "this tile is already showing
     // work one level down", which is the same question the ring is asking.
@@ -534,9 +535,9 @@ private fun ToolPreviewThumbnail(
             .shadow(elevation = 10.dp, shape = thumbnailShape, ambientColor = Color.Black.copy(alpha = 0.15f), spotColor = Color.Black.copy(alpha = 0.25f))
             .clip(thumbnailShape)
             .background(
-                when (block.toolName) {
-                    "file_read", "file_write" -> ChatColors.secondaryBg
-                    "file_edit" -> Color(0xFF1A1A1E)
+                when (displayKind) {
+                    "read", "write" -> ChatColors.secondaryBg
+                    "edit" -> Color(0xFF1A1A1E)
                     else -> Color(0xFF1A1A1E)
                 }
             )
@@ -619,8 +620,8 @@ private fun ToolPreviewThumbnail(
             }
             .clickable(onClick = onClick),
     ) {
-        when (block.toolName) {
-            "shell_execute" -> {
+        when (displayKind) {
+            "bash" -> {
                 // iOS: command title + last 12 lines of output in green mono
                 val command = extractShellCommand(args, block)
                 Column(modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)) {
@@ -653,12 +654,12 @@ private fun ToolPreviewThumbnail(
                 }
             }
 
-            "file_edit" -> {
+            "edit" -> {
                 // iOS: diff preview — old lines in red, new lines in green
-                val oldStr = args.optString("old_string", "")
-                    .ifEmpty { extractPartialJsonString("old_string", block.toolArgs) ?: "" }
-                val newStr = args.optString("new_string", "")
-                    .ifEmpty { extractPartialJsonString("new_string", block.toolArgs) ?: "" }
+                val oldStr = com.openminis.app.tools.CoreToolNames.editPreview(args, "oldText")
+                    .ifEmpty { extractPartialJsonString("oldText", block.toolArgs) ?: "" }
+                val newStr = com.openminis.app.tools.CoreToolNames.editPreview(args, "newText")
+                    .ifEmpty { extractPartialJsonString("newText", block.toolArgs) ?: "" }
                 Column(modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp)) {
                     if (oldStr.isNotEmpty()) {
                         oldStr.lines().takeLast(5).forEach { line ->
@@ -688,25 +689,25 @@ private fun ToolPreviewThumbnail(
                     }
                     if (oldStr.isEmpty() && newStr.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(toolIconFor("file_edit"), contentDescription = null, tint = toolAccent.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
+                            Icon(toolIconFor("edit"), contentDescription = null, tint = toolAccent.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
                         }
                     }
                 }
             }
 
-            "file_read", "file_write" -> {
+            "read", "write" -> {
                 // iOS ToolPreviewThumbnail.textPreview: filename header + last N lines of
-                // content. For file_write during streaming, prefer partial `content` from
+                // content. For write during streaming, prefer partial `content` from
                 // toolArgs JSON (mirrors iOS block.streamingFileContent).
                 val path = args.optString("path", "")
                     .ifEmpty { extractPartialJsonString("path", block.toolArgs) ?: "" }
                 val rawName = if (path.contains("/")) path.substringAfterLast("/") else path
                 val header = when {
                     rawName.isNotEmpty() -> rawName
-                    block.toolName == "file_write" -> "Write file"
+                    displayKind == "write" -> "Write file"
                     else -> "Read file"
                 }
-                val displayText = if (block.toolName == "file_write") {
+                val displayText = if (displayKind == "write") {
                     args.optString("content", "")
                         .ifEmpty { extractPartialJsonString("content", block.toolArgs) ?: "" }
                         .ifEmpty { block.content }
@@ -738,10 +739,10 @@ private fun ToolPreviewThumbnail(
                 }
             }
 
-            "read_image" -> {
+            "image" -> {
                 // [T-android-read-image-preview] Show the read image as a
                 // thumbnail (parity with iOS ToolCapsuleView .readImageTool and
-                // with the browser_use case below). Pre-fix read_image fell into
+                // with the browser case below). Pre-fix read fell into
                 // the generic `else` branch and rendered only its metadata text
                 // line ("[/var/.../x.png | WxH | N bytes]") with no thumbnail.
                 // Decode off the main thread (T285 rationale).
@@ -775,7 +776,7 @@ private fun ToolPreviewThumbnail(
                 }
             }
 
-            "browser_use" -> {
+            "browser" -> {
                 // Prefer live WebView snapshot while the tool is running; fall back to
                 // any saved imageFilePath, then globe icon.
                 // T285: decode the saved screenshot off the main thread —
@@ -791,7 +792,7 @@ private fun ToolPreviewThumbnail(
                 ) {
                     // Prefer this block's own screenshot; if absent (read-only
                     // browser actions like get_readable/get_text/fetch/etc.),
-                    // borrow the most recent prior browser_use screenshot so
+                    // borrow the most recent prior browser screenshot so
                     // the thumb doesn't degrade to the globe placeholder.
                     val path = block.imageFilePath ?: fallbackImagePath
                     value = if (path == null) null else withContext(Dispatchers.IO) {
@@ -1127,17 +1128,17 @@ internal fun FloatingToolStatusBar(
                     .padding(start = thumbnailInset),
             ) {
                 // [T-android-browser-preview-thumb] Resolve the previous
-                // browser_use screenshot fallback here (toolBlocks is in
-                // scope); ToolPreviewThumbnail uses it for browser_use blocks
+                // browser screenshot fallback here (toolBlocks is in
+                // scope); ToolPreviewThumbnail uses it for browser blocks
                 // whose action did not produce a screenshot.
                 val fallbackImagePath = remember(block.id, toolBlocks) {
-                    if (block.toolName != "browser_use" || block.imageFilePath != null) null
+                    if (block.toolName != "browser" || block.imageFilePath != null) null
                     else {
                         val blockIdx = toolBlocks.indexOfFirst { it.id == block.id }
                         if (blockIdx <= 0) null
                         else (blockIdx - 1 downTo 0).firstNotNullOfOrNull { i ->
                             val prev = toolBlocks[i]
-                            if (prev.toolName == "browser_use") prev.imageFilePath else null
+                            if (prev.toolName == "browser") prev.imageFilePath else null
                         }
                     }
                 }

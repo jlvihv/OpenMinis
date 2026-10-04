@@ -50,18 +50,15 @@ import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.provider.withIdleTimeout
 import com.openminis.app.provider.effectiveMaxThinkingLevel
-import com.openminis.app.agent.shell.BashismDetector
-import com.openminis.app.agent.shell.BashismReminder
 import com.openminis.app.agent.shell.OnDemandBash
 import com.openminis.app.sandbox.ExecutionCoordinator
-import com.openminis.app.sandbox.ShellExitCode
 import com.openminis.app.terminal.MinisOpenUrlBroker
 import com.openminis.app.terminal.MinisUrlMarker
 import com.openminis.app.tools.AgentTools
-import com.openminis.app.tools.FileEditTool
-import com.openminis.app.tools.FileReadTool
-import com.openminis.app.tools.FileWriteTool
-import com.openminis.app.tools.ReadImageTool
+import com.openminis.app.tools.EditTool
+import com.openminis.app.tools.ReadTool
+import com.openminis.app.tools.WriteTool
+import com.openminis.app.tools.ImageReader
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.service.SessionActivityTracker
@@ -135,17 +132,16 @@ class ChatViewModel(
          * iOS uses 10 (AIChatViewModel+ConcurrentTools.maxConcurrentTools) and
          * this matches it deliberately, so a turn behaves the same on both
          * platforms. The number is not about the model — providers rarely emit
-         * more than a handful — but about the device: each shell_execute forks
-         * a PRoot process and each browser_use drives a WebView with its own
+         * more than a handful — but about the device: each bash forks
+         * a PRoot process and each browser drives a WebView with its own
          * renderer, and a phone's scheduler starts thrashing well before an
          * unbounded fan-out would finish. Calls past the ceiling wait for a
          * permit and run as slots free, so nothing is dropped or reordered.
          */
         const val MAX_CONCURRENT_TOOLS = 10
 
-        /** [T-android-parity-fixes] Ceiling on shell_execute `timeout`, stated
+        /** [T-android-parity-fixes] Ceiling on bash `timeout`, stated
          *  in the tool schema (AgentTools.shellExecuteDefinition). */
-        const val SHELL_TIMEOUT_MAX_SEC = 3600
         internal const val TAG = "ChatViewModel"
 
         // ── [T-android-compact-runaway] Compaction budgets ──────────────
@@ -457,15 +453,15 @@ class ChatViewModel(
          * missing-field check entirely: these fields must still be PRESENT in
          * args — they are just allowed to hold "" as their content.
          *
-         * The canonical case is `file_edit.new_string`, whose schema documents
+         * The canonical case is `edit.new_string`, whose schema documents
          * "Use empty string to delete old_string". Blocking it broke a promised
-         * deletion workflow and pushed the model into shell_execute + python
+         * deletion workflow and pushed the model into bash + python
          * file-rewrite workarounds. Mirrors iOS
          * AIChatViewModel.preflightEmptyStringAllowedFields.
          * [T-preflight-empty-string-allowed]
          */
         private val PREFLIGHT_EMPTY_STRING_ALLOWED_FIELDS: Map<String, Set<String>> = mapOf(
-            "file_edit" to setOf("new_string"),
+            "write" to setOf("content"),
         )
 
         /** True when "" is a legal value for this exact (tool, field) pair. */
@@ -504,7 +500,8 @@ class ChatViewModel(
             val toolDef = tools.firstOrNull { it.name == name } ?: return null
             // Required fields that actually gate execution (everything except the
             // non-blocking ones like tool_title — see PREFLIGHT_NON_BLOCKING_FIELDS).
-            val enforced = toolDef.required.filter { it !in PREFLIGHT_NON_BLOCKING_FIELDS }
+            val enforced = toolDef.required
+                .filter { it !in PREFLIGHT_NON_BLOCKING_FIELDS }
             // Empty args on a tool that requires anything → block. Gate on
             // `enforced` so a tool whose only required field is non-blocking isn't
             // rejected for empty args, and the message lists only real blockers.
@@ -525,12 +522,12 @@ class ChatViewModel(
                 val raw = args.opt(field)
                 // Only the truly-empty literal "" is rejected — NOT whitespace.
                 // The earlier `.trim().isEmpty()` over-rejected legitimate payloads,
-                // most notably file_edit with `new_string: "\n"` (replace a block
+                // most notably edit with `new_string: "\n"` (replace a block
                 // with a newline) or `old_string: "  "` (match consecutive spaces).
                 // Both are valid edits, neither is stream corruption.
                 //
                 // And even "" is legal for whitelisted (tool, field) pairs:
-                // file_edit.new_string == "" is the documented "delete old_string"
+                // edit.new_string == "" is the documented "delete old_string"
                 // form, not a missing value. [T-preflight-empty-string-allowed]
                 if (raw is String && raw.isEmpty() &&
                     !preflightEmptyStringAllowed(name, field)
@@ -541,6 +538,7 @@ class ChatViewModel(
             if (missing.isNotEmpty()) {
                 return "Tool '$name' is missing required parameter(s): ${missing.joinToString(", ")}."
             }
+            if (name in setOf("read", "write", "edit", "bash")) return com.openminis.app.tools.CoreToolNames.validate(args, toolDef)
             return null
         }
         // [T-android-stream-flush-dualpath] Newline fast-path thresholds (iOS parity).
@@ -1294,12 +1292,12 @@ class ChatViewModel(
         // The nudge prompt deliberately carries no instruction of its own: the
         // loop prepends the real correction at the top of the turn it starts.
         if (wasIdle) {
-            AppLogger.info(TAG, "[subagent_task] steer arrived while the child was idle — nudging its loop")
+            AppLogger.info(TAG, "[subagent] steer arrived while the child was idle — nudging its loop")
             viewModelScope.launch {
                 runCatching {
                     submitPrompt(com.openminis.app.agent.jobs.HelperRunner.STEER_NUDGE_PROMPT)
                 }.onFailure {
-                    AppLogger.warning(TAG, "[subagent_task] steer nudge failed: ${it.message}")
+                    AppLogger.warning(TAG, "[subagent] steer nudge failed: ${it.message}")
                 }
             }
         }
@@ -1861,30 +1859,7 @@ class ChatViewModel(
     private var currentProvider: LLMProvider? = null
     private var currentModel: LLMModel? = null
 
-    /**
-     * Does the CURRENTLY RESOLVED main model natively consume image pixels?
-     *
-     * Single source of truth for the three decisions that must agree: whether
-     * `read_image` is exposed at all ([agentTools]), whether an attached image
-     * is replaced by a Vision Group placeholder ([visionPlaceholderFor]), and
-     * whether `read_image` returns pixels or routes through the Vision Group
-     * ([executeReadImageTool]).
-     *
-     * [T-android-vision-native-check-misses-image_input] These three each used
-     * to inline `inputModalities.map { it.lowercase() }.contains("image")`,
-     * which only LOWERCASES. Provider APIs disagree on the spelling: OpenAI /
-     * OpenRouter report "image_input", models.dev reports bare "image" (see
-     * [normalizeModalityName]). So a model advertising "image_input" was read
-     * as vision-capable by [hasImageInput] — which normalizes, and is what
-     * `ProviderRepository.resolveVisionCandidates` filters Vision Group members
-     * by — but as text-only here. A model that could see perfectly well would
-     * therefore get its `read_image` result detoured through the Vision Group
-     * and come back as a second-hand text description, exactly the complaint in
-     * the 2026-08-28 report (which turned out to have a different cause).
-     *
-     * Reusing [hasImageInput] keeps this check and the Vision Group's member
-     * filter on one definition, so the two can no longer disagree.
-     */
+
     private val currentModelHasNativeVision: Boolean
         get() = currentModel?.hasImageInput == true
 
@@ -1927,18 +1902,6 @@ class ChatViewModel(
      */
     private val callableAgentTools: List<AgentToolDefinition>
         get() = AgentTools.makeAgentTools(
-            // [T-android-vision-group / GH#182] The main model's own vision
-            // capability. When false but a Vision Group is configured, read_image
-            // is still exposed and routes through the group (see
-            // executeReadImageTool). Note pre-vision-group Android always passed
-            // the default `true` here, so read_image was already always exposed;
-            // threading the real flag lets a text-only model without a Vision
-            // Group correctly LOSE the tool (iOS parity), while a configured
-            // Vision Group keeps it.
-            supportsImageInput = currentModelHasNativeVision,
-            visionGroupConfigured = com.openminis.app.tools.VisionModelResolver.isConfigured(
-                providerRepository, context,
-            ),
             isHelper = isHelper,
             delegateEnabled = com.openminis.app.tools.AgentToolSwitch.AGENTS.isEnabled(context),
             browserEnabled = com.openminis.app.tools.AgentToolSwitch.BROWSER.isEnabled(context),
@@ -2164,7 +2127,7 @@ class ChatViewModel(
             }
         }
         if (toolId.isEmpty()) {
-            AppLogger.warning(TAG, "[subagent_task] resume: no parent block for child ${childId.take(8)}")
+            AppLogger.warning(TAG, "[subagent] resume: no parent block for child ${childId.take(8)}")
             return false
         }
         // A renamed or deleted definition falls back to the built-in rather
@@ -2255,16 +2218,16 @@ class ChatViewModel(
                         }
                         withContext(Dispatchers.Main) { writeDelegateBlock(toolId, json, blockStatus) }
                         persistFinalDelegateResult(toolId, json, finished.state == com.openminis.app.agent.jobs.AgentJobState.DONE)
-                        AppLogger.info(TAG, "[subagent_task] RESUME END job=${finished.id.take(8)} state=${finished.state.wire}")
+                        AppLogger.info(TAG, "[subagent] RESUME END job=${finished.id.take(8)} state=${finished.state.wire}")
                     }
                 }
                 val outcome = withContext(Dispatchers.Main) { childVm.submitPrompt(hr.resumeNotice()) }
                 if (outcome is SubmitOutcome.Rejected) {
-                    AppLogger.warning(TAG, "[subagent_task] resume not started for ${childId.take(8)}: ${outcome.reason}")
+                    AppLogger.warning(TAG, "[subagent] resume not started for ${childId.take(8)}: ${outcome.reason}")
                     registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.FAILED, null)
                     return@launch
                 }
-                AppLogger.info(TAG, "[subagent_task] resumed child=${childId.take(8)} job=${job.id.take(8)}")
+                AppLogger.info(TAG, "[subagent] resumed child=${childId.take(8)} job=${job.id.take(8)}")
                 // [T-sub-agents-resume-finish] Close the job when the child goes
                 // idle. Nothing did before: a resumed run that completed normally
                 // stayed RUNNING for the life of the process — holding one of the
@@ -2295,7 +2258,7 @@ class ChatViewModel(
                 registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.CANCELLED, null)
                 throw e
             } catch (e: Exception) {
-                AppLogger.warning(TAG, "[subagent_task] resume failed for ${childId.take(8)}: ${e.message}")
+                AppLogger.warning(TAG, "[subagent] resume failed for ${childId.take(8)}: ${e.message}")
                 registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.FAILED, null)
             }
         }
@@ -2413,7 +2376,7 @@ class ChatViewModel(
      * same restart the model's `resume` control call uses.
      *
      * Same three outcomes as that call (see the loop in the resume branch of
-     * the subagent_task handler): a free child slot starts the run now, a full
+     * the subagent handler): a free child slot starts the run now, a full
      * set of slots parks it in the delegation queue to start by itself, and a
      * full backlog refuses. Starting past the cap from a button would be the
      * "five lost agents start at once" case the cap exists to stop.
@@ -2430,7 +2393,7 @@ class ChatViewModel(
             return CardResume.QUEUED
         }
         if (childId !in interruptedChildIds(activeSessionId)) {
-            AppLogger.info(TAG, "[subagent_task] card resume: ${childId.take(8)} is not interrupted")
+            AppLogger.info(TAG, "[subagent] card resume: ${childId.take(8)} is not interrupted")
             return CardResume.REFUSED
         }
         val outcome = when {
@@ -2439,7 +2402,7 @@ class ChatViewModel(
             enqueueResume(childId) -> CardResume.QUEUED
             else -> CardResume.REFUSED
         }
-        AppLogger.info(TAG, "[subagent_task] card resume child=${childId.take(8)} -> $outcome")
+        AppLogger.info(TAG, "[subagent] card resume child=${childId.take(8)} -> $outcome")
         return outcome
     }
 
@@ -2483,7 +2446,7 @@ class ChatViewModel(
             runCatching {
                 executeDelegateTask(args, toolUseId, scratch, "", "")
             }.onFailure {
-                AppLogger.warning(TAG, "[subagent_task] queued re-entry failed: ${it.message}")
+                AppLogger.warning(TAG, "[subagent] queued re-entry failed: ${it.message}")
             }
         }
         return true
@@ -2520,7 +2483,7 @@ class ChatViewModel(
     @Volatile
     private var _browserTabPoolRef: BrowserTabPool? = null
 
-    /** Browser tab pool for browser_use tool. Lazily created on first access. */
+    /** Browser tab pool for browser tool. Lazily created on first access. */
     val browserTabPool: BrowserTabPool
         get() = _browserTabPoolRef ?: synchronized(this) {
             _browserTabPoolRef ?: BrowserTabPool(context).also {
@@ -4027,7 +3990,7 @@ class ChatViewModel(
      * fit under [ImageBudget.MAX_REQUEST_BYTES] (oldest first) are
      * replaced in-place with a text placeholder that, when the original
      * bytes were offloaded to disk, points the model back to the linux
-     * path so it can re-fetch via `read_image` if needed. Images that
+     * path so it can re-fetch via `read` if needed. Images that
      * never had a linuxPath are spilled to
      * `attachments/spillover/<sha1>.<ext>` lazily so the placeholder
      * still carries an addressable reference.
@@ -4111,7 +4074,7 @@ class ChatViewModel(
      * Reuses the ordinary offload machinery rather than inventing a second one:
      * bytes go to `offloads/tools/`, the part is replaced by the same
      * `[CONTEXT OFFLOADED] …` stub the regular path writes, and the model can
-     * fetch it back with `file_read`. Nothing is deleted.
+     * fetch it back with `read`. Nothing is deleted.
      *
      * Scope is deliberately minimal — ONE part, the biggest:
      *
@@ -6163,7 +6126,7 @@ class ChatViewModel(
                 // the partsJson content (or any prefix/suffix of it). Earlier
                 // versions echoed head500/tail500 to localise the culprit;
                 // now that the cause is known (oversized tool_result inlines)
-                // and FileReadTool / AIChatViewModel.executeFileRead enforce
+                // and ReadTool / AIChatViewModel.executeFileRead enforce
                 // an 80 KB hard cap upstream, only metadata is needed for
                 // future audits.
                 val OVERSIZE_THRESHOLD = 50_000
@@ -7037,7 +7000,7 @@ class ChatViewModel(
         // Drop any browser tabs the agent spawned for this session, and
         // delete the persisted tab snapshot so a future open starts clean.
         // iOS calls BrowserTabPool.deletePersistedData(for:) +
-        // BrowserUseOffloadBridge.releasePool(forSession:); on Android the
+        // BrowserOffloadBridge.releasePool(forSession:); on Android the
         // pool is per-VM (lazy), so releasing tabs here is sufficient.
         // [T-android-browser-release-all-semantics] destroyAllTabs, not the
         // old releaseAllTabs: that one only cleared `inUse` and left every
@@ -8306,7 +8269,7 @@ class ChatViewModel(
             // T132: same shape as sendMessage — caption(s) first, then for each
             // image emit "[attached image: <path>]" + ImageData, finally the
             // <user-attached-files> XML. Keeps caption adjacent to image and
-            // lets the agent re-read the file via read_image.
+            // lets the agent re-read the file via read.
             val combinedParts = mutableListOf<AgentContentPart>()
             val combinedText = StringBuilder()
             for (prompt in queued) {
@@ -8665,7 +8628,7 @@ class ChatViewModel(
             //   text("[attached image: /var/minis/attachments/uploads/<f>]")
             //   ImageData(<bytes>, <mime>)
             // so the caption sits adjacent to the image in the wire payload,
-            // and the agent's read_image tool can resolve the same path back
+            // and the agent's read tool can resolve the same path back
             // to bytes. Trailing <user-attached-files> XML block lets the
             // model see filenames/sizes without needing tool calls.
             // [T-android-paste-mediaref] The MODEL gets the fully expanded body
@@ -9332,7 +9295,7 @@ class ChatViewModel(
     // tool outputs in older messages are written to disk under
     // `filesDir/minis-sessions/<sid>/offloads/tools/` and replaced in
     // [agentHistory] by `[CONTEXT OFFLOADED] … <linux path>` stubs. The model
-    // can later `file_read` the path to retrieve the original content.
+    // can later `read` the path to retrieve the original content.
     //
     // Why this matters: without offloading, a session that runs many large
     // shell tools fills the context window and either trips compact (lossy)
@@ -9418,7 +9381,7 @@ class ChatViewModel(
      * [offloadScanStartIndex] starts AFTER the anchor, but compact-v2 still
      * sends up to [COMPACT_KEEP_RECENT_USER_TURNS] user turns (≤ 100 messages)
      * before it, pruned only of tool results over 1000 chars and their calls:
-     * file_write/file_edit arguments, 501–1000-char results and images there
+     * write/edit arguments, 501–1000-char results and images there
      * go out on every request, yet could no longer be offloaded. This mirrors
      * that function's steps exactly — same walk-back, same > 1000 prune, a
      * text-only message always kept, emptied messages dropped, leading
@@ -9471,7 +9434,7 @@ class ChatViewModel(
      *
      * Eligibility (parity with iOS lines 7556-7596):
      *   - `ToolResult` with content > 500 chars OR image data > 1 KB
-     *   - `ToolUse` for `file_write` / `file_edit` whose `content` arg > 500 chars
+     *   - `ToolUse` for `write` / `edit` whose `content` arg > 500 chars
      *   - bare `ImageData` part > 1 KB
      *
      * Candidates are sorted by ContextSizeMeter's token estimate descending
@@ -9611,7 +9574,7 @@ class ChatViewModel(
                         candidates.add(OffloadCandidate(msgIdx, partIdx, tokens, bytes, part.id, part.name))
                     }
                     is AgentContentPart.ToolUse -> {
-                        if (part.name != "file_write" && part.name != "file_edit") continue
+                        if (!com.openminis.app.tools.CoreToolNames.isMutation(part.name)) continue
                         val content = part.input.optString("content", "")
 
                         // [T-offload-toolinput-guards GH#374] The two guards the
@@ -9688,24 +9651,7 @@ class ChatViewModel(
 
             val newPart: AgentContentPart? = when (part) {
                 is AgentContentPart.ToolResult -> {
-                    // [T-android-offload-readback] (GH#343) When this result is
-                    // the agent reading back a file we already offloaded, the
-                    // bytes are on disk at the path in file_read's own header.
-                    // Re-stub against THAT path instead of writing a byte-for-
-                    // byte duplicate under a new name.
-                    val readbackPath = if (part.name == "file_read") {
-                        ContextOffload.offloadReadbackPath(part.content)
-                    } else {
-                        null
-                    }
-                    if (readbackPath != null) {
-                        linuxPath = readbackPath
-                        AppLogger.info(
-                            TAG,
-                            "  offload readback: reusing existing $readbackPath " +
-                                "(no duplicate file written)",
-                        )
-                    } else if (part.content.length > 500) {
+                    if (part.content.length > 500) {
                         linuxPath = ContextOffload.offloadContent(
                             context, sid, part.content,
                             toolId = part.id, toolName = part.name,
@@ -9786,16 +9732,16 @@ class ChatViewModel(
 
     /**
      * [T-scheduled-tool-prefill] The scripted first turn for [prefill], or null
-     * when there is nothing to run. Calls to a tool this session does not offer
-     * are dropped with a warning: a history showing the model calling a tool
-     * it was never given is one it could not have produced, so the prompt is
-     * left to the model instead — the behaviour a task had before prefill.
+     * when there is nothing to run. Validate against callable tools, not model
+     * declarations: codemode-only hides declarations but must not disable a
+     * user-configured scheduled first step. Unavailable/invalid calls fall back
+     * to the model deciding.
      */
     private fun scriptedTurnFor(
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall>,
     ): com.openminis.app.scheduled.ScriptedToolTurn? {
         if (prefill.isEmpty()) return null
-        val available = agentTools.map { it.name }.toSet()
+        val available = callableAgentTools.map { it.name }.toSet()
         val turn = com.openminis.app.scheduled.ScriptedToolTurn.from(prefill, available)
         if (turn == null || turn.calls.size < prefill.size) {
             AppLogger.warning(
@@ -9936,7 +9882,7 @@ class ChatViewModel(
         // amortised O(n). Cross-turn `accumulatedText` is unaffected — it
         // grows per turn, not per delta.
         val pendingChunkSb = StringBuilder()
-        // T256 tier 2: per-tool-kind input-delta gates. file_write/file_edit
+        // T256 tier 2: per-tool-kind input-delta gates. write/edit
         // pills churn JSON the user can't read anyway — 1Hz update is plenty;
         // other tools get 5Hz so command/url previews stay legible.
         var lastFileToolInputMs = 0L
@@ -10169,7 +10115,7 @@ class ChatViewModel(
                     } else {
                         agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = note))
                     }
-                    AppLogger.info(TAG, "[subagent_task] turn budget warning injected remaining=$remaining turn=${turn + 1}/$turnCap")
+                    AppLogger.info(TAG, "[subagent] turn budget warning injected remaining=$remaining turn=${turn + 1}/$turnCap")
                 }
             }
             // [T-sub-agents-steer] Deliver any course correction the parent
@@ -10211,7 +10157,7 @@ class ChatViewModel(
                             """[{"type":"text","value":${escapeJson(note)}}]""",
                         )
                     }.onFailure {
-                        AppLogger.warning(TAG, "[subagent_task] steer persist failed: ${it.message}")
+                        AppLogger.warning(TAG, "[subagent] steer persist failed: ${it.message}")
                     }.getOrNull()
                     agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = note, dbMessageId = steerRow?.id))
                     val steerUi = ChatMessage(
@@ -10235,14 +10181,14 @@ class ChatViewModel(
                             cur + steerUi
                         }
                     }
-                    AppLogger.info(TAG, "[subagent_task] steer delivered count=${steers.size} turn=${turn + 1}/$turnCap")
+                    AppLogger.info(TAG, "[subagent] steer delivered count=${steers.size} turn=${turn + 1}/$turnCap")
                 }
             }
 
             // Context window management: offload large tool outputs in older
             // messages to disk when the policy threshold for this model's
             // context window is crossed. Stubs in agentHistory still tell the
-            // model where to file_read the original content. Mirrors iOS
+            // model where to read the original content. Mirrors iOS
             // AIChatViewModel.swift:4549.
             // [T-anthropic-context-window] Use contextWindowTokens (heuristic-
             // backed) instead of the raw nullable field, so offload triggers at
@@ -10918,9 +10864,15 @@ class ChatViewModel(
                             //     can pick up fields as they appear.
                             //   - leave content empty during streaming (real output arrives
                             //     after ToolCallComplete).
-                            val completeTitle = com.openminis.app.service.completedToolTitle(chunk.accumulated)
+                            val codeTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) {
+                                com.openminis.app.tools.CodemodeTool.titleFromSource(
+                                    extractPartialStringValue("code", chunk.accumulated) ?: chunk.accumulated)
+                            } else null
+                            val completeTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) codeTitle
+                                else com.openminis.app.service.completedToolTitle(chunk.accumulated)
                             SessionActivityTracker.publishToolTitle(activeSessionId, prev.toolName, completeTitle)
-                            val partialTitle = extractPartialStringValue("tool_title", chunk.accumulated)
+                            val partialTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) codeTitle
+                                else extractPartialStringValue("tool_title", chunk.accumulated)
                             val liveTitle = when {
                                 !partialTitle.isNullOrEmpty() -> partialTitle
                                 prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
@@ -10931,7 +10883,7 @@ class ChatViewModel(
                                 toolTitle = liveTitle,
                                 content = "",
                             )
-                            // T256 tier 2: gate UI push by tool kind. file_write/file_edit
+                            // T256 tier 2: gate UI push by tool kind. write/edit
                             // pump multi-KB JSON through the SSE — pushing every delta
                             // pegs the UI thread for no readable benefit (the user can't
                             // skim a partial JSON blob anyway). Mirrors iOS
@@ -10940,7 +10892,7 @@ class ChatViewModel(
                             // gate eventually opens — or ToolCallComplete force-flushes —
                             // the latest accumulated args are pushed.
                             val toolName = prev.toolName
-                            val isHeavyFileTool = toolName == "file_write" || toolName == "file_edit"
+                            val isHeavyFileTool = com.openminis.app.tools.CoreToolNames.isMutation(toolName)
                             val gateMs = if (isHeavyFileTool) 1_000L else 200L
                             val nowMs = System.currentTimeMillis()
                             val lastTs = if (isHeavyFileTool) lastFileToolInputMs else lastOtherToolInputMs
@@ -10963,15 +10915,14 @@ class ChatViewModel(
                         toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
                         SessionActivityTracker.publishToolTitle(
                             activeSessionId, chunk.name,
-                            chunk.args.optString("tool_title", "").takeIf { it.isNotBlank() }
-                                ?: friendlyToolTitle(chunk.name),
+                            providedToolTitle(chunk.name, chunk.args) ?: friendlyToolTitle(chunk.name),
                         )
                         // [T-android-gemini3-thoughtsig / #179] Stash the Gemini
                         // 3.x thought signature keyed by the (deduped) tool call id.
                         chunk.thoughtSignature?.let { toolCallSignatures[toolCompleteId] = it }
                         val idx = allToolBlocks.indexOfFirst { it.id == toolCompleteId }
                         if (idx >= 0) {
-                            val providedTitle = chunk.args.optString("tool_title", "").takeIf { it.isNotEmpty() }
+                            val providedTitle = providedToolTitle(chunk.name, chunk.args)
                             val title = providedTitle ?: friendlyToolTitle(chunk.name)
                             // PENDING — JSON params fully received, waiting for execution
                             // dispatcher to invoke the tool. executeTool() flips to RUNNING.
@@ -11764,7 +11715,7 @@ class ChatViewModel(
                         pendingSteers = pendingSteerMessages.size,
                     )
                 ) {
-                    AppLogger.info(TAG, "[subagent_task] steer arrived at loop end — continuing for another turn (turn=${turn + 1}/$turnCap)")
+                    AppLogger.info(TAG, "[subagent] steer arrived at loop end — continuing for another turn (turn=${turn + 1}/$turnCap)")
                     // The no-tool-call path above already marked the bubble
                     // finished; the next turn streams into the same bubble.
                     withContext(Dispatchers.Main) {
@@ -11852,13 +11803,13 @@ class ChatViewModel(
                             SessionActivityTracker.toolStarted()
                             try {
                         // [T-android-overlay-tool-title] Pull tool_title uniformly
-                        // from args for ALL tools — without this browser_use's
-                        // tool_title never reached the overlay (only shell_execute
+                        // from args for ALL tools — without this browser's
+                        // tool_title never reached the overlay (only bash
                         // had a per-tool status override that surfaced it). Reading
                         // it here also means new tools added later automatically
                         // get title-in-overlay behavior without per-call plumbing.
                         val dispatchToolTitle = try {
-                            args.optString("tool_title", "").takeIf { it.isNotBlank() }
+                            providedToolTitle(name, args)
                         } catch (_: Exception) { null }
                         SessionActivityTracker.updateToolStatus(
                             status = "Running: $name",
@@ -11896,7 +11847,7 @@ class ChatViewModel(
                         // partial artifact is silent corruption of user data and is worse
                         // than no write at all; read-only and shell tools keep the
                         // repair-and-run behaviour. Mirrors iOS ConcurrentTools.
-                        if (truncationRepairTag != null && (name == "file_write" || name == "file_edit" || name == "codemode")) {
+                        if (truncationRepairTag != null && (com.openminis.app.tools.CoreToolNames.isMutation(name) || name == "codemode")) {
                             val path = args.optString("path", "").ifBlank { args.optString("file_path", "") }
                             AppLogger.warning(
                                 "ToolPreflight",
@@ -12068,26 +12019,12 @@ class ChatViewModel(
                         val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
                         if (blockIdx >= 0) {
                             val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
-                            // Keep live-streamed content if it has more data than the truncated result.
-                            // T263: takeLast(80) was applied uniformly, but it was sized for
-                            // shell_execute (long stdout streams where the tail is what
-                            // matters). For tools whose first line carries metadata —
-                            // file_read's `[path | N bytes | M lines | showing A-B of M]`
-                            // banner, file_write/file_edit confirmations /
-                            // browser_use structured headers — clipping the head dropped
-                            // the banner entirely. iOS routes file_read through a
-                            // dedicated branch (AIChatViewModel.swift:5229) and avoids
-                            // this; mirror that intent by gating the trim to shell_execute.
-                            val existingContent = allToolBlocks[blockIdx].content
-                            val resultContent = if (name == "shell_execute") {
-                                result.output.lines().takeLast(80).joinToString("\n")
-                            } else {
-                                result.output
-                            }
+                            // Completed tools own their truncation and continuation hints.
+                            val resultContent = result.output
                             val finalContent = if (name == com.openminis.app.tools.CodemodeTool.NAME) {
                                 val trace = com.openminis.app.tools.CodemodeTool.renderDetails(result.detailsJson)
                                 if (trace.isEmpty()) resultContent else "$trace\n\n$resultContent"
-                            } else if (existingContent.length > resultContent.length) existingContent else resultContent
+                            } else resultContent
                             // [T-truncated-args-visibility #119] A call built from
                             // truncated args must not render as a clean success — that
                             // silence is the reported bug. Show it with the same weight
@@ -12434,14 +12371,16 @@ class ChatViewModel(
         // is consistent across both paths. The pre-check that lived here
         // (`permissionTools = {calendar, location, …}`) was effectively
         // dead since these tools have no native ChatViewModel executor
-        // — they always fall through to shell_execute or the offload
+        // — they always fall through to bash or the offload
         // bridge, which is now where checkPermission runs.
-        val toolTitle = try { JSONObject(argsJson).optString("tool_title", name) } catch (_: Exception) { name }
+        val toolTitle = try { providedToolTitle(name, JSONObject(argsJson)) ?: name } catch (_: Exception) { name }
 
         return when (name) {
             com.openminis.app.tools.CodemodeTool.NAME -> executeCodemodeTool(argsJson, toolId, toolBlocks, assistantId, currentText)
-            FileReadTool.NAME -> {
-                val result = FileReadTool.execute(argsJson, fsSessionId, context)
+            ReadTool.NAME -> {
+                val result = ReadTool.execute(argsJson, fsSessionId, context,
+                    resizeOptions = currentModel?.inputLimits?.images?.resize,
+                    supportsImages = currentModelHasNativeVision)
                 // Record skill usage when SKILL.md under /var/minis/skills/<id>/ is read.
                 if (result.success) {
                     runCatching {
@@ -12455,24 +12394,23 @@ class ChatViewModel(
                 }
                 result
             }
-            FileWriteTool.NAME -> FileWriteTool.execute(argsJson, fsSessionId, context).also {
+            WriteTool.NAME -> WriteTool.execute(argsJson, fsSessionId, context).also {
                 if (it.success) maybeReloadSkillsForPath(argsJson)
             }
-            FileEditTool.NAME -> FileEditTool.execute(argsJson, fsSessionId, context).also {
+            EditTool.NAME -> EditTool.execute(argsJson, fsSessionId, context).also {
                 if (it.success) maybeReloadSkillsForPath(argsJson)
             }
-            // T178: pass sessionId + context so read_image routes through
-            // resolveSessionHostPath like file_read/write/edit do — without
+            // T178: pass sessionId + context so read routes through
+            // resolveSessionHostPath like read/write/edit do — without
             // these, the tool consults the global last-writer-wins
             // bindMounts map and would surface another session's
             // /var/minis/{workspace,attachments,offloads,browser} files.
-            ReadImageTool.NAME -> executeReadImageTool(argsJson)
-            "shell_execute" -> executeShellCommand(argsJson, toolId, toolBlocks, assistantId, currentText).also {
+            "bash" -> executeBash(argsJson, toolId, toolBlocks, assistantId, currentText).also {
                 // [T-android-skill-scan-parity] Stands in for the iOS fakefs
                 // notifier: a shell command may have cloned, edited or removed a
                 // skill. The repository compares a directory signature in the
                 // background and only reloads when /var/minis/skills changed.
-                skillRepository?.requestReload("shell_execute")
+                skillRepository?.requestReload("bash")
             }
             // [T-tools-granular-switches] Refuse a switched-off tool at the
             // dispatcher too, not only by omitting it from the schema: a model
@@ -12480,36 +12418,24 @@ class ChatViewModel(
             // request) can still emit the call, and executing it would ignore
             // the user's setting. Mirrors iOS's isToolEnabled guard in
             // AIChatViewModel+ConcurrentTools.
-            "browser_use" ->
+            "browser" ->
                 if (com.openminis.app.tools.AgentToolSwitch.BROWSER.isEnabled(context)) {
-                    executeBrowserUseTool(argsJson)
+                    executeBrowserTool(argsJson)
                 } else {
-                    toolDisabledResult("browser_use")
+                    toolDisabledResult("browser")
                 }
-            // [T-sub-agents-v1] One tool, five actions. The legacy names are
-            // accepted so a replayed call from a transcript written before the
-            // rename still dispatches instead of hitting "Unknown tool".
-            com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME,
-            com.openminis.app.agent.jobs.HelperRunner.LEGACY_TOOL_NAME,
-            com.openminis.app.agent.jobs.HelperRunner.LEGACY_STATUS_TOOL_NAME ->
+            // One tool, five actions, under the exact new API name.
+            com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME ->
                 if (com.openminis.app.tools.AgentToolSwitch.AGENTS.isEnabled(context)) {
-                    // Route on the ACTION, not on the result shape: a control
-                    // call (status/steer/cancel/resume) is a different operation
-                    // from a delegation, and deciding that from what came back
-                    // is what left blank rows in the transcript on iOS
-                    // (b71365ce5). A legacy agent_status block carries no
-                    // action, so its own name selects the control path.
+                    // Route on the action, not the result shape.
                     val action = try {
                         JSONObject(argsJson).optString("action", "").trim().lowercase()
                     } catch (_: Exception) {
                         ""
                     }
-                    val isLegacyStatus =
-                        name == com.openminis.app.agent.jobs.HelperRunner.LEGACY_STATUS_TOOL_NAME
                     when {
                         action == "resume" -> executeResumeAgents(argsJson)
-                        action == "status" || action == "steer" || action == "cancel" ||
-                            (isLegacyStatus && action.isEmpty()) -> executeAgentStatus(argsJson)
+                        action == "status" || action == "steer" || action == "cancel" -> executeAgentStatus(argsJson)
                         else ->
                             executeDelegateTask(argsJson, toolId, toolBlocks, assistantId, currentText)
                     }
@@ -12522,7 +12448,7 @@ class ChatViewModel(
                     ToolExecutionResult(
                         com.openminis.app.agent.jobs.HelperRunner.rejectionJson(
                             "tools_disabled",
-                            "Agents are turned off in this app's settings; delegate_task cannot be used. " +
+                            "Agents are turned off in this app's settings; subagent cannot be used. " +
                                 "Do not try it again in this conversation.",
                         ),
                         false,
@@ -12597,7 +12523,7 @@ class ChatViewModel(
             imageLinuxPath = images.firstOrNull()?.linuxPath,
             imageFilePath = images.firstOrNull()?.linuxPath?.let {
                 com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, it, context)?.absolutePath },
-            toolTitle = cm.NAME, additionalImages = images.drop(1), detailsJson = cm.details(result.calls))
+            toolTitle = cm.titleFromSource(source) ?: cm.NAME, additionalImages = images.drop(1), detailsJson = cm.details(result.calls))
     }
 
     /**
@@ -12689,7 +12615,7 @@ class ChatViewModel(
         }
         val myIdx = toolBlocks.indexOfFirst { it.id == toolId }
         // [T-android-subagent-turn-allowance] Count real DELEGATIONS, not every
-        // subagent_task block. The tool is one entry point for five actions,
+        // subagent block. The tool is one entry point for five actions,
         // and a control call (status / steer / cancel / resume) starts no run
         // and consumes no slot — it returns immediately. Counting them here
         // made a turn that checked on its agents before delegating burn its
@@ -12754,7 +12680,7 @@ class ChatViewModel(
                     updateAssistantMessage(assistantId, currentText, true, toolBlocks)
                 }
             }
-            AppLogger.info(TAG, "[subagent_task] QUEUED tool=${toolId.take(12)} behind ${registry.runningChildJobCount} running")
+            AppLogger.info(TAG, "[subagent] QUEUED tool=${toolId.take(12)} behind ${registry.runningChildJobCount} running")
             return ToolExecutionResult(json, true, toolTitle = title)
         }
         val parentRow = chatRepository.getSession(parentSid)
@@ -13302,7 +13228,7 @@ class ChatViewModel(
         val o = runCatching { JSONObject(argsJson) }.getOrElse { JSONObject() }
         val action = o.optString("action", "status").lowercase()
         val jobIdArg = o.optString("job_id", "").trim()
-        val toolTitle = o.optString("tool_title", "").ifEmpty { "agent_status" }
+        val toolTitle = o.optString("tool_title", "").ifEmpty { "subagent" }
         val sid = activeSessionId
         var jobs = registry.list().filter { it.target.parentSessionIdOrNull == sid }
         if (jobIdArg.isNotEmpty()) {
@@ -13442,107 +13368,12 @@ class ChatViewModel(
         return ToolExecutionResult(out.toString(), true, toolTitle = toolTitle)
     }
 
-    /**
-     * [T-android-vision-group / GH#182] Placeholder text for an image the CURRENT
-     * main model can't natively see, carried on the outgoing image part and
-     * substituted by the provider's T264 branch.
-     *
-     * Null when the main model has native vision — the pixels are attached and
-     * no substitution happens.
-     *
-     * [T-android-image-path-metadata] Otherwise ALWAYS returns text, whether or
-     * not a Vision Group is configured. The Vision Group only decides WHICH
-     * text: with one, the placeholder names read_image; without one, it still
-     * hands over the path so the model can reach the file through
-     * `shell_execute` (same PRoot sandbox, tool exposed unconditionally).
-     * Returning null here used to drop the path on the floor and leave the
-     * provider emitting a bare "does not support vision input" dead end.
-     */
-    private fun visionPlaceholderFor(path: String?): String? {
+
+    private fun visionPlaceholder(): String? {
         if (currentModelHasNativeVision) return null
-        val configured = com.openminis.app.tools.VisionModelResolver
-            .isConfigured(providerRepository, context)
-        return com.openminis.app.tools.VisionModelResolver
-            .noVisionImagePlaceholder(path, visionGroupConfigured = configured)
+        return ImageReader.NON_VISION_NOTE
     }
 
-    /**
-     * [T-android-vision-group / GH#182] read_image dispatch.
-     *
-     * Native-vision main models keep the original behaviour exactly: the tool
-     * returns the pixels and the provider attaches them.
-     *
-     * A main model WITHOUT native image input only reaches here because a Vision
-     * Group is configured (that's the tool-exposure gate in [agentTools]). For
-     * that case we do NOT return pixels — a text-only model can't decode them and
-     * the provider (OpenAIProvider T264) silently drops them to a placeholder.
-     * Instead we hand the bytes to the Vision Group, get a text DESCRIPTION back,
-     * and return that as the tool output. `imageData` is left null so no pixels
-     * are attached, but `imageFilePath` is preserved so the on-screen tool block
-     * still shows the image the user's model "read". Mirrors iOS
-     * AIChatViewModel+ConcurrentTools read_image branch.
-     */
-    private suspend fun executeReadImageTool(argsJson: String): ToolExecutionResult {
-        val base = ReadImageTool.execute(argsJson, fsSessionId, context)
-        // [T-android-vision-group / GH#182] Optional caller instruction focusing
-        // what to learn from the image.
-        val customPrompt = try {
-            JSONObject(argsJson).optString("prompt", "").trim().ifEmpty { null }
-        } catch (_: Exception) { null }
-        // Failed decode / missing file → unchanged.
-        if (!base.success || base.imageData == null) return base
-        if (currentModelHasNativeVision) {
-            // The model sees the pixels itself; a prompt adds no routing here, but
-            // echo it as context so the tool block reflects the model's intent.
-            return if (customPrompt != null) {
-                base.copy(output = base.output + "\n\n[Requested focus: " + customPrompt + "]")
-            } else base
-        }
-
-        val bytes = base.imageData
-        val mime = base.imageMimeType ?: "image/jpeg"
-        val result = com.openminis.app.tools.VisionModelResolver.describe(
-            repo = providerRepository,
-            context = context,
-            imageData = bytes,
-            mimeType = mime,
-            seed = kotlin.math.abs(argsJson.hashCode()),
-            customPrompt = customPrompt,
-            // [T-vision-group-attribution / GH#182] iOS rewrites the tool block's
-            // live content here so the card names the model as it works. Android
-            // has no equivalent channel — no tool streams partial output to its
-            // card, and the progress label ("Minis is reading Image",
-            // ChatToolFormatting.kt:102) is a static per-tool string. Building
-            // that plumbing is a separate change, so for now the per-attempt
-            // signal goes to the log, where a fallback is still traceable. The
-            // RESULT-side attribution (which model answered, what was tried
-            // first) is fully implemented and is what the user actually reads.
-            onAttempt = { a ->
-                android.util.Log.i(
-                    "VisionGroup",
-                    "[Vision] attempt ${a.index}/${a.total} via ${a.modelName}",
-                )
-            },
-        )
-        val framed = when (result) {
-            is com.openminis.app.tools.VisionModelResolver.VisionResult.Success ->
-                com.openminis.app.tools.VisionModelResolver.framedDescription(
-                    result,
-                    com.openminis.app.tools.VisionModelResolver.groupName(providerRepository),
-                    question = customPrompt,
-                )
-            is com.openminis.app.tools.VisionModelResolver.VisionResult.Failure ->
-                com.openminis.app.tools.VisionModelResolver.failureText(result.reason)
-        }
-        // Deliberately still success=true even on describe failure: an errored
-        // tool result tends to make models retry in a loop, whereas this lets the
-        // model plainly tell the user the image couldn't be analyzed.
-        return base.copy(
-            output = base.output + "\n\n" + framed,
-            imageData = null,
-            imageMimeType = null,
-        )
-    }
 
     /**
      * Mirror of iOS AIChatViewModel post-tool hook (Agent/Chat/AIChatViewModel.swift:5387 / :5408):
@@ -13554,39 +13385,24 @@ class ChatViewModel(
         runCatching {
             val path = JSONObject(argsJson).optString("path", "")
             if (path.contains("/skills/") && path.endsWith("SKILL.md")) {
-                skillRepository?.requestReload("file_write", force = true)
+                skillRepository?.requestReload("write", force = true)
             }
         }
     }
 
-    /** Sentinel returned by the bash wrapper when bash is missing at run time,
-     *  distinct from a script that legitimately exits 127 (T-bash-on-demand M5). */
-    private val BASH_MISSING_SENTINEL = 119
-
-    /** Wrap a script to run under bash via a guest-side self-written temp file
-     *  (base64, single line, self-cleaning), guarding on `command -v bash` so a
-     *  vanished bash is detected precisely for inline self-heal.
-     *
-     *  The whole wrapper runs inside a SUBSHELL `( … )`. This is load-bearing on
-     *  Android: PersistentShell drives commands as `{cmd}; echo …_EXIT_$?…` and
-     *  reads the exit code from that marker line. A bare `|| exit 119` would exit
-     *  the persistent shell process itself BEFORE the marker echo runs, so no
-     *  marker is emitted and PersistentShell.parseExitCode falls back to -1 —
-     *  the M5 self-heal sentinel check (== 119 / 30464) then never matches and a
-     *  vanished bash is never re-installed. Wrapping in a subshell makes
-     *  `exit 119` leave only the subshell, so `$?` = 119 reaches the marker. */
+    /** Run the script once under guest Bash; preserve its exit status without retries. */
     private fun wrapForBash(script: String): String {
         // [T-heredoc-trailing-newline] A heredoc that ends the decoded file with
         // no trailing newline fails with "unexpected end of file". Guarantee one.
         val normalized = if (script.endsWith("\n")) script else script + "\n"
         val b64 = android.util.Base64.encodeToString(
             normalized.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-        return "( command -v bash >/dev/null 2>&1 || exit $BASH_MISSING_SENTINEL; " +
+        return "( " +
             "printf %s '$b64' | base64 -d > /tmp/.minis-exec-\$\$.sh && " +
             "bash /tmp/.minis-exec-\$\$.sh; rc=\$?; rm -f /tmp/.minis-exec-\$\$.sh; exit \$rc )"
     }
 
-    private suspend fun executeShellCommand(
+    private suspend fun executeBash(
         argsJson: String,
         toolId: String,
         toolBlocks: MutableList<AssistantBlock>,
@@ -13596,21 +13412,17 @@ class ChatViewModel(
         return try {
             val args = JSONObject(argsJson)
             var command = args.optString("command", "")
-            // [T-android-parity-fixes] Ceiling raised from 900 s to one hour.
-            // The 900 cap dated from a default bump (600 -> 900) and was
-            // silent: the schema invited "a larger value for long-running
-            // commands" and then cut it to 900 without a word. Nothing below
-            // needs the lower cap - the executor has no ceiling of its own and
-            // the agent foreground service is mediaPlayback, which has no
-            // time limit. One hour matches the range iOS allows a scheduled
-            // task's prefilled command, and the schema now states the cap.
-            val timeoutSec = args.optInt("timeout", 900).coerceIn(1, SHELL_TIMEOUT_MAX_SEC)
-            val delaySec = args.optInt("delay", 0).coerceAtLeast(0)
-            val toolTitle = args.optString("tool_title", "shell_execute")
+            val timeoutMs = if (!args.has("timeout") || args.isNull("timeout")) Long.MAX_VALUE else {
+                val seconds = args.getDouble("timeout")
+                require(seconds.isFinite() && seconds > 0 && seconds * 1000 <= Int.MAX_VALUE) { "timeout must be positive and at most 2147483.647 seconds" }
+                (seconds * 1000).toLong().coerceAtLeast(1)
+            }
+            val toolTitle = args.optString("tool_title", "bash")
 
             if (command.isBlank()) {
                 return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
             }
+            command = "cd /var/minis/workspace || exit;\n$command"
 
             // [T-android-overlay-finalize item 1] Removed the
             // shell-specific status hack ("shell: $toolTitle"). Since the
@@ -13618,30 +13430,8 @@ class ChatViewModel(
             // label uniformly via SessionActivityTracker.updateToolStatus(
             // status, toolName, isRunning, toolTitle), the per-tool override
             // produced redundant "shell / shell: <title>" rows. Lifecycle
-            // status ("Running: shell_execute") set by the dispatch loop is
+            // status ("Running: bash") set by the dispatch loop is
             // sufficient.
-
-            // Delay execution: block the agent flow without occupying the shell,
-            // allowing other concurrent tasks to use it during the wait period.
-            if (delaySec > 0) {
-                for (remaining in delaySec downTo 1) {
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        val mm = remaining / 60
-                        val ss = remaining % 60
-                        val countdown = if (mm > 0) String.format("%d:%02d", mm, ss) else "${ss}s"
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = "⏳ Waiting $countdown before executing...")
-                        withContext(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
-                        }
-                    }
-                    kotlinx.coroutines.delay(1000)
-                }
-                val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                if (idx >= 0) {
-                    toolBlocks[idx] = toolBlocks[idx].copy(content = "")
-                }
-            }
 
             // [diag] sessionId vs realSessionId mismatch was the root cause
             // of the Chinese-emoji filename "disappears" bug. `activeSessionId`
@@ -13651,44 +13441,24 @@ class ChatViewModel(
             android.util.Log.w("ShellExecDiag",
                 "executeShell dispatch=$dispatchSessionId rawSessionId=$sessionId realSessionId=$realSessionId isDraft=$isDraft cmd=${command.take(120).replace('\n', ' ')}")
 
-            // [T-bash-on-demand] Detect busybox-ash-incompatible bash syntax and,
-            // if found, transparently install + switch to bash. Install time is
-            // NOT charged against the command timeout (OnDemandBash has its own
-            // budget). `command` is rewritten to the bash-wrapped form on the S/E
-            // path; `bashReminder` is attached if we fall back to sh. Only this
-            // agent path runs here; the in-app terminal is untouched.
-            BashismDetector.ensureLoaded(context)
-            val bashism = BashismDetector.detect(command)
-            var bashReminder: String? = null
-            val originalCommand = command
-            var bashScript: String? = null   // set when we bash-wrapped; enables M5 self-heal retry
-            if (bashism.needsBash) {
-                val executor = OnDemandBash.Executor { c, t ->
-                    ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId).exitCode
-                }
-                when (val outcome = OnDemandBash.ensureBash(context, executor)) {
-                    is OnDemandBash.Outcome.Available -> {
-                        if (bashism.mustSwitchInterpreter) {
-                            // §3.2 M3: self-write the script in the guest (base64,
-                            // single line, self-cleaning) and run it under bash.
-                            // The `command -v bash || exit 119` guard detects a
-                            // bash that vanished after our cache check (M5) so we
-                            // can self-heal below instead of failing.
-                            command = wrapForBash(command)
-                            bashScript = originalCommand // remember for self-heal retry
-                        }
-                        // T1-only (script invokes bash itself) → run as-is under sh.
-                    }
-                    is OnDemandBash.Outcome.Unavailable ->
-                        bashReminder = BashismReminder.build(bashism.hits, outcome.reason)
-                }
+            // Check/install Bash before executing user code. Installation has its own
+            // budget; script exit codes never trigger re-execution or sh fallback.
+            val executor = OnDemandBash.Executor { c, t ->
+                ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId).exitCode
+            }
+            when (val outcome = OnDemandBash.ensureBash(context, executor)) {
+                is OnDemandBash.Outcome.Available -> command = wrapForBash(command)
+                is OnDemandBash.Outcome.Unavailable -> return ToolExecutionResult(
+                    "Error: Bash is unavailable: ${outcome.reason}", false, toolTitle = toolTitle)
             }
 
-            var result = ExecutionCoordinator.execute(
+            var lastShellUiUpdate = 0L
+            val result = ExecutionCoordinator.execute(
                 sessionId = dispatchSessionId,
                 fsSessionId = fsSessionId,
+                captureBashOutput = true,
                 command = command,
-                timeout = timeoutSec * 1000L,
+                timeout = timeoutMs,
                 lineCallback = lc@{ rawLine ->
                     // Strip any OSC MinisOpenURL markers emitted by
                     // /usr/local/bin/minis-open and forward the captured
@@ -13707,30 +13477,16 @@ class ChatViewModel(
                         // Keep last 50 lines for display
                         val trimmed = updated.lines().takeLast(50).joinToString("\n")
                         toolBlocks[idx] = toolBlocks[idx].copy(content = trimmed)
-                        viewModelScope.launch(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (!toolId.contains('/') && now - lastShellUiUpdate >= 100) {
+                            lastShellUiUpdate = now
+                            viewModelScope.launch(Dispatchers.Main) {
+                                updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                            }
                         }
                     }
                 },
             )
-
-            // [T-bash-on-demand] M5 self-heal: our bash wrapper returns sentinel
-            // 119 when bash vanished (user apk del'd) after we cached it
-            // available. Re-probe + reinstall once and rerun THIS command under
-            // bash inline, so it still succeeds instead of failing.
-            // Accept both the raw sentinel (119) and the wait(2)-encoded status
-            // (119 << 8 = 30464) the coordinator may surface.
-            if ((result.exitCode == BASH_MISSING_SENTINEL ||
-                    result.exitCode == (BASH_MISSING_SENTINEL shl 8)) && bashScript != null) {
-                OnDemandBash.markDisappeared()
-                val executor = OnDemandBash.Executor { c, t ->
-                    ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId).exitCode
-                }
-                val healed = OnDemandBash.ensureBash(context, executor)
-                command = if (healed is OnDemandBash.Outcome.Available) wrapForBash(bashScript!!) else bashScript!!
-                result = ExecutionCoordinator.execute(
-                    sessionId = dispatchSessionId, command = command, timeout = timeoutSec * 1000L, fsSessionId = fsSessionId)
-            }
 
             // Also scrub markers from the aggregated one-shot output and
             // broker any URLs that only appeared there (defensive — handles
@@ -13738,49 +13494,24 @@ class ChatViewModel(
             val (cleanedOutput, oneShotUrls) = MinisUrlMarker.extract(result.output)
             for (raw in oneShotUrls) MinisOpenUrlBroker.offer(raw)
             val output = if (cleanedOutput.isBlank()) "(no output)" else cleanedOutput
-            // [T-android-parity-fixes] The coordinator already annotates every
-            // non-zero status except its own timeout (124); ensureSuffix adds
-            // only what is missing, in the same "(exit code: N)" form, so the
-            // model no longer reads the status twice.
-            val withExit = if (result.exitCode != 0) ShellExitCode.ensureSuffix(output, result.exitCode) else output
-            // Exit code 124 is the BusyBox/GNU timeout-utility convention for
-            // a command that exceeded its budget. PersistentShell returns this
-            // when its `withTimeoutOrNull(timeout)` wrapper fires.
-            val timedOut = result.exitCode == 124
-
-            // Redact env-var values that leaked into the captured output
-            // before the model sees them. No-op when Privacy Mode is OFF.
-            // Done after the exit status is appended so the suffix can't accidentally
-            // contain a secret that escaped masking. The user-visible streamed
-            // content (toolBlocks above) is intentionally left unmasked.
-            val finalOutput = withExit
-            val (redactedOut, redactHits) = com.openminis.app.data.EnvVarRedactor.redactIfEnabled(finalOutput)
+            // Scrub any remaining metadata before the model sees it. The coordinator
+            // already redacts captured output and its archive; live UI text is unmasked.
+            val (redactedOut, redactHits) = com.openminis.app.data.EnvVarRedactor.redactIfEnabled(output)
             if (redactHits > 0) {
-                android.util.Log.i("EnvVarRedact", "shell_execute: masked $redactHits env-var value(s) in tool result")
+                android.util.Log.i("EnvVarRedact", "bash: masked $redactHits env-var value(s) in tool result")
             }
 
-            // [T-bash-on-demand] M5 self-heal: bash disappeared (user apk del'd)
-            // → re-probe next time.
-            if (result.exitCode == 127 && bashism.mustSwitchInterpreter) {
-                OnDemandBash.markDisappeared()
-            }
-            // §4.2: append the bashism reminder when we fell back to sh and the
-            // command failed OR any silent-class rule was hit (S-class exit-0
-            // exception, default-on).
-            val withBashReminder = bashReminder?.let { rem ->
-                if (result.exitCode != 0 || bashism.hasSilent) "$redactedOut\n\n$rem" else redactedOut
-            } ?: redactedOut
-            // [T-android-shell-process-budget] Last, so nothing is appended
-            // after the note that the command waited in the process queue.
-            val withReminder = result.queueNote?.let { "$withBashReminder\n\n$it" } ?: withBashReminder
+            val withReminder = result.queueNote?.let { "$redactedOut\n\n$it" } ?: redactedOut
 
             ToolExecutionResult(
                 output = withReminder,
                 success = result.exitCode == 0,
                 toolTitle = toolTitle,
-                timedOut = timedOut,
+                timedOut = result.timedOut,
+                structuredContentJson = result.structuredContentJson,
             )
-        } catch (e: Exception) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }
     }
@@ -13800,15 +13531,15 @@ class ChatViewModel(
             false,
         )
 
-    private suspend fun executeBrowserUseTool(argsJson: String): ToolExecutionResult {
+    private suspend fun executeBrowserTool(argsJson: String): ToolExecutionResult {
         val input = BrowserActionInput.parse(argsJson)
-            ?: return ToolExecutionResult("Error: Invalid browser_use input", false)
+            ?: return ToolExecutionResult("Error: Invalid browser input", false)
 
         return try {
             val result = browserTabPool.execute(input, owner = browserOwnerId)
             val toolTitle = try {
-                JSONObject(argsJson).optString("tool_title", "browser_use")
-            } catch (_: Exception) { "browser_use" }
+                JSONObject(argsJson).optString("tool_title", "browser")
+            } catch (_: Exception) { "browser" }
 
             var output = result.text
             var persistentImagePath: String? = result.imageFilePath
@@ -13816,7 +13547,7 @@ class ChatViewModel(
 
             // Persist browser screenshots to /var/minis/browser/<session>/ so the
             // agent can reference them via minis:// in subsequent tool calls
-            // (mirrors iOS AIChatViewModel case "browser_use").
+            // (mirrors iOS AIChatViewModel case "browser").
             val base64 = result.base64Image
             var linuxImagePath: String? = null
             if (base64 != null) {
@@ -13825,7 +13556,7 @@ class ChatViewModel(
                 } catch (_: Exception) { null }
                 if (raw != null) {
                     // Anthropic supports up to 8000×8000 / 5MB; we standardize at 2000
-                    // long edge across attachments / browser / read_image.
+                    // long edge across attachments / browser / read.
                     inferenceBytes = resizeJpegToMaxEdge(raw, 2000) ?: raw
                     val filename = "screenshot_${System.currentTimeMillis() / 1000}.jpg"
                     val persistPath = persistBrowserArtifact(filename, raw)
@@ -13867,7 +13598,7 @@ class ChatViewModel(
     /**
      * Write bytes to <filesDir>/minis-sessions/<sessionId>/browser/<filename>.
      * That directory is bind-mounted to `/var/minis/browser/` so the agent can
-     * read it back via file_read / file_write / minis:// URLs.
+     * read it back via read / write / minis:// URLs.
      * Returns the host absolute path on success, null otherwise.
      */
     private fun persistBrowserArtifact(filename: String, data: ByteArray): String? {
@@ -14497,7 +14228,7 @@ class ChatViewModel(
         // main thread, twice per send (checkContextBeforeSend and the send
         // coroutine). Like iOS SkillStore.skillPromptFragment(), the fragment
         // reads only the in-memory list loaded from skills.db. Out-of-band
-        // installs (shell `git clone`, file_write of a SKILL.md, backup
+        // installs (shell `git clone`, write of a SKILL.md, backup
         // restore, returning to the app) queue a background rescan instead;
         // see SkillRepository.requestReload. The old per-send
         // reloadFromDisk() cost ~2 s per send for a user with 490 skills.
@@ -14530,9 +14261,9 @@ class ChatViewModel(
 
     // ─── Legacy tool execution methods (kept for compatibility) ───────────
 
-    suspend fun executeBrowserUse(argsJson: String): BrowserToolResult {
+    suspend fun executeBrowser(argsJson: String): BrowserToolResult {
         val input = BrowserActionInput.parse(argsJson)
-            ?: return BrowserToolResult(text = "Error: Invalid browser_use input. Required: 'action' parameter.", success = false)
+            ?: return BrowserToolResult(text = "Error: Invalid browser input. Required: 'action' parameter.", success = false)
 
         return try {
             val result = browserTabPool.execute(input, owner = browserOwnerId)
@@ -14562,7 +14293,7 @@ class ChatViewModel(
      * T209: resize image bytes for the LLM inference payload only — the
      * full-resolution original is preserved on disk (mediaStore + uploads
      * dir) so chat history fullscreen view, agent shell `cat`, and
-     * `read_image` all see the user's original picture, matching iOS.
+     * `read` all see the user's original picture, matching iOS.
      *
      * Returns null when the source already fits within [maxEdge] (caller
      * should fall back to [rawBytes]) or on any decode/compress failure.
@@ -14579,7 +14310,7 @@ class ChatViewModel(
         note: String?,
     ) {
         if (path != null) add(AgentContentPart.Text("[attached image: $path]"))
-        add(AgentContentPart.ImageData(part.data, part.mimeType, linuxPath = path, noVisionPlaceholder = visionPlaceholderFor(path)))
+        add(AgentContentPart.ImageData(part.data, part.mimeType, linuxPath = path, noVisionPlaceholder = visionPlaceholder()))
         if (note != null) add(AgentContentPart.Text(note))
     }
 
@@ -14598,7 +14329,7 @@ class ChatViewModel(
         val attachmentNames: List<String>,
         val mediaRefPartsJson: List<String>,
         // T132: iOS-parity additions so the model sees the attachment as
-        // a real file in the agent's sandbox (read_image / shell_execute can
+        // a real file in the agent's sandbox (read / bash can
         // open these paths).
         //   imageUploadPaths: one /var/minis/attachments/uploads/<safe> per
         //     inlined image, in the same order as `imageParts`.
@@ -14649,7 +14380,7 @@ class ChatViewModel(
         // T132: also write the resized bytes into the session's iSH-bound
         // attachments dir (filesDir/minis-sessions/<sid>/attachments/uploads/),
         // which is mounted at /var/minis/attachments/ inside iSH. This makes
-        // the same image accessible to the agent via shell tools (read_image
+        // the same image accessible to the agent via shell tools (read
         // / cat / file) and matches the iOS uploads-directory convention.
         val uploadsHostDir = java.io.File(
             context.filesDir,
@@ -14671,7 +14402,7 @@ class ChatViewModel(
                 // for storage + uploads dir; only the LLM inference payload
                 // gets the resized copy. Pre-T209 the resized JPEG was used
                 // for all three, so chat history fullscreen view and agent
-                // shell tools (read_image / cat) saw a 1024px JPEG instead
+                // shell tools (read / cat) saw a 1024px JPEG instead
                 // of the user's original picture. Matches iOS canonical
                 // (AIChatViewModel.swift L1595-1617).
                 val rawBytes = try {
@@ -14730,7 +14461,6 @@ class ChatViewModel(
                 // and the old code kept "image/heic" on those JPEG bytes — which
                 // DeepSeek rejects on the label alone. The provider boundary
                 // re-derives the MIME too; this keeps the in-memory part honest
-                // for every other consumer (Vision Group, model-use, audits).
                 val inferenceMime = ImageBudget.sniffFormat(inferenceBytes).mimeType ?: attachment.mimeType
                 imageParts.add(LLMMessage.ImagePart(inferenceBytes, inferenceMime, linuxPath = linuxPath))
                 imageModelNotes.add(downscaled?.let { ImageBudget.downscaleNote(it, linuxPath) })
@@ -16595,12 +16325,10 @@ class ChatViewModel(
                         val downscaled = ImageBudget.downscaleForModel(file, original)
                         val bytes = downscaled?.bytes ?: original
                         val sendMime = downscaled?.mimeType ?: mime
-                        // [T-android-vision-group / GH#182] Seed the read_image
                         // hint on restored images too, so a non-vision main model
-                        // with a Vision Group configured gets steered to read_image
                         // on subsequent turns after a session reload (not the bare
                         // "can't see it" literal).
-                        val restoredPlaceholder = visionPlaceholderFor(restoredPath)
+                        val restoredPlaceholder = visionPlaceholder()
                         imageParts.add(LLMMessage.ImagePart(bytes, sendMime, linuxPath = restoredPath, noVisionPlaceholder = restoredPlaceholder))
                         contentParts.add(AgentContentPart.ImageData(bytes, sendMime, linuxPath = restoredPath, noVisionPlaceholder = restoredPlaceholder))
                         downscaled?.let { contentParts.add(AgentContentPart.Text(ImageBudget.downscaleNote(it, restoredPath))) }
@@ -16669,15 +16397,18 @@ class ChatViewModel(
     /**
      * Humanize a snake_case tool name into a Title-Case label for pill headers
      * while the model's own `tool_title` arg has not yet streamed in.
-     * e.g. `file_write` → "Write File", `shell_execute` → "Execute Shell".
+     * e.g. `write` → "Write File", `bash` → "Execute Shell".
      */
+    private fun providedToolTitle(toolName: String, args: JSONObject): String? =
+        if (toolName == com.openminis.app.tools.CodemodeTool.NAME) com.openminis.app.tools.CodemodeTool.titleFromArguments(args)
+        else args.optString("tool_title", "").takeIf { it.isNotBlank() }
+
     private fun friendlyToolTitle(toolName: String): String = when (toolName) {
-        "shell_execute" -> "Execute Shell"
-        "file_read" -> "Read File"
-        "file_write" -> "Write File"
-        "file_edit" -> "Edit File"
-        "browser_use" -> "Browse Web"
-        "read_image" -> "Read Image"
+        "bash" -> "Execute Bash"
+        "read" -> "Read File"
+        "write" -> "Write File"
+        "edit" -> "Edit File"
+        "browser" -> "Browse Web"
         "web_search" -> "Search Web"
         else -> toolName
             .split('_')

@@ -358,7 +358,7 @@
     <string name="webpreview_pin_to_home">Adicionar à tela inicial</string>
     <string name="webpreview_pin_to_home_requested">Atalho solicitado — confirme na sua tela inicial</string>
     <string name="webpreview_pin_to_home_unsupported">Sua tela inicial não aceita atalhos fixados</string>
-    <string name="browser_use_tab_busy_timeout">Outra ferramenta está usando a aba %1$d do navegador no momento, e esta solicitação não conseguiu a vez em %2$d segundos. Não é possível várias ferramentas usarem a mesma aba ao mesmo tempo. Abra uma nova aba (action: new_tab) e repita a ação por lá.</string>
+    <string name="browser_tab_busy_timeout">Outra ferramenta está usando a aba %1$d do navegador no momento, e esta solicitação não conseguiu a vez em %2$d segundos. Não é possível várias ferramentas usarem a mesma aba ao mesmo tempo. Abra uma nova aba (action: new_tab) e repita a ação por lá.</string>
     <string name="filebrowser_title">Arquivos</string>
     <string name="filebrowser_empty_folder">Pasta vazia</string>
     <string name="filebrowser_delete_title">Excluir “%1$s”?</string>

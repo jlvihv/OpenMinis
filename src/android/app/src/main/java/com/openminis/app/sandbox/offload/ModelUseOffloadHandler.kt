@@ -141,7 +141,7 @@ class ModelUseOffloadHandler(
         // the shell's cwd, so PRootKernel.resolveHostPath would silently drop a
         // relative path onto the rootfs root (e.g. "gen_output.json" ->
         // <rootfs>/gen_output.json) and report an unreadable bare-relative path
-        // that read_image later rejects. Fail fast with a clear message asking
+        // that read later rejects. Fail fast with a clear message asking
         // for an absolute path instead. `file://` URLs are already absolute.
         if (outputPath != null && !outputPath.startsWith("/") && !outputPath.startsWith("file://")) {
             return NativeOffloadResult(
@@ -1633,7 +1633,7 @@ class ModelUseOffloadHandler(
      *  - `/var/minis/<scope>/<path>` or `/<abs/linux/path>` → via
      *    [PRootKernel.resolveHostPath] (which already handles
      *    `/var/minis/` bind mounts longest-prefix)
-     *  - `http(s)://` → throw with a hint to download via shell_execute
+     *  - `http(s)://` → throw with a hint to download via bash
      *    first (matches iOS — avoids egressing user content)
      *  - anything else (relative paths, unknown schemes) → throw
      *
@@ -1664,7 +1664,7 @@ class ModelUseOffloadHandler(
         if (url.startsWith("http://") || url.startsWith("https://")) {
             throw ImageInputError(
                 "http(s):// image URLs are not supported by minis-model-use. " +
-                    "Download first with `shell_execute` (curl/wget) into " +
+                    "Download first with `bash` (curl/wget) into " +
                     "/var/minis/workspace/, then reference the local path."
             )
         }

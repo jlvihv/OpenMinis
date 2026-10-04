@@ -360,7 +360,7 @@
     <string name="webpreview_pin_to_home">Добавить на главный экран</string>
     <string name="webpreview_pin_to_home_requested">Ярлык запрошен — подтвердите в лаунчере</string>
     <string name="webpreview_pin_to_home_unsupported">Ваш лаунчер не поддерживает закреплённые ярлыки</string>
-    <string name="browser_use_tab_busy_timeout">Другой Инструмент сейчас управляет вкладкой браузера %1$d, и этот запрос не смог получить очередь в течение %2$d сек. Одновременное управление одной вкладкой несколькими Инструментами не поддерживается. Откройте новую вкладку (action: new_tab) и повторите действие там.</string>
+    <string name="browser_tab_busy_timeout">Другой Инструмент сейчас управляет вкладкой браузера %1$d, и этот запрос не смог получить очередь в течение %2$d сек. Одновременное управление одной вкладкой несколькими Инструментами не поддерживается. Откройте новую вкладку (action: new_tab) и повторите действие там.</string>
     <string name="filebrowser_title">Файлы</string>
     <string name="filebrowser_empty_folder">Пустая папка</string>
     <string name="filebrowser_delete_title">Удалить \"%1$s\"?</string>

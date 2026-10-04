@@ -80,12 +80,7 @@ sealed class AgentContentPart {
          * any. See [LLMMessage.ImagePart.linuxPath] for usage notes.
          */
         val linuxPath: String? = null,
-        /**
-         * [T-android-vision-group / GH#182] Provider substitutes this for the
-         * pixels on the T264 no-native-vision path. See
-         * [LLMMessage.ImagePart.noVisionPlaceholder]. Seeded by ChatViewModel
-         * only when a Vision Group is configured; null → provider default literal.
-         */
+
         val noVisionPlaceholder: String? = null,
     ) : AgentContentPart() {
         override fun equals(other: Any?): Boolean {

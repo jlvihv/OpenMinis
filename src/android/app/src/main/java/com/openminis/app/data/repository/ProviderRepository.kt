@@ -1750,29 +1750,6 @@ class ProviderRepository(private val context: Context) {
             saveConfig(config)
         }
 
-    var visionModelEntryId: String?
-        get() = _config.value.visionModelEntryId
-        set(value) = synchronized(configLock) {
-            ensureConfigLoaded()
-            val config = workingCopy()
-            config.visionModelEntryId = value
-            saveConfig(config)
-        }
-
-    fun hasVisionModelConfigured(): Boolean = resolveVisionCandidates().isNotEmpty()
-
-    fun visionModelName(): String? = _config.value.modelEntries
-        .firstOrNull { it.id == _config.value.visionModelEntryId }?.model?.displayName
-
-    fun resolveVisionCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
-        ensureConfigLoaded()
-        val config = _config.value
-        val entry = config.modelEntries.firstOrNull { it.id == config.visionModelEntryId } ?: return emptyList()
-        val instance = config.instances.firstOrNull { it.id == entry.providerInstanceId } ?: return emptyList()
-        return if (instance.isEnabled && !entry.isHidden && entry.model.hasImageInput && hasAnyCredential(instance))
-            listOf(instance to entry) else emptyList()
-    }
-
     // --- Thinking rules (custom) [T-android-thinking-rules-phase2] ---
     //
     // User-authored rules live in provider.db (provider_thinking_rules), keyed by
@@ -2277,7 +2254,6 @@ class ProviderRepository(private val context: Context) {
         // types that genuinely require a key" case is unchanged.
         //
         // This also makes refresh agree with the send path: ChatViewModel and
-        // VisionModelResolver already resolve credentials through
         // `usableApiKey`, so a keyless local server could be chatted with but
         // not refreshed. That inconsistency was the bug.
         var apiKey = usableApiKey(instance)
@@ -2491,7 +2467,6 @@ class ProviderRepository(private val context: Context) {
                                         // text-only into an image-input model:
                                         // photos went raw to an endpoint that
                                         // cannot read them instead of through
-                                        // the Vision Group.
                                         inputModalities = if (m.supportsVision) {
                                             listOf("text", "image")
                                         } else listOf("text"),
@@ -3264,7 +3239,6 @@ class ProviderRepository(private val context: Context) {
                 defaultModelEntryId = local.defaultModelEntryId ?: remote.defaultModelEntryId?.let { restoredEntryIds[it] ?: it },
                 titleModelEntryId = local.titleModelEntryId ?: remote.titleModelEntryId?.let { restoredEntryIds[it] ?: it },
                 subModelEntryId = local.subModelEntryId ?: remote.subModelEntryId?.let { restoredEntryIds[it] ?: it },
-                visionModelEntryId = local.visionModelEntryId ?: remote.visionModelEntryId?.let { restoredEntryIds[it] ?: it },
                 agentLoopModelEntryIds = mergedAgentEntries.toMutableList(),
                 agentLoopGroupIds = mergedAgentGroups.toMutableList(),
             )

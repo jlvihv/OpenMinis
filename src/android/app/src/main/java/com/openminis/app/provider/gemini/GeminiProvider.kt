@@ -230,7 +230,7 @@ class GeminiProvider(
         // downgraded #2..#5 to text, splitting a batch the signature describes
         // as a whole. Gemini rejected that with
         // `400 "Corrupted thought signature."` — reproduced on a Pixel 6:
-        // gemini-3.8-flash, five parallel subagent_task calls in one message,
+        // gemini-3.8-flash, five parallel subagent calls in one message,
         // exactly one with a signature (len 4096) and four null, failing on
         // every retryLast after a restart.
         //
@@ -316,7 +316,7 @@ class GeminiProvider(
                                 responseObj.put("response", responseContent)
                                 parts.put(JSONObject().put("functionResponse", responseObj))
                                 // [T-android-toolresult-image-dropped] functionResponse
-                                // carries only the `result` string, so read_image's
+                                // carries only the `result` string, so read's
                                 // pixels were dropped here exactly as in the OpenAI
                                 // paths. Gemini takes heterogeneous parts in one turn,
                                 // so the bytes go straight after as inlineData.
@@ -588,7 +588,7 @@ class GeminiProvider(
          * needs a thoughtSignature on every historical functionCall; a call
          * without one (made by another model before a switch, or older than
          * signature capture) is sent as history TEXT instead. That text was
-         * `[Called shell_execute with: {...}]` - a bracketed pseudo-marker the
+         * `[Called bash with: {...}]` - a bracketed pseudo-marker the
          * model reads as part of the transcript and imitates: it starts
          * writing `[Called ...]` as its answer instead of calling the tool.
          * Plain prose carries the same facts with no syntax worth copying.

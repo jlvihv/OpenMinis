@@ -64,7 +64,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         const val PREF_GLOBAL_VIEWPORT_HEIGHT = "browser_custom_viewport_height"
 
         /**
-         * [T-browser-use-per-tab-serial-android] Max time a browser_use call
+         * [T-browser-use-per-tab-serial-android] Max time a browser call
          * waits to acquire the per-tab-id serial lock before giving up. This is
          * ONLY the lock-acquisition wait (waiting for another tool's operation
          * on the SAME explicit tab id to finish). (GH#245) It really is only
@@ -112,7 +112,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     /**
      * [T-browser-use-per-tab-serial-android] Per-tab-id serial locks. Parallel
-     * tool execution can fire two browser_use calls at the same explicit tab id;
+     * tool execution can fire two browser calls at the same explicit tab id;
      * letting both drive the one WebView corrupts state, so calls targeting the
      * SAME existing tab id run one-at-a-time through that tab's Mutex. Different
      * tab ids keep their own Mutex and still run concurrently. Calls with NO
@@ -133,7 +133,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     data class Tab(
         val id: Int,
-        val manager: BrowserUseManager,
+        val manager: BrowserManager,
         var inUse: Boolean = false,
         var lastActivityDate: Date = Date(),
         /**
@@ -164,7 +164,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     val isAgentBusy: Boolean get() = _tabs.value.any { it.inUse }
 
     /** Currently selected tab's manager, or the first tab's if none selected — mirrors iOS activeManager. */
-    val activeManager: BrowserUseManager?
+    val activeManager: BrowserManager?
         get() {
             val tabs = _tabs.value
             if (tabs.isEmpty()) return null
@@ -627,7 +627,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     }
 
     /** Route a manager's download callbacks into this pool's workspace saver. */
-    private fun wireDownloadHandlers(manager: BrowserUseManager) {
+    private fun wireDownloadHandlers(manager: BrowserManager) {
         manager.onDownloadStart = { url, ua, cd, mime, len -> startUrlDownload(url, ua, cd, mime, len) }
         manager.onBlobDownloadData = { data, name, mime -> saveBlobDownload(data, name, mime) }
     }
@@ -675,7 +675,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // own tab 0 was refused, read the error's advice ("open one with action:
         // new_tab"), did exactly that, and was refused again for the same
         // reason. The advice was unfollowable and the run could never acquire a
-        // tab. Observed on a Pixel 4a: 8 of 25 browser_use calls in one
+        // tab. Observed on a Pixel 4a: 8 of 25 browser calls in one
         // delegation fan-out failed this way, across three different sub agents,
         // all on `new_tab` / `list_tabs` / `navigate` carrying `tab_id: 0`.
         //
@@ -793,7 +793,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         if (!BrowserActionGuard.lockWithin(mutex, TAB_SERIAL_WAIT_TIMEOUT_MS)) {
             return BrowserActionResult.error(
                 context.getString(
-                    R.string.browser_use_tab_busy_timeout,
+                    R.string.browser_tab_busy_timeout,
                     tabId,
                     (TAB_SERIAL_WAIT_TIMEOUT_MS / 1000L).toInt(),
                 ),
@@ -846,7 +846,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         val rebuildNote = rebuildNotices.remove(tab.id)
         return try {
             // (GH#245) The page operation gets a hard deadline, on every path
-            // (locked or not — the in-app agent's browser_use had none at all).
+            // (locked or not — the in-app agent's browser had none at all).
             // The deadline wraps execute() only, not acquireTab above, so the
             // bounded implicit-tab wait cannot eat into a legitimate action's
             // budget. A deadline hit, or a cancellation that arrives after the
@@ -982,7 +982,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
      * sends `tab_id: 0` (strict-schema providers like OpenAI Responses API
      * always populate every field), fall back to the default tab when no
      * such tab exists yet, instead of returning null. Otherwise the very
-     * first browser_use call in a session fails with "Failed to acquire
+     * first browser call in a session fails with "Failed to acquire
      * browser tab" because the model can't know that tab 0 hasn't been
      * lazily created.
      */
@@ -1092,7 +1092,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     /**
      * (GH#245, Android counterpart of iOS `rebuildDeadTab`) Remove every tab
      * whose WebView can no longer be driven — renderer died, or renderer
-     * frozen ([BrowserUseManager.isWedged]) — and release its WebView and
+     * frozen ([BrowserManager.isWedged]) — and release its WebView and
      * bookkeeping. Before, a dead tab was only filtered out of [_tabs]: its
      * WebView was never destroyed and its lock entry never removed.
      *
@@ -1188,7 +1188,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // this pool's session id (set later via setSession) plus a context, so
         // `minis://workspace/...` resolves against this chat's sandbox instead
         // of the global, last-writer-wins bind-mount map.
-        val manager = BrowserUseManager(
+        val manager = BrowserManager(
             webView,
             userAgentProfile,
             sessionIdProvider = { sessionId },
@@ -1363,7 +1363,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         }
         val id = nextTabId++
         val newWebView = WebView(context)
-        val manager = BrowserUseManager(
+        val manager = BrowserManager(
             newWebView,
             userAgentProfile,
             sessionIdProvider = { sessionId },
@@ -1391,7 +1391,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         Log.i(TAG, "window.open → created tab $id")
     }
 
-    private fun handleCloseWindow(manager: BrowserUseManager) {
+    private fun handleCloseWindow(manager: BrowserManager) {
         val currentTabs = _tabs.value.toMutableList()
         val idx = currentTabs.indexOfFirst { it.manager === manager }
         if (idx >= 0) {

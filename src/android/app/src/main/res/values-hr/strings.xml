@@ -406,10 +406,10 @@
     <string name="webpreview_pin_to_home_unsupported">Vaš pokretač ne podržava prikvačene prečace</string>
 
     <!-- T-browser-use-per-tab-serial-android: returned to the model when a
-         browser_use call can't acquire the per-tab serial lock within the wait
+         browser call can't acquire the per-tab serial lock within the wait
          timeout (another tool is operating the same tab). Worded so the model
          retries on a NEW tab instead of re-contending the busy one. -->
-    <string name="browser_use_tab_busy_timeout">Drugi alat trenutno upravlja karticom preglednika %1$d i ovaj zahtjev nije došao na red unutar %2$d sekundi. Rad više alata na istoj kartici istodobno nije podržan. Otvorite novu karticu (action: new_tab) i ponovite radnju ondje.</string>
+    <string name="browser_tab_busy_timeout">Drugi alat trenutno upravlja karticom preglednika %1$d i ovaj zahtjev nije došao na red unutar %2$d sekundi. Rad više alata na istoj kartici istodobno nije podržan. Otvorite novu karticu (action: new_tab) i ponovite radnju ondje.</string>
 
     <!-- T172 — sandbox / sessions / browser / terminal i18n -->
     <string name="filebrowser_title">Datoteke</string>

@@ -185,7 +185,7 @@ private fun helperModelStrategyLabel(f: HelperPhase.Finished): String? {
 }
 
 /**
- * [T-android-agent-toolname-display] `shell_execute` -> "Shell execute",
+ * [T-android-agent-toolname-display] `bash` -> "Shell execute",
  * `browser-use` -> "Browser use".
  *
  * Port of iOS `HelperBlockInfo.displayName(forTool:)`. DISPLAY ONLY — every
@@ -488,7 +488,7 @@ internal fun helperElapsedLabel(s: Int): String = if (s >= 60) "${s / 60}m ${s %
 
 /** Icon for a child's tool name — the same vocabulary the parent's blocks use. */
 internal fun helperToolIcon(name: String?): ImageVector = when (name) {
-    null, "", "subagent_task", "delegate_task", "agent_status" -> Icons.Default.Groups
+    null, "", "subagent" -> Icons.Default.Groups
     else -> toolIconFor(name)
 }
 
@@ -922,7 +922,7 @@ private fun HelperControlDetailContent(block: AssistantBlock, summary: String) {
  * The detail sheet's body for an agent block — the SAME frame every other
  * tool gets, and inside it stacked cards: header (title, status · tier ·
  * elapsed; model / tools / turns / tokens rows), current tool (running),
- * latest screenshot (child's most recent browser/read_image capture),
+ * latest screenshot (child's most recent browser/read capture),
  * result (Markdown, or the "no deliverable" placeholder). The live
  * conversation is reached from the sheet's top-right chat-bubble button.
  */
@@ -1101,7 +1101,7 @@ internal fun HelperDetailContent(block: AssistantBlock) {
         latestImagePath?.let { path ->
             val bmp = remember(path) { DisplayBitmapLimits.decodeFileBounded(path) }
             if (bmp != null) {
-                AgentDetailCard(title = stringResource(R.string.agent_detail_latest_screenshot), icon = toolIconFor("read_image")) {
+                AgentDetailCard(title = stringResource(R.string.agent_detail_latest_screenshot), icon = toolIconFor("image")) {
                     Image(
                         bitmap = bmp.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillWidth,
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).border(0.5.dp, ChatColors.separator.copy(alpha = 0.5f), RoundedCornerShape(6.dp)),

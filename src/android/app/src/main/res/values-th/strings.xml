@@ -359,7 +359,7 @@
     <string name="webpreview_pin_to_home">เพิ่มไปยังหน้าจอหลัก</string>
     <string name="webpreview_pin_to_home_requested">ส่งคำขอสร้างทางลัดแล้ว — ยืนยันที่ตัวเรียกใช้ของคุณ</string>
     <string name="webpreview_pin_to_home_unsupported">ตัวเรียกใช้ของคุณไม่รองรับทางลัดแบบปักหมุด</string>
-    <string name="browser_use_tab_busy_timeout">มีเครื่องมืออื่นกำลังใช้งานแท็บเบราว์เซอร์ %1$d อยู่ และคำขอนี้ไม่ได้รับคิวภายใน %2$d วินาที ระบบไม่รองรับการใช้เครื่องมือหลายตัวกับแท็บเดียวกันพร้อมกัน กรุณาเปิดแท็บใหม่ (action: new_tab) แล้วทำรายการอีกครั้งที่นั่น</string>
+    <string name="browser_tab_busy_timeout">มีเครื่องมืออื่นกำลังใช้งานแท็บเบราว์เซอร์ %1$d อยู่ และคำขอนี้ไม่ได้รับคิวภายใน %2$d วินาที ระบบไม่รองรับการใช้เครื่องมือหลายตัวกับแท็บเดียวกันพร้อมกัน กรุณาเปิดแท็บใหม่ (action: new_tab) แล้วทำรายการอีกครั้งที่นั่น</string>
     <string name="filebrowser_title">ไฟล์</string>
     <string name="filebrowser_empty_folder">โฟลเดอร์ว่างเปล่า</string>
     <string name="filebrowser_delete_title">ลบ \"%1$s\" หรือไม่</string>

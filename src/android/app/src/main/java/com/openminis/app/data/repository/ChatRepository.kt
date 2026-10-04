@@ -550,7 +550,7 @@ class ChatRepository(internal val dao: ChatDao) {
     ): MessageEntity {
         val sortOrder = dao.nextSortOrder(sessionId)
         val now = System.currentTimeMillis()
-        // Cap the body so a runaway tool_result (e.g. a 13 MB browser_use
+        // Cap the body so a runaway tool_result (e.g. a 13 MB browser
         // dump — Issue #17) cannot land an oversize blob into a Room row
         // that later fails CursorWindow's 2 MB ceiling on read. We keep
         // the row in the same parts_json shape (text part) so downstream
@@ -1044,15 +1044,15 @@ class ChatRepository(internal val dao: ChatDao) {
 
             // 2. per-tool key argument
             when (toolName) {
-                "shell_execute" -> str("command")?.let { return cap(cleanPreview("$ $it")) }
-                "file_read" -> str("path")?.let { return cap(cleanPreview("Reading $it")) }
-                "file_write" -> str("path")?.let { return cap(cleanPreview("Writing $it")) }
-                "file_edit" -> str("path")?.let { return cap(cleanPreview("Editing $it")) }
-                "browser_use" -> {
+                "bash" -> str("command")?.let { return cap(cleanPreview("$ $it")) }
+                "read" -> str("path")?.let { return cap(cleanPreview("Reading $it")) }
+                "write" -> str("path")?.let { return cap(cleanPreview("Writing $it")) }
+                "edit" -> str("path")?.let { return cap(cleanPreview("Editing $it")) }
+                "browser" -> {
                     val action = str("action") ?: "browse"
                     val url = str("url")
                     return if (url != null) cap(cleanPreview("$action $url"))
-                    else cap(cleanPreview("browser_use $action"))
+                    else cap(cleanPreview("browser $action"))
                 }
             }
 
@@ -1157,7 +1157,7 @@ class ChatRepository(internal val dao: ChatDao) {
         // Issue #17 — hard cap on a single message's parts_json. 500_000
         // chars ≈ 500 KB ASCII (worst case ~2 MB UTF-8 for 4-byte runs;
         // still small enough that any single resulting row fits inside
-        // a single CursorWindow). New oversize payloads (browser_use
+        // a single CursorWindow). New oversize payloads (browser
         // dumps, paste-bomb tool_results) are truncated at insert time
         // and replaced with a single text part carrying a marker, so
         // they remain JSON-parseable downstream.

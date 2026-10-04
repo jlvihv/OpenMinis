@@ -15,7 +15,7 @@ import androidx.compose.ui.text.withLink
  * [onClick] (so the chat screen's in-app web-preview handler can intercept,
  * matching iOS MinisOpenURLBroker behaviour).
  *
- * Used by tool-result renderers (`shell_execute` output, generic text-mode
+ * Used by tool-result renderers (`bash` output, generic text-mode
  * tool outputs, etc.) where the upstream content is not Markdown so the
  * existing `MarkdownText` link path doesn't apply. Mirrors iOS
  * `TerminalCanvasView.addURLLinks` — http/https only, no other schemes.

@@ -16,8 +16,6 @@ import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.chat.ModelPickerSheet
 import com.openminis.app.ui.chat.voice.VoiceInputPickerSheet
 import com.openminis.app.ui.chat.voice.VoiceOutputPickerSheet
-import com.openminis.app.ui.components.PickerModalityFilter
-import com.openminis.app.ui.components.UnifiedModelPickerSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,20 +48,11 @@ fun ModelSelectionScreen(repo: ProviderRepository, onBack: () -> Unit, onAddAgen
                 SelectionRow(stringResource(R.string.tts_capsule_picker_title),
                     repo.resolveVoiceOutputChoice().entry?.second?.model?.displayName
                         ?: stringResource(R.string.model_selection_system), { picker = "output" })
-                SelectionRow(stringResource(R.string.model_selection_vision), label(config.visionModelEntryId)
-                    .ifEmpty { stringResource(R.string.model_selection_disabled) }, { picker = "vision" })
-                if (config.visionModelEntryId != null) {
-                    TextButton(onClick = { repo.visionModelEntryId = null }) {
-                        Text(stringResource(R.string.model_selection_disable_vision))
-                    }
-                }
                 if (config.defaultModelEntryId != null) {
                     TextButton(onClick = { repo.defaultModelEntryId = null }) {
                         Text(stringResource(R.string.model_selection_last_used))
                     }
                 }
-                Text(stringResource(R.string.model_selection_vision_hint), style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
                 Text(stringResource(R.string.model_selection_agent), style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
                 config.agentLoopModelEntryIds.forEach { id ->
@@ -91,9 +80,6 @@ fun ModelSelectionScreen(repo: ProviderRepository, onBack: () -> Unit, onAddAgen
             onDismiss = { picker = null })
         "input" -> VoiceInputPickerSheet(repo, onDismiss = { picker = null })
         "output" -> VoiceOutputPickerSheet(repo, onDismiss = { picker = null })
-        "vision" -> UnifiedModelPickerSheet(providerRepository = repo,
-            title = stringResource(R.string.model_selection_vision), modalityFilter = PickerModalityFilter.IMAGE_INPUT,
-            selectedId = config.visionModelEntryId, onSelect = { repo.visionModelEntryId = it }, onDismiss = { picker = null })
     }
 }
 

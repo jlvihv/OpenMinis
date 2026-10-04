@@ -5,7 +5,7 @@ package com.openminis.app.sandbox
  * timeout can kill it — and only it.
  *
  * Issue #358: one command that outran its timeout wedged its whole session.
- * Every later `shell_execute` in that session timed out too, `echo alive`
+ * Every later `bash` in that session timed out too, `echo alive`
  * included, while other sessions and the interactive Terminal stayed fine.
  *
  * Cause: the timeout path did exactly nothing to the runaway.

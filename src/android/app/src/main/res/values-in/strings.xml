@@ -363,7 +363,7 @@
     <string name="webpreview_pin_to_home">Tambahkan ke layar Beranda</string>
     <string name="webpreview_pin_to_home_requested">Pintasan diminta — konfirmasi di peluncur Anda</string>
     <string name="webpreview_pin_to_home_unsupported">Peluncur Anda tidak mendukung pintasan yang disematkan</string>
-    <string name="browser_use_tab_busy_timeout">Alat lain sedang mengoperasikan tab peramban %1$d, dan permintaan ini tidak mendapat giliran dalam %2$d detik. Beberapa alat yang mengoperasikan tab yang sama secara bersamaan tidak didukung. Silakan buka tab baru (action: new_tab) dan ulangi tindakan Anda di sana.</string>
+    <string name="browser_tab_busy_timeout">Alat lain sedang mengoperasikan tab peramban %1$d, dan permintaan ini tidak mendapat giliran dalam %2$d detik. Beberapa alat yang mengoperasikan tab yang sama secara bersamaan tidak didukung. Silakan buka tab baru (action: new_tab) dan ulangi tindakan Anda di sana.</string>
     <string name="filebrowser_title">Berkas</string>
     <string name="filebrowser_empty_folder">Folder kosong</string>
     <string name="filebrowser_delete_title">Hapus \"%1$s\"?</string>

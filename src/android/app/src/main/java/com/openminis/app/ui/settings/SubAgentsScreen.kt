@@ -62,7 +62,7 @@ internal const val DRAFT_AGENT_ID = "__new__"
  *
  * Port of iOS HelperSettingsView. The list is the disclosure order the model
  * sees, and the built-in is always first and cannot be deleted, so the roster
- * can never be empty — `subagent_task.agent` always has at least one valid
+ * can never be empty — `subagent.agent` always has at least one valid
  * value.
  */
 @Composable

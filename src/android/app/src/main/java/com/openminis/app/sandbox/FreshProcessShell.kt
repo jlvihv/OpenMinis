@@ -44,6 +44,7 @@ internal class FreshProcessShell(
     private val sessionId: String,
     private val sessionBindMounts: Map<String, String>,
     private val useNoSeccomp: Boolean = false,
+    private val capture: com.openminis.app.tools.PiBashCapture? = null,
 ) {
 
     /**
@@ -52,6 +53,7 @@ internal class FreshProcessShell(
      * @return (output, exitCode). Exit 124 on timeout, matching the warm-shell
      *   contract and `timeout(1)`.
      */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun execute(
         command: String,
         timeout: Long,
@@ -88,11 +90,15 @@ internal class FreshProcessShell(
         }
 
         val output = StringBuilder()
+        fun outputText() = capture?.tailText ?: output.toString()
+        val cancellation = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.invokeOnCompletion(
+            onCancelling = true, invokeImmediately = true,
+        ) { cause -> if (cause is kotlinx.coroutines.CancellationException) stop() }
 
         // [T-android-fresh-stderr-drain] Debug builds keep stderr on its own
         // pipe (see spawn); it MUST be read, or a command that writes 64 KB to
         // stderr blocks forever. Release merges stderr and needs no drain.
-        val stderrDrain = if (SEPARATE_STDERR) {
+        val stderrDrain = if (SEPARATE_STDERR && capture == null) {
             StderrDrain(process.errorStream) { Log.d("PRootStderr", it) }.start()
         } else {
             null
@@ -138,6 +144,7 @@ internal class FreshProcessShell(
             // the watchdog only bounds a command that is genuinely still running.
             run {
                 timedOut.set(true)
+                didTimeOut = true
                 // [T-android-fresh-exit-status-file] Kill the command's own
                 // process group, not proot: proot may also be the tracer of a
                 // daemon an earlier command detached, and killing it would
@@ -156,16 +163,16 @@ internal class FreshProcessShell(
         // stdout IS this pipe — EOF never comes, so once the output has gone
         // quiet the read end is closed here and the call completes, leaving
         // proot (and the daemon) alone.
-        val lastReadAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val lastReadAt = java.util.concurrent.atomic.AtomicLong(android.os.SystemClock.elapsedRealtime())
         val closedOnStatus = java.util.concurrent.atomic.AtomicBoolean(false)
         val monitor = com.openminis.app.util.processCoroutineScope.launch(Dispatchers.IO) {
             while (!statusFile.exists()) {
                 if (readEof.get()) return@launch
                 kotlinx.coroutines.delay(STATUS_POLL_MS)
             }
-            val seenAt = System.currentTimeMillis()
+            val seenAt = android.os.SystemClock.elapsedRealtime()
             while (!readEof.get()) {
-                val now = System.currentTimeMillis()
+                val now = android.os.SystemClock.elapsedRealtime()
                 if (outputSettled(now, seenAt, lastReadAt.get())) {
                     closedOnStatus.set(true)
                     runCatching { process.inputStream.close() }
@@ -190,9 +197,9 @@ internal class FreshProcessShell(
             while (true) {
                 val n = stream.read(buf)
                 if (n < 0) break
-                lastReadAt.set(System.currentTimeMillis())
+                lastReadAt.set(android.os.SystemClock.elapsedRealtime())
                 val text = String(buf, 0, n)
-                output.append(text)
+                if (capture == null) output.append(text) else capture.append(text)
                 lineCallback?.let { feedLines(text, it) }
             }
             readEof.set(true)
@@ -208,6 +215,7 @@ internal class FreshProcessShell(
         } finally {
             watchdog.cancel()
             monitor.cancel()
+            cancellation?.dispose()
         }
 
         // Stderr goes after stdout: separate pipes cannot be re-interleaved.
@@ -229,7 +237,7 @@ internal class FreshProcessShell(
             // A user-initiated Stop is not a timeout: it must not be reported
             // as 124, which the agent loop treats as "the command exceeded its
             // budget" and may retry.
-            val partial = output.toString()
+            val partial = outputText()
             val notice = "[Cancelled]"
             return@withContext Pair(
                 if (partial.isBlank()) notice else "$partial\n$notice",
@@ -238,7 +246,7 @@ internal class FreshProcessShell(
         }
 
         if (timedOut.get()) {
-            val partial = output.toString()
+            val partial = outputText()
             val notice = "[Command timed out after ${timeout / 1000}s]"
             return@withContext Pair(
                 if (partial.isBlank()) notice else "$partial\n$notice",
@@ -246,7 +254,7 @@ internal class FreshProcessShell(
             )
         }
 
-        Pair(output.toString(), exitCode)
+        Pair(outputText(), exitCode)
     }
 
     /** Build the argv and environment, mirroring PersistentShell.startProcess. */
@@ -283,10 +291,10 @@ internal class FreshProcessShell(
         val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
         val pb = ProcessBuilder(cmd)
         configureStdin(pb)
-        // Separate in debug so proot's [native_offload] lines reach logcat
-        // instead of the output — which is why execute() starts a StderrDrain
-        // whenever SEPARATE_STDERR is set.
-        pb.redirectErrorStream(!SEPARATE_STDERR)
+        // Captured tool calls merge real stdout/stderr. Disable PRoot's own
+        // debug logs below, rather than filtering user output by text prefixes.
+        // Other debug consumers retain their separate StderrDrain/logcat path.
+        pb.redirectErrorStream(!SEPARATE_STDERR || capture != null)
 
         val env = pb.environment()
         env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
@@ -296,13 +304,16 @@ internal class FreshProcessShell(
         env["TERM"] = "dumb"
         env["PS1"] = ""
         env["TZ"] = PRootKernel.posixTz()
-        if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
         env["MINIS_CHAT_SESSION_ID"] = sessionId
         for ((k, v) in PRootKernel.customEnvironment) env[k] = v
         // User-configured variables go in as real environment entries rather
         // than `export` lines written to a shared stdin — one more thing the
         // warm path had to do that this one does not.
         for ((k, v) in envVars) env[k] = v
+        // Apply last: inherited/custom environment must not contaminate archives
+        // with internal diagnostics. User stderr remains untouched.
+        if (capture != null) env["MINIS_NOFF_DEBUG"] = "0"
+        else if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
         if (useNoSeccomp) {
             env[SeccompFallbackPolicy.NO_SECCOMP_ENV] = SeccompFallbackPolicy.NO_SECCOMP_VALUE
         }
@@ -338,6 +349,9 @@ internal class FreshProcessShell(
 
     /** Set once [stop] is called; this instance runs one command only. */
     @Volatile private var stopped: Boolean = false
+    val wasCancelled get() = stopped
+    @Volatile var didTimeOut: Boolean = false
+        private set
 
     /**
      * [T-android-fresh-exit-status-file] The command's exit code, once the
@@ -508,6 +522,13 @@ internal class FreshProcessShell(
             callback(lineBuffer.substring(0, idx))
             lineBuffer.delete(0, idx + 1)
             idx = lineBuffer.indexOf("\n")
+        }
+        // A no-newline stream must not accumulate indefinitely just for UI previews.
+        if (capture != null && lineBuffer.length > 8192) {
+            var end = 8192
+            if (lineBuffer[end - 1].isHighSurrogate()) end--
+            callback(lineBuffer.substring(0, end))
+            lineBuffer.delete(0, end)
         }
     }
 

@@ -789,7 +789,7 @@ internal fun ToolCallPill(
     // sent, could not be opened, and its own padding made it taller than the
     // capsules around it. The shared capsule fixes all four at once — the same
     // 36dp metrics as every other tool, a tappable detail sheet, and the sub
-    // agent accent (toolAccentColor already maps subagent_task to the violet)
+    // agent accent (toolAccentColor already maps subagent to the violet)
     // so it still reads as agent work.
     val controlSummary = helperControlSummary(block).takeIf {
         com.openminis.app.agent.jobs.HelperRunner.isSubAgentToolName(block.toolName)

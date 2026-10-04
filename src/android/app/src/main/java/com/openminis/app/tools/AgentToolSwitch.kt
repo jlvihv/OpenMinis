@@ -16,7 +16,7 @@ import android.content.Context
  * path that skipped the settings screen.
  */
 enum class AgentToolSwitch(val key: String, val defaultValue: Boolean) {
-    /** browser_use — mature, on by default. */
+    /** browser — mature, on by default. */
     BROWSER("agent.tools.browser.enabled", true),
 
     /** delegate_task + agent_status — still maturing, but on by default on
@@ -41,11 +41,8 @@ enum class AgentToolSwitch(val key: String, val defaultValue: Boolean) {
 
         /** The switch governing a tool name; null = always available. */
         fun governing(toolName: String): AgentToolSwitch? = when (toolName) {
-            "browser_use" -> BROWSER
-            // [T-sub-agents-v1] The renamed tool plus the two names
-            // shipped builds wrote, so the switch still governs a
-            // replayed call from an older transcript.
-            "subagent_task", "delegate_task", "agent_status" -> AGENTS
+            "browser" -> BROWSER
+            "subagent" -> AGENTS
             else -> null
         }
 
@@ -66,7 +63,7 @@ enum class AgentToolSwitch(val key: String, val defaultValue: Boolean) {
          * value migrates — an untouched install writes nothing and takes the
          * defaults.
          *
-         * browser_use had no switch before and is on by default, so there is
+         * browser had no switch before and is on by default, so there is
          * nothing to carry over for it.
          */
         fun migrateLegacyIfNeeded(context: Context) {

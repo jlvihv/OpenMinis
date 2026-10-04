@@ -1,7 +1,7 @@
 package com.openminis.app.sandbox
 
 /**
- * [T-android-shell-fresh-process] Which mechanism runs a `shell_execute`.
+ * [T-android-shell-fresh-process] Which mechanism runs a `bash`.
  *
  * ## Why this switch exists
  *

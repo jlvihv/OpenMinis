@@ -47,7 +47,7 @@ data class SubAgentDefinition(
     /**
      * The wire identifier, NOT a label.
      *
-     * This is the `enum` of `subagent_task.agent`, the value the model has to
+     * This is the `enum` of `subagent.agent`, the value the model has to
      * emit, and the key [SubAgentRoster.resolve] matches on. It is deliberately
      * never localized: localizing it would put the UI language into the tool
      * schema, make the model emit non-ASCII identifiers, and — worse — break
@@ -142,7 +142,7 @@ data class SubAgentDefinition(
          * folded in as an `action`, so the model sees ONE tool for delegating
          * and for inspecting or stopping what it delegated.
          */
-        const val TOOL_NAME = "subagent_task"
+        const val TOOL_NAME = "subagent"
 
         /** The built-in's stored name, deliberately NOT localized. See [name]. */
         const val BUILT_IN_NAME = "General Sub Agent"

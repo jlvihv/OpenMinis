@@ -44,7 +44,7 @@ class AccessibilityOffloadHandler(private val context: Context) : NativeOffloadH
          * `/var/minis/{attachments,offloads,workspace,browser}` (per session)
          * and `/var/minis/{memory,skills,shared,mcp-servers}` (global), so the
          * returned host path resolved through `resolveHostPath`'s rootfs
-         * fallback to a file that does not exist and `read_image` answered
+         * fallback to a file that does not exist and `read` answered
          * "File not found".
          *
          * `attachments` is the right namespace rather than `workspace`: it is
@@ -91,7 +91,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
                                to a file. Otherwise the PNG is written to
                                /var/minis/attachments/screenshots/a11y_<ts>.png
                                and the reply carries `path` (that Linux path,
-                               ready for read_image), `minis_url`
+                               ready for read), `minis_url`
                                (minis://attachments/screenshots/<file>) and
                                `host_path` (the Android-side path, for
                                debugging only — tools cannot read it).
@@ -147,7 +147,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
         // from `service status` would be circular.
         //
         // runBlocking matches the established pattern for permission gates in
-        // the sibling handlers (Calendar / Contacts / BrowserUse) — offload
+        // the sibling handlers (Calendar / Contacts / Browser) — offload
         // handlers are invoked off the main thread on a sandbox worker, and
         // `handle` is not a suspend fun. The prompt self-cancels after
         // AccessibilityRecoveryManager.PROMPT_TIMEOUT_MS so this can never
@@ -202,7 +202,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
                 // helper that is its parent (ExecutionCoordinator binds
                 // `fsSessionId ?: sessionId`), not the MINIS_CHAT_SESSION_ID it
                 // exports. Otherwise the PNG lands where neither the helper's
-                // shell nor read_image can find it.
+                // shell nor read can find it.
                 "ui"        -> uiSub(
                     args,
                     request.sessionId?.let {
@@ -496,7 +496,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
         // would then be unreadable here and would leak into an unrelated
         // conversation. resolveSessionHostPath bypasses that map for the
         // per-session subdirs and is the API the chat link resolver and
-        // read_image already use for exactly this reason.
+        // read already use for exactly this reason.
         //
         // The global map remains the fallback for a call with no session (the
         // interactive terminal), where last-writer-wins is the only answer
@@ -522,7 +522,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
             java.io.FileOutputStream(file).use { it.write(pngBytes) }
             val linuxPath = "$VAR_MINIS_ATTACHMENTS/$A11Y_SHOT_SUBDIR/$filename"
             // `path` is the guest path so it can be handed straight to
-            // read_image / the shell. This replaces the host absolute path the
+            // read / the shell. This replaces the host absolute path the
             // old code returned, which no agent-side tool could open.
             data.put("path", linuxPath)
             data.put("minis_url", "minis://attachments/$A11Y_SHOT_SUBDIR/$filename")

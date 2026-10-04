@@ -360,7 +360,7 @@
     <string name="webpreview_pin_to_home">Dodaj do ekranu głównego</string>
     <string name="webpreview_pin_to_home_requested">Zażądano skrótu — potwierdź w swoim launcherze</string>
     <string name="webpreview_pin_to_home_unsupported">Twój launcher nie obsługuje przypiętych skrótów</string>
-    <string name="browser_use_tab_busy_timeout">Inne narzędzie korzysta obecnie z karty przeglądarki %1$d, a to żądanie nie doczekało się swojej kolei w ciągu %2$d s. Jednoczesna obsługa tej samej karty przez wiele narzędzi nie jest wspierana. Otwórz nową kartę (action: new_tab) i powtórz tam swoją operację.</string>
+    <string name="browser_tab_busy_timeout">Inne narzędzie korzysta obecnie z karty przeglądarki %1$d, a to żądanie nie doczekało się swojej kolei w ciągu %2$d s. Jednoczesna obsługa tej samej karty przez wiele narzędzi nie jest wspierana. Otwórz nową kartę (action: new_tab) i powtórz tam swoją operację.</string>
     <string name="filebrowser_title">Pliki</string>
     <string name="filebrowser_empty_folder">Pusty folder</string>
     <string name="filebrowser_delete_title">Usunąć „%1$s”?</string>

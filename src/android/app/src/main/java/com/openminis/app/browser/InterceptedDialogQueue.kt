@@ -4,9 +4,9 @@ package com.openminis.app.browser
  * [T-android-js-dialogs-256] Bounded record of JS dialogs the agent browser
  * answered with a default instead of showing. Android port of the
  * `pendingDialogEvents` / `recordInterceptedDialog` / `drainInterceptedDialogReport`
- * trio on iOS `BrowserUseManager` (BrowserUseManager.swift L67-90, L2627-2720).
+ * trio on iOS `BrowserManager` (BrowserManager.swift L67-90, L2627-2720).
  *
- * Split out of [BrowserUseManager] rather than inlined there because that class
+ * Split out of [BrowserManager] rather than inlined there because that class
  * requires a live `WebView` to construct, which a JVM unit test cannot provide —
  * the eviction and drain-once semantics are the parts worth pinning, and this
  * way they are testable without an instrumentation run.

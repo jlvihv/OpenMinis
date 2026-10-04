@@ -39,7 +39,7 @@ internal object ImageInputPreflight {
      * is answered while BUILDING the request, where a non-vision model gets a
      * text placeholder carrying the image's sandbox path instead of pixels.
      * Blocking at the composer pre-empted that, and also pre-empted every
-     * non-vision use of an attachment — `shell_execute` can inspect, convert
+     * non-vision use of an attachment — `bash` can inspect, convert
      * or OCR the file without any vision capability at all.
      *
      * What remains is the REACTIVE half, which never blocks anything: when a

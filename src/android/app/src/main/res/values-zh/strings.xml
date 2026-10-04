@@ -378,7 +378,7 @@
     <string name="webpreview_pin_to_home">添加到桌面</string>
     <string name="webpreview_pin_to_home_requested">已请求添加，到桌面/启动器确认</string>
     <string name="webpreview_pin_to_home_unsupported">当前启动器不支持固定快捷方式</string>
-    <string name="browser_use_tab_busy_timeout">另一个工具正在操作浏览器标签页 %1$d，本次请求在 %2$d 秒内没有排到。不支持多个工具同时操作同一个标签页。请新开一个标签页（action: new_tab）并在那里重试。</string>
+    <string name="browser_tab_busy_timeout">另一个工具正在操作浏览器标签页 %1$d，本次请求在 %2$d 秒内没有排到。不支持多个工具同时操作同一个标签页。请新开一个标签页（action: new_tab）并在那里重试。</string>
     <string name="filebrowser_title">文件</string>
     <string name="filebrowser_empty_folder">空文件夹</string>
     <string name="filebrowser_delete_title">删除 “%1$s”？</string>
@@ -1860,11 +1860,8 @@
     <string name="model_selection_last_used">使用上次选择的模型</string>
     <string name="model_selection_system">系统引擎</string>
     <string name="model_selection_disabled">未启用</string>
-    <string name="model_selection_vision">辅助读图模型</string>
-    <string name="model_selection_vision_hint">当对话模型不支持图片时，使用此模型辅助读图。</string>
     <string name="model_selection_agent">助手可调用的模型</string>
     <string name="model_selection_add_models">添加模型</string>
-    <string name="model_selection_disable_vision">停用辅助读图</string>
     <string name="model_selection_title_model">标题生成模型</string>
     <string name="model_selection_chat_model">使用对话模型</string>
     <!-- [T-p1-delegate-task] helper capsule / sheet -->

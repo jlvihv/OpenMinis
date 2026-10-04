@@ -600,7 +600,7 @@ object SystemPromptBuilder {
         // is system-owned text and is NOT counted against the user-facing
         // SOUL body length limit (#356 / 1000 EN words / 1600 CN chars).
         val soulEditHint =
-            "SOUL.md (name/icon/style/lang/body) is editable: run `minis-config` via shell_execute to propose user-approved changes, " +
+            "SOUL.md (name/icon/style/lang/body) is editable: run `minis-config` via bash to propose user-approved changes, " +
             "or offer [Settings → Soul](minis://settings/soul). Do not claim you cannot change your personality."
 
         // [T-soul-style-injection 2026-05-18, port iOS 0409e24f] The `style`

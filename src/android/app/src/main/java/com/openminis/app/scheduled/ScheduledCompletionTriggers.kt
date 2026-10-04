@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - another scheduled task's SCHEDULE ends: [ScheduledAgentRunner] calls
  *    [onScheduledRunFinished] after recording each scheduled run, and it
  *    releases the waiting tasks only after the last one;
- *  - an agent job (a background sub agent, `subagent_task` wait:false) closes
+ *  - an agent job (a background sub agent, `subagent` wait:false) closes
  *    in [AgentJobRegistry]: its `completions` flow, collected once per process
  *    by [ensureListening].
  *
