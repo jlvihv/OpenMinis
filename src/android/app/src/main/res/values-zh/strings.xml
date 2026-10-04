@@ -330,6 +330,7 @@
     <string name="token_usage_section_tokens">Token（会话总计）</string>
     <string name="token_usage_input_with_cache">输入（含缓存）</string>
     <string name="token_usage_output">输出</string>
+    <string name="token_usage_auxiliary_requests">辅助请求（已计入用量）</string>
     <string name="token_usage_section_cache">缓存（会话总计）</string>
     <string name="token_usage_cache_read">缓存读取</string>
     <string name="token_usage_cache_write">缓存写入</string>

@@ -253,6 +253,12 @@ interface ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 
+    /** Allocate branch order and insert accounting metadata in one transaction. */
+    @androidx.room.Transaction
+    suspend fun insertJournalMessage(message: MessageEntity) {
+        insertMessage(message.copy(sortOrder = nextSortOrder(message.sessionId)))
+    }
+
     /** Room inserts the list in one transaction: a custom entry is never half-written. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessages(messages: List<MessageEntity>)
@@ -336,7 +342,7 @@ interface ChatDao {
     // Last message preview for session list
     @Query("""
         SELECT parts_json FROM messages
-        WHERE session_id = :sessionId
+        WHERE session_id = :sessionId AND role != 'usage'
         ORDER BY sort_order DESC LIMIT 1
     """)
     suspend fun lastMessageParts(sessionId: String): String?

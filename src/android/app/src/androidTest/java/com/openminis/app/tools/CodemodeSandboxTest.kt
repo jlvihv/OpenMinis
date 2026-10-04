@@ -88,15 +88,30 @@ class CodemodeSandboxTest {
             val session = repo.createSession("cache-test")
             repo.appendMessage(session.id, "user", """[{"type":"text","value":"test"}]""")
             val snapshot = repo.appendMessage(session.id, "user", runtime.encode(text))
+            val attribution = com.openminis.app.data.model.ModelAttributionSnapshot("cache-test", "Cache Test", "openAI", "test-instance")
+            repo.recordRequestUsage(session.id, com.openminis.app.data.model.RequestUsageRecord.Purpose.COMPACTION,
+                com.openminis.app.data.model.LLMUsage(200, 5, cacheReadInputTokens = 800, latestContextTokens = 1000), 1000, attribution)
+            assertEquals(snapshot.partsJson, db.chatDao().lastMessageParts(session.id))
+            assertEquals("test", db.chatDao().getSession(session.id)!!.lastMessage)
             db.close(); db = open()
             repo = com.openminis.app.data.repository.ChatRepository(db.chatDao())
-            assertEquals(text, runtime.decode(repo.loadMessages(session.id).last().partsJson))
+            assertEquals(text, repo.loadMessages(session.id).mapNotNull { runtime.decode(it.partsJson) }.single())
+            val usageRow = repo.loadMessages(session.id).last()
+            assertFalse(com.openminis.app.agent.JournalProjection.isModelVisible(usageRow.partsJson))
+            assertEquals("test-instance", usageRow.providerInstanceId)
+            val stats = com.openminis.app.data.model.SessionTokenStats.fromUsageRecords(repo.sessionTokenUsages(session.id))
+            assertEquals(80.0, stats.cacheHitRate!!, 0.0)
+            assertEquals(1, stats.auxiliaryRequests)
+            assertEquals(0, stats.context)
             val copy = com.openminis.app.data.SessionForkManager(repo, filesDir = context.cacheDir)
                 .duplicateSession(session.id)!!
-            assertEquals(text, runtime.decode(repo.loadMessages(copy).last().partsJson))
+            assertEquals(text, repo.loadMessages(copy).mapNotNull { runtime.decode(it.partsJson) }.single())
+            assertEquals(1, repo.sessionTokenUsages(copy).size)
             repo.deleteMessagesAfter(session.id, snapshot.sortOrder)
             assertNull(runtime.decode(repo.loadMessages(session.id).last().partsJson))
-            assertEquals(text, runtime.decode(repo.loadMessages(copy).last().partsJson))
+            assertTrue(repo.sessionTokenUsages(session.id).isEmpty())
+            assertEquals(text, repo.loadMessages(copy).mapNotNull { runtime.decode(it.partsJson) }.single())
+            assertEquals(1, repo.sessionTokenUsages(copy).size)
         } finally { db.close(); context.deleteDatabase(name) }
     }
     @Test fun deadlineInterruptsVmAndNextInvocationStillWorks() = runBlocking {

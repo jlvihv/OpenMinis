@@ -377,6 +377,7 @@
     <string name="token_usage_section_tokens">Tokens (Session Total)</string>
     <string name="token_usage_input_with_cache">Input (incl. cache)</string>
     <string name="token_usage_output">Output</string>
+    <string name="token_usage_auxiliary_requests">Auxiliary requests (included)</string>
     <string name="token_usage_section_cache">Cache (Session Total)</string>
     <string name="token_usage_cache_read">Cache Read</string>
     <string name="token_usage_cache_write">Cache Write</string>

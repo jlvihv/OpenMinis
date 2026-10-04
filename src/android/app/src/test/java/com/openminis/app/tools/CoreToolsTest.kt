@@ -49,7 +49,7 @@ class CoreToolsTest {
         assertTrue(cache.codexHeaders(JSONObject()).isEmpty())
         assertFalse(cache.diagnostics(cacheBody).contains("conversation-a"))
         assertFalse(cache.diagnostics(cacheBody).contains("private instructions"))
-        val stats = com.openminis.app.ui.chat.ChatViewModel.SessionTokenStats(100000, 0, 12800, 0, 0, 0,
+        val stats = com.openminis.app.data.model.SessionTokenStats(100000, 0, 12800, 0, 0, 0,
             latestInput = 14595, latestCacheRead = 14208)
         assertEquals(97.3484, stats.latestCacheHitRate!!, 0.001)
         assertTrue(stats.cacheHitRate!! < 12)

@@ -50,7 +50,7 @@ fun TokenUsageSheet(
     viewModel: ChatViewModel,
     onDismiss: () -> Unit,
 ) {
-    var stats by remember { mutableStateOf<ChatViewModel.SessionTokenStats?>(null) }
+    var stats by remember { mutableStateOf<com.openminis.app.data.model.SessionTokenStats?>(null) }
     val contextWindow = remember { viewModel.currentModelContextWindow }
     val maxOutput = remember { viewModel.currentModelMaxOutputTokens }
     val thinking = remember { viewModel.thinkingInfo() }
@@ -99,6 +99,9 @@ fun TokenUsageSheet(
                 val inputTotal = (s?.input ?: 0L) + (s?.cacheRead ?: 0L) + (s?.cacheWrite ?: 0L)
                 StatRow(stringResource(R.string.token_usage_input_with_cache), formatTokens(inputTotal))
                 StatRow(stringResource(R.string.token_usage_output), formatTokens(s?.output ?: 0L))
+                if ((s?.auxiliaryRequests ?: 0) > 0) {
+                    StatRow(stringResource(R.string.token_usage_auxiliary_requests), s!!.auxiliaryRequests.toString())
+                }
             }
 
             StatSection(title = stringResource(R.string.token_usage_section_cache)) {

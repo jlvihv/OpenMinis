@@ -55,6 +55,24 @@ class ChatRepository(internal val dao: ChatDao) {
     /** All persisted token_usage JSON strings for a session (one per LLM call). */
     suspend fun sessionTokenUsages(sessionId: String): List<String> = dao.tokenUsages(sessionId)
 
+    /** Accounting is branch-owned but never a conversation turn or session preview. */
+    suspend fun recordRequestUsage(
+        sessionId: String,
+        purpose: com.openminis.app.data.model.RequestUsageRecord.Purpose,
+        usage: com.openminis.app.data.model.LLMUsage,
+        streamMs: Long,
+        attribution: ModelAttributionSnapshot?,
+    ) {
+        dao.insertJournalMessage(MessageEntity(
+            id = UUID.randomUUID().toString(), sessionId = sessionId, role = "usage",
+            partsJson = com.openminis.app.data.model.RequestUsageRecord.parts(purpose),
+            tokenUsage = com.openminis.app.data.model.RequestUsageRecord.json(usage, purpose, streamMs).toString(),
+            createdAt = System.currentTimeMillis(), sortOrder = 0,
+            modelId = attribution?.modelId, modelDisplayName = attribution?.displayName,
+            providerType = attribution?.providerTypeRaw, providerInstanceId = attribution?.providerInstanceId,
+        ))
+    }
+
     /**
      * [T-android-session-paused-badge-hardkill] Session ids whose agent loop was
      * left interrupted, derived purely from the persisted message tail — so the
