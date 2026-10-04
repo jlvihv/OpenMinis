@@ -53,6 +53,7 @@ import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.agent.CompactionSummarizer
+import com.openminis.app.agent.AgentLoopEngine
 import com.openminis.app.agent.CompactIdleTimeoutException
 import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.agent.shell.OnDemandBash
@@ -8993,14 +8994,6 @@ class ChatViewModel(
             )
         }
 
-        // Tracks whether the loop was exited via a `break` (any reason — no
-        // tool calls, msgIdx safety, etc.) or fell off the end of the range.
-        // Set false by every break path that *isn't* "the model wanted to
-        // keep going past MAX_AGENT_TURNS". Without this flag the post-loop
-        // tail can't tell the runaway path apart from a normal turn ending,
-        // which previously slapped a fake "200 turns hit" error on every
-        // ordinary completion.
-        var loopExitedNormally = false
         // [T-android-auto-compact-inloop] How many times the in-loop guard has
         // compacted during THIS runAgentLoop. Bounds compact-thrash: once the
         // cap is hit, a still-over-threshold history stops the turn rather than
@@ -9045,7 +9038,8 @@ class ChatViewModel(
         // loop or survive a cancel. A mid-loop injection that carries its own
         // prefill re-arms it (see the injectQueuedPromptsAsNewTurn call site).
         var pendingScriptedTurn: com.openminis.app.scheduled.ScriptedToolTurn? = scriptedTurnFor(prefill)
-        for (turn in 0 until turnCap) {
+        val outcome = AgentLoopEngine(turnCap).run agentTurn@ { frame ->
+            val turn = frame.index
             if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed")
             // [T-android-switch-model-next-request] The user picked another
             // model while this turn ran. Apply it HERE, before the next
@@ -9096,7 +9090,7 @@ class ChatViewModel(
             // end on a tool call: the parent only ever receives the child's
             // final TEXT. Take the tools away for this one turn and ask for
             // the deliverable, the way a person would say "time's up".
-            if (helperConfig != null && !helperWrapUpInjected && (helperWrapUpRequested || turn == turnCap - 1)) {
+            if (helperConfig != null && !helperWrapUpInjected && (helperWrapUpRequested || frame.isLast)) {
                 helperWrapUpInjected = true
                 val reason = if (helperWrapUpRequested) com.openminis.app.agent.jobs.HelperWrapUpReason.BUDGET else com.openminis.app.agent.jobs.HelperWrapUpReason.TURNS
                 val note = com.openminis.app.agent.jobs.HelperRunner.wrapUpPrompt(reason)
@@ -9339,7 +9333,7 @@ class ChatViewModel(
                         TAG,
                         "[Compact] in-loop: sealed $sealedId, continuing in $freshAssistantId below the divider",
                     )
-                    continue
+                    return@agentTurn AgentLoopEngine.Action.Next
                 }
                 InLoopContextAction.STOP -> {
                     // The loop cannot present a modal mid-flight, so stop
@@ -9404,8 +9398,7 @@ class ChatViewModel(
                     // post-loop tail must not slap a fake "hit 200 turns" error
                     // on it. finalizeAtTurnLimit is skipped; the notice above is
                     // the user-visible explanation.
-                    loopExitedNormally = true
-                    break
+                    return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.CONTEXT)
                 }
             }
 
@@ -10472,8 +10465,7 @@ class ChatViewModel(
                     _canResume.value = true
                     // Deliberate stop, not the runaway ceiling — keep the
                     // post-loop tail from adding a fake turn-limit error.
-                    loopExitedNormally = true
-                    break
+                    return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.INTERRUPTED)
                 }
 
                 // A null stopReason reaching here means an EMPTY turn, which the
@@ -10523,7 +10515,7 @@ class ChatViewModel(
                                 else -> part
                             }
                             agentHistory[plan.tailIndex] = tail.copy(contentParts = newParts)
-                            continue
+                            return@agentTurn AgentLoopEngine.Action.Next
                         }
                         is EmptyTurnRecovery.Plan.AppendStandalone -> {
                             didInjectEmptyToolReminder = true
@@ -10536,7 +10528,7 @@ class ChatViewModel(
                                     contentParts = listOf(AgentContentPart.Text(EmptyTurnRecovery.REMINDER)),
                                 ),
                             )
-                            continue
+                            return@agentTurn AgentLoopEngine.Action.Next
                         }
                         is EmptyTurnRecovery.Plan.GiveUp -> {
                             // No user turn to nudge, or the guard already fired
@@ -10584,10 +10576,7 @@ class ChatViewModel(
                     // Persisted like resume()'s stop-continue reminder, so a
                     // reload keeps user/assistant alternation; rows starting
                     // with <system-reminder> never get a bubble.
-                    val nudgeSid = activeSessionId
-                    viewModelScope.launch(Dispatchers.IO) {
-                        chatRepository.appendMessage(nudgeSid, "user", """[{"type":"text","value":${escapeJson(nudge)}}]""")
-                    }
+                    runJournal.reminder(nudge)
                     withContext(Dispatchers.Main) {
                         updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                     }
@@ -10595,7 +10584,7 @@ class ChatViewModel(
                         TAG_STREAM,
                         "⏰[ScheduledPreempt] model stopped after an inserted scheduled fire — sent the one-shot resume nudge (turn=$turn)",
                     )
-                    continue
+                    return@agentTurn AgentLoopEngine.Action.Next
                 }
                 // [T-subagent-steer-continues-loop] Port of iOS 671a12ce2. A
                 // course correction that arrived while this turn was converging
@@ -10626,12 +10615,11 @@ class ChatViewModel(
                         updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                     }
                     _canResume.value = false
-                    continue
+                    return@agentTurn AgentLoopEngine.Action.Next
                 }
                 // Auto-title after first exchange
                 if (turn == 0) generateSessionTitleIfNeeded()
-                loopExitedNormally = true
-                break
+                return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.COMPLETED)
             }
             AppLogger.info(TAG_STREAM, "runAgentLoop turn=$turn dispatching ${toolCalls.size} tool call(s), continuing")
 
@@ -11025,8 +11013,7 @@ class ChatViewModel(
                         isAwaitingModelResponse = false,
                     )
                 }
-                loopExitedNormally = true
-                break
+                return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.DELEGATION_STOPPED)
             }
 
             // [T-android-queued-message-interrupt-on-toolclose] iOS d14174d3
@@ -11119,23 +11106,15 @@ class ChatViewModel(
                     allToolBlocks.clear()
                     toolInputChunkRings.clear()
                     _canResume.value = false
-                    continue
+                    return@agentTurn AgentLoopEngine.Action.Next
                 }
                 // null return = empty-after-build / drain rejected; fall
                 // through to normal next-turn dispatch so the queue doesn't
                 // pin the loop indefinitely.
             }
+            AgentLoopEngine.Action.Next
         }
-        // Two ways to leave the for-loop above:
-        //   (a) `break` from the "no tool calls" happy-path → loopExitedNormally=true,
-        //       updateAssistantMessage(...false...) already cleared streaming state.
-        //   (b) `for (turn in 0 until MAX_AGENT_TURNS)` exhausted → flag stays false,
-        //       which means the model kept asking for tool calls past the ceiling.
-        //
-        // (b) is the only case that needs the inline-error/Resume hand-holding;
-        // (a) must NOT be touched or every normal completion gets a fake "hit
-        // 200 turns" sticker (the bug user hit at v1.4.0-dev tip).
-        if (!loopExitedNormally) {
+        if (outcome is AgentLoopEngine.Outcome.LimitReached) {
             AppLogger.warning(
                 TAG_STREAM,
                 "runAgentLoop EXIT — hit turn cap=$turnCap${if (helperConfig != null) " (helper)" else ""}, finalizing as resumable",

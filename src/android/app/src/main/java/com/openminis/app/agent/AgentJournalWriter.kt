@@ -39,6 +39,9 @@ internal class AgentJournalWriter(private val repository: ChatRepository, val se
             receipt.usageJson(), reasoningContent = reasoning, modelSnapshot = receipt.attribution)
     }
 
+    suspend fun reminder(text: String): MessageEntity = repository.appendMessage(sessionId, "user",
+        assistantParts(listOf(AgentContentPart.Text(text)), emptyMap()))
+
     suspend fun toolResults(parts: List<AgentContentPart>): MessageEntity? {
         val json = toolResultParts(parts) ?: return null
         return repository.appendMessage(sessionId, "user", json)
