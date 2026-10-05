@@ -4243,7 +4243,7 @@ class ChatViewModel(
      * real one, and tear down any shell that was started against the draft id.
      *
      * The draft key leaks into persistent shells (`ExecutionCoordinator`),
-     * browser artifacts (`persistBrowserArtifact`), and the `BrowserTabPool`'s
+     * browser artifacts (`AgentBrowserExecutor`), and the `BrowserTabPool`'s
      * cookie/state store. Before this migration ran, a tool invocation that
      * happened before the user's first message would write into the draft's
      * `minis-sessions/__new__{uuid}` directory and become invisible the
@@ -8578,92 +8578,42 @@ class ChatViewModel(
     ): ToolExecutionResult {
         val ownerSession = activeSessionId
         val ownerRun = streamJob
-        val bashProjection = ChatBashProjection(viewModelScope, toolId, toolBlocks,
-            active = { activeSessionId == ownerSession && streamJob === ownerRun && ownerRun?.isActive == true },
-            publish = { updateAssistantMessage(assistantId, currentText, true, toolBlocks) })
-        val executor = com.openminis.app.agent.AgentToolExecutor(context, skillRepository)
-        return executor.execute(name, argsJson,
-            com.openminis.app.agent.AgentToolExecutor.InputContext(fsSessionId, currentModelHasNativeVision,
-                currentModel?.inputLimits?.images?.resize, ownerSession),
-            delegated = { delegatedName, args, action ->
-                when (delegatedName) {
-                    com.openminis.app.tools.CodemodeTool.NAME -> executeCodemodeTool(args, toolId, toolBlocks, assistantId, currentText)
-                    "browser" -> executeBrowserTool(args)
-                    else -> when (action) {
-                        "resume" -> executeResumeAgents(args)
-                        "status", "steer", "cancel" -> executeAgentStatus(args)
-                        else -> executeDelegateTask(args, toolId, toolBlocks, assistantId, currentText)
+        fun active() = activeSessionId == ownerSession && streamJob === ownerRun && ownerRun?.isActive == true
+        fun effects(id: String, blocks: MutableList<AssistantBlock>): com.openminis.app.agent.AgentToolExecutor.Effects {
+            val bash = ChatBashProjection(viewModelScope, id, blocks, active = ::active,
+                publish = { updateAssistantMessage(assistantId, currentText, true, blocks) })
+            return com.openminis.app.agent.AgentToolExecutor.Effects(
+                subagent = { args, action -> when (action) {
+                    "resume" -> executeResumeAgents(args)
+                    "status", "steer", "cancel" -> executeAgentStatus(args)
+                    else -> executeDelegateTask(args, id, blocks, assistantId, currentText)
+                } }, disabled = ::toolDisabledResult, bashLine = bash::line,
+                openUrl = { url -> if (active()) MinisOpenUrlBroker.offer(url) },
+                codemodeUpdate = { calls ->
+                    val cm = com.openminis.app.tools.CodemodeTool
+                    val progress = cm.renderDetails(cm.details(calls))
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (active()) {
+                            val index = blocks.indexOfFirst { it.id == id }
+                            if (index >= 0 && blocks[index].toolStatus == ToolBlockStatus.RUNNING) {
+                                blocks[index] = blocks[index].copy(content = progress)
+                                updateAssistantMessage(assistantId, currentText, true, blocks)
+                            }
+                        }
                     }
-                }
-            }, disabled = ::toolDisabledResult, bashLine = bashProjection::line, openUrl = MinisOpenUrlBroker::offer)
-    }
-
-    private suspend fun executeCodemodeTool(argsJson: String, toolId: String, toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String): ToolExecutionResult {
-        val cm = com.openminis.app.tools.CodemodeTool
-        if (cm.mode(context) == "off") return toolDisabledResult(cm.NAME)
-        val source = try { JSONObject(argsJson).getString("code") } catch (e: Exception) {
-            return ToolExecutionResult("Expected JavaScript source in code: ${e.message}", false, toolTitle = cm.NAME)
+                })
         }
-        // Read the complete branch, not the compacted model context. Custom entries survive
-        // restart and compaction; copying/trimming transcript rows forks/rewinds them too.
-        val codemodeSessionId = activeSessionId
-        val store = com.openminis.app.tools.CodemodeStore.read(
-            chatRepository.loadMessages(codemodeSessionId).map { it.partsJson })
-        val tools = callableAgentTools
-        val result = cm.execute(context, source, toolId, tools, store,
-            spill = { text ->
-                val path = "/var/minis/offloads/codemode-${java.util.UUID.randomUUID()}.txt"
-                withContext(Dispatchers.IO) {
-                    val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, path, context)
-                        ?: error("Unable to resolve codemode output path")
-                    file.parentFile?.mkdirs()
-                    file.writeText(text)
-                }
-                path
-            },
-            invoke = { name, arguments, nestedId ->
-                // Same availability, preflight and executor as direct calls. No recursive codemode.
-                val definition = tools.firstOrNull { it.name == name }
-                    ?: throw IllegalArgumentException("Unknown or unavailable tool: $name")
-                val args = JSONObject(arguments)
-                preflightValidateToolCallImpl(name, args, listOf(definition))?.let { throw IllegalArgumentException(it) }
-                val nestedBlocks = mutableListOf(AssistantBlock(id = nestedId, kind = "tool_use", toolName = name,
-                    content = "", toolStatus = ToolBlockStatus.RUNNING))
-                executeTool(name, args.toString(), nestedId, nestedBlocks, assistantId, currentText)
-            },
-            onUpdate = { calls ->
-                val progress = cm.renderDetails(cm.details(calls))
-                viewModelScope.launch(Dispatchers.Main) {
-                    val index = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (index >= 0 && toolBlocks[index].toolStatus == ToolBlockStatus.RUNNING && activeSessionId == codemodeSessionId) {
-                        toolBlocks[index] = toolBlocks[index].copy(content = progress)
-                        updateAssistantMessage(assistantId, currentText, true, toolBlocks)
-                    }
-                }
-            },
-            appendEntry = { writes ->
-                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
-                    chatRepository.appendCodemodeStoreEntry(codemodeSessionId, writes)
-                }
+        val input = com.openminis.app.agent.AgentToolExecutor.InputContext(fsSessionId, currentModelHasNativeVision,
+            currentModel?.inputLimits?.images?.resize, ownerSession, checkBranch = {
+                if (activeSessionId != ownerSession) throw CancellationException("tool branch changed")
             })
-        val images = withContext(Dispatchers.IO) {
-            result.images.map { image ->
-                val bytes = android.util.Base64.decode(image.data, android.util.Base64.DEFAULT)
-                val extension = when (image.mimeType) { "image/jpeg" -> "jpg"; "image/gif" -> "gif"; "image/webp" -> "webp"; else -> "png" }
-                val path = "/var/minis/offloads/codemode-${java.util.UUID.randomUUID()}.$extension"
-                val file = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, path, context)
-                    ?: error("Unable to resolve codemode image path")
-                file.parentFile?.mkdirs()
-                file.writeBytes(bytes)
-                AgentContentPart.ImageData(bytes, image.mimeType!!, linuxPath = path)
-            }
-        }
-        return ToolExecutionResult(result.output, result.success,
-            imageData = images.firstOrNull()?.data, imageMimeType = images.firstOrNull()?.mimeType,
-            imageLinuxPath = images.firstOrNull()?.linuxPath,
-            imageFilePath = images.firstOrNull()?.linuxPath?.let {
-                com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(fsSessionId, it, context)?.absolutePath },
-            toolTitle = cm.titleFromSource(source) ?: cm.NAME, additionalImages = images.drop(1), detailsJson = cm.details(result.calls))
+        val executor = com.openminis.app.agent.AgentToolExecutor(context, skillRepository, chatRepository,
+            browser = { browserTabPool }, definitions = { callableAgentTools })
+        return executor.execute(name, argsJson, toolId, input, effects(toolId, toolBlocks),
+            nestedEffects = { nestedName, id ->
+                effects(id, mutableListOf(AssistantBlock(id = id, kind = "tool_use", toolName = nestedName,
+                    content = "", toolStatus = ToolBlockStatus.RUNNING)))
+            })
     }
 
     /**
@@ -9529,124 +9479,6 @@ class ChatViewModel(
                 "or tell the user it is turned off if the task requires it.",
             false,
         )
-
-    private suspend fun executeBrowserTool(argsJson: String): ToolExecutionResult {
-        val input = BrowserActionInput.parse(argsJson)
-            ?: return ToolExecutionResult("Error: Invalid browser input", false)
-
-        return try {
-            val result = browserTabPool.execute(input, owner = browserOwnerId)
-            val toolTitle = try {
-                JSONObject(argsJson).optString("tool_title", "browser")
-            } catch (_: Exception) { "browser" }
-
-            var output = result.text
-            var persistentImagePath: String? = result.imageFilePath
-            var inferenceBytes: ByteArray? = null
-
-            // Persist browser screenshots to /var/minis/browser/<session>/ so the
-            // agent can reference them via minis:// in subsequent tool calls
-            // (mirrors iOS AIChatViewModel case "browser").
-            val base64 = result.base64Image
-            var linuxImagePath: String? = null
-            if (base64 != null) {
-                val raw = try {
-                    android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                } catch (_: Exception) { null }
-                if (raw != null) {
-                    // Anthropic supports up to 8000×8000 / 5MB; we standardize at 2000
-                    // long edge across attachments / browser / read.
-                    inferenceBytes = resizeJpegToMaxEdge(raw, 2000) ?: raw
-                    val filename = "screenshot_${System.currentTimeMillis() / 1000}.jpg"
-                    val persistPath = persistBrowserArtifact(filename, raw)
-                    if (persistPath != null) {
-                        persistentImagePath = persistPath
-                        linuxImagePath = "/var/minis/browser/$filename"
-                        linuxPathToMinisURL(linuxImagePath)?.let {
-                            output = "$output\nminis_url: $it"
-                        }
-                    }
-                }
-            }
-
-            // Persist fetched files (fetch action) and append minis_url
-            val fetchData = result.fetchedFileData
-            val fetchName = result.fetchedFileName
-            if (fetchData != null && fetchName != null) {
-                persistBrowserArtifact(fetchName, fetchData)
-                linuxPathToMinisURL("/var/minis/browser/$fetchName")?.let {
-                    output = "$output\nminis_url: $it"
-                }
-            }
-
-            ToolExecutionResult(
-                output = output,
-                success = result.success,
-                imageData = inferenceBytes,
-                imageMimeType = if (inferenceBytes != null) "image/jpeg" else null,
-                toolTitle = toolTitle,
-                pageURL = result.pageURL,
-                imageFilePath = persistentImagePath,
-                imageLinuxPath = linuxImagePath,
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult("Error: ${e.message}", false)
-        }
-    }
-
-    /**
-     * Write bytes to <filesDir>/minis-sessions/<sessionId>/browser/<filename>.
-     * That directory is bind-mounted to `/var/minis/browser/` so the agent can
-     * read it back via read / write / minis:// URLs.
-     * Returns the host absolute path on success, null otherwise.
-     */
-    private fun persistBrowserArtifact(filename: String, data: ByteArray): String? {
-        val sid = activeSessionId.takeIf { it.isNotEmpty() } ?: return null
-        return try {
-            val dir = java.io.File(context.filesDir, "minis-sessions/$sid/browser").apply { mkdirs() }
-            val file = java.io.File(dir, filename)
-            file.writeBytes(data)
-            file.absolutePath
-        } catch (e: Exception) {
-            android.util.Log.w("ChatViewModel", "persistBrowserArtifact failed: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * Convert a Linux path under /var/minis/ to a percent-encoded minis:// URL.
-     * Mirrors iOS AIChatViewModel.linuxPathToMinisURL.
-     */
-    private fun linuxPathToMinisURL(path: String): String? {
-        val prefix = "/var/minis/"
-        if (!path.startsWith(prefix)) return null
-        val rest = path.removePrefix(prefix)
-        val slash = rest.indexOf('/')
-        if (slash < 0) return null
-        val namespace = rest.substring(0, slash)
-        val filename = rest.substring(slash + 1)
-        val encoded = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
-        return "minis://$namespace/$encoded"
-    }
-
-    /**
-     * Resize a JPEG so its longest edge is at most `maxEdge` px. Returns null
-     * if already within bounds. Mirrors iOS AIChatViewModel.resizedImageData.
-     */
-    private fun resizeJpegToMaxEdge(data: ByteArray, maxEdge: Int): ByteArray? {
-        val bmp = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.size) ?: return null
-        val longest = maxOf(bmp.width, bmp.height)
-        if (longest <= maxEdge) { bmp.recycle(); return null }
-        val scale = maxEdge.toFloat() / longest
-        val w = (bmp.width * scale).toInt()
-        val h = (bmp.height * scale).toInt()
-        val resized = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
-        bmp.recycle()
-        val out = java.io.ByteArrayOutputStream()
-        resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-        resized.recycle()
-        return out.toByteArray()
-    }
 
     // ─── UI Helpers ──────────────────────────────────────────────────────
 
