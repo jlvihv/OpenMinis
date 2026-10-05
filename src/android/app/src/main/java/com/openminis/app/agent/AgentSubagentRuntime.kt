@@ -82,7 +82,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
                 wasResumed = true, errorText = failureText.get() ?: run?.snapshot()?.error,
                 thinkingLevel = if (verified.get()) repository.getSession(anchor.childId)?.thinkingOverride else null)
             journal.record(owner.sessionId, anchor.toolId, json, finished.state == AgentJobState.DONE, owner.expectsResultRow)
-            effects.publish(json, finished.state)
+            if (!journal.isRetired(job.id)) effects.publish(json, finished.state)
         }
         scope.launch(Dispatchers.Main, start = CoroutineStart.UNDISPATCHED) {
             var child: Child? = null
@@ -333,7 +333,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
                     finished.elapsedMs ?: System.currentTimeMillis() - started, childId, jobId, summary, agent,
                     child.snapshot().error, repository.getSession(childId)?.thinkingOverride, true)
                 journal.record(parent.sessionId, parent.toolId, json, finished.state == AgentJobState.DONE, parent.expectsResultRow)
-                effects.publish(json, finished.state)
+                if (!journal.isRetired(jobId)) effects.publish(json, finished.state)
             }
         }
         monitors.launch(Dispatchers.Default) {

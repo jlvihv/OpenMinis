@@ -367,6 +367,13 @@ object AgentJobRegistry {
      * was deleted. Without this a queued task would start into a conversation
      * the user had already ended.
      */
+    fun dropRewoundDelegations(parentSessionId: String, retainedTools: Set<String>) {
+        synchronized(queuedDelegations) {
+            queuedDelegations.removeAll { it.parentSessionId == parentSessionId && it.toolUseId !in retainedTools }
+            queueRevision.value++
+        }
+    }
+
     fun dropQueuedDelegations(parentSessionId: String, reason: String) {
         val removed = synchronized(queuedDelegations) {
             val hit = queuedDelegations.filter { it.parentSessionId == parentSessionId }

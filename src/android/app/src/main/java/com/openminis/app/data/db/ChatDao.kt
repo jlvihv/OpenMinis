@@ -310,6 +310,27 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE session_id = :sessionId AND id = :id AND role = 'assistant'")
     suspend fun deleteRetryAssistant(sessionId: String, id: String): Int
 
+    @Query("DELETE FROM messages WHERE session_id = :sessionId AND id = :id")
+    suspend fun deleteRewindRow(sessionId: String, id: String)
+
+    @Query("UPDATE messages SET role = 'usage', parts_json = :parts, token_usage = :usage, error_info = NULL " +
+        "WHERE session_id = :sessionId AND id = :id")
+    suspend fun retainRewindReceipt(sessionId: String, id: String, parts: String, usage: String)
+
+    @Transaction
+    suspend fun applyRuntimeRewind(sessionId: String, expected: List<MessageEntity>, keep: Set<String>,
+        changed: Map<String, String>, receipts: Map<String, String>, conversationReceipt: String, invalidMarkers: List<String>) {
+        val current = loadMessages(sessionId)
+        check(current == expected) { "History changed while the rewind was being prepared" }
+        current.forEach { row ->
+            if (row.id in keep) changed[row.id]?.let { updateMessageParts(row.id, it) }
+            else receipts[row.id]?.let { usage ->
+                retainRewindReceipt(sessionId, row.id, if (row.role == "usage") row.partsJson else conversationReceipt, usage)
+            } ?: deleteRewindRow(sessionId, row.id)
+        }
+        invalidMarkers.forEach { deleteCompactMarker(it) }
+    }
+
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
     suspend fun deleteMessages(sessionId: String)
 

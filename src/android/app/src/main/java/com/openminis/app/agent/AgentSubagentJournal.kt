@@ -19,6 +19,15 @@ internal class AgentSubagentJournal(private val repository: ChatRepository,
     private data class Final(val content: String, val success: Boolean)
     private val lock = Mutex()
     private val completed = mutableMapOf<Key, Final>()
+    private val retiredJobs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    fun isRetired(job: String): Boolean = job in retiredJobs
+
+    suspend fun <T> rewind(block: suspend (retire: (String, Set<String>, Set<String>) -> Unit) -> T): T = lock.withLock {
+        block { session, jobs, tools ->
+            retiredJobs.addAll(jobs)
+            completed.keys.removeAll { it.session == session && it.tool in tools }
+        }
+    }
 
     suspend fun record(session: String, tool: String, content: String, success: Boolean, expectsResultRow: Boolean = true) {
         // Nested codemode calls have no protocol tool_result row; their callback/trace is the carrier.
@@ -28,6 +37,8 @@ internal class AgentSubagentJournal(private val repository: ChatRepository,
     private suspend fun persist(session: String, tool: String, content: String, success: Boolean, expected: Final?) {
         withContext(NonCancellable + Dispatchers.IO) {
             lock.withLock {
+                val job = runCatching { org.json.JSONObject(content).optString("job_id") }.getOrDefault("")
+                if (job in retiredJobs) return@withLock
                 val key = Key(session, tool)
                 if (expected != null && completed[key] !== expected) return@withLock
                 val final = expected ?: Final(content, success)

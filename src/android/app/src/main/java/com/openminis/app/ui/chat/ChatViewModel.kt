@@ -5085,329 +5085,80 @@ class ChatViewModel(
             m.role == "assistant" && m.toolBlocks.any { it.id == blockId }
         }?.id
 
-    /**
-     * [T-android-rerun-from-tool-block-position] Re-run the conversation from
-     * the exact point a specific tool_use block was about to be issued —
-     * BLOCK-boundary, not turn-boundary. Keeps the blocks BEFORE the target
-     * tool_use in the same assistant turn; drops the target block + every
-     * later block in that turn + its tool_result + all later turns, then
-     * re-runs so the model re-decides from that point.
-     *
-     * Ported from iOS `retryFromToolBlock` (commit 0149457e). Anchor is the
-     * block's tool_use id ([blockId], which for a tool_use [AssistantBlock]
-     * equals its `id`) — stable + unique, NOT a positional count, so streaming
-     * / merged-turn alignment can't drift the cut point.
-     *
-     * Degenerate case: when the target is the FIRST real block of its turn
-     * (nothing precedes it), this is equivalent to truncating at the preceding
-     * user message — delegate to [retryFromMessage] (the existing whole-turn
-     * path) and skip the sub-message DB rewrite.
-     *
-     * Android does the cut DB-first (delete rows after the trimmed assistant
-     * row, then rewrite that row's parts in place via
-     * [ChatRepository.updateMessageParts]) and rebuilds agentHistory from the
-     * trimmed DB state. The UI is trimmed in-memory (same as
-     * [retryFromMessage]'s `retainedHead`, so compact-marker graying isn't
-     * disturbed). Because the agent loop persists each turn as its own row and
-     * `toChatMessages` merges consecutive assistant rows into one bubble, the
-     * surviving trimmed turn and the new generation coalesce on the next
-     * reload — no duplicate header (iOS needed an explicit resume-into-turn
-     * fix for the same; Android gets it from the merge). The thinking
-     * indicator shows immediately via [runAgentLoop]'s awaiting placeholder.
-     *
-     * No-op (returns false) when streaming, when the message/block isn't
-     * found, or when the block isn't a tool_use. The caller gates the menu
-     * item with the same `!isStreaming` rule, but the guard here is the source
-     * of truth.
-     */
+    /** Explicit block rerun: capture the display target; runtime validates and commits the exact cut. */
     fun rerunFromToolBlock(assistantMessageId: String, blockId: String): Boolean {
         if (afterCancelledRun { rerunFromToolBlock(assistantMessageId, blockId) }) return true
         if (_isStreaming.value) return false
-        val messages = _messages.value
-        val asstIdx = messages.indexOfFirst { it.id == assistantMessageId }
-        if (asstIdx < 0) return false
-        val asstMsg = messages[asstIdx]
-        val blockIdx = asstMsg.toolBlocks.indexOfFirst { it.id == blockId }
-        if (blockIdx < 0) return false
-        val targetBlock = asstMsg.toolBlocks[blockIdx]
-        // Only a real tool_use block anchors a block cut — its id is the
-        // tool_use id we match against in agentHistory / parts_json.
-        if (targetBlock.kind != "tool_use" || targetBlock.id.isBlank()) return false
-        // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
-        _forceScrollToBottom.tryEmit(Unit)
-        val targetToolUseId = targetBlock.id
-
-        // Degenerate: nothing of substance precedes the target in this turn —
-        // a block cut here is identical to truncating at the preceding user
-        // message, so reuse the existing whole-turn path. "Substance" = any
-        // earlier block that isn't an empty text block (mirrors iOS
-        // hasPrecedingContent).
-        val hasPrecedingContent = asstMsg.toolBlocks.take(blockIdx).any { blk ->
-            if (blk.isText) blk.content.isNotEmpty() else true
+        val snapshot = _messages.value
+        val index = snapshot.indexOfFirst { it.id == assistantMessageId }
+        if (index < 0) return false
+        val message = snapshot[index]
+        val part = message.toolBlocks.indexOfFirst { it.id == blockId && it.kind == "tool_use" }
+        if (part < 0 || blockId.isBlank() || currentProvider == null) return false
+        return launchRewind(com.openminis.app.agent.AgentRewindJournal.Target.Tool(blockId), "rerunFromToolBlock") {
+            val blocks = message.toolBlocks.take(part)
+            _messages.value = snapshot.take(index) + if (blocks.isEmpty()) emptyList() else listOf(message.copy(
+                content = blocks.filter { it.isText }.joinToString("") { it.content }, toolBlocks = blocks,
+                isStreaming = false, isAwaitingModelResponse = false, error = null))
         }
-        // [T-android-rerun-from-tool-deletes-earlier-turns] The degenerate
-        // shortcut is ONLY equivalent to truncating at the preceding user
-        // message when there is NOTHING between that user message and this
-        // assistant turn. If an EARLIER assistant turn/bubble sits right before
-        // this one (asstIdx-1 is also assistant), retryFromMessage(precedingUser)
-        // would delete that earlier turn's tools too — exactly the "rerun from
-        // the last tool wiped the tools above it / re-ran from the very start"
-        // bug (logged: historySize 29 → 3 on the 2nd consecutive rerun). In
-        // that case fall through to the DB-precise cut below, which keeps every
-        // row before the target row (its cutPartIdx==0 branch deletes only the
-        // target row onward) and preserves the earlier turns.
-        val precededByUserOnly = asstIdx == 0 || messages[asstIdx - 1].role != "assistant"
-        if (!hasPrecedingContent && precededByUserOnly) {
-            val userMsg = (asstIdx - 1 downTo 0).asSequence()
-                .map { messages[it] }
-                .firstOrNull { it.role == "user" && it.content.isNotBlank() }
-                ?: return false
-            Log.i(TAG, "rerunFromToolBlock degenerate → retryFromMessage(precedingUser) tuId=${targetToolUseId.take(12)}")
-            retryFromMessage(userMsg.id)
-            return true
-        }
-
-        val initialProvider = currentProvider
-        if (initialProvider == null) {
-            _error.value = "No provider configured"
-            return false
-        }
-        _canResume.value = false
-        _error.value = null
-
-        // Snapshot the dropped range for conversation cleanup.
-        // The dropped range is: the target turn's blocks FROM the target
-        // onward (the target tool_use itself + any later same-turn blocks) +
-        // every later message. The surviving earlier blocks of the target turn
-        // are kept, so they're excluded.
-        val droppedTargetTail = asstMsg.copy(
-            toolBlocks = asstMsg.toolBlocks.drop(blockIdx),
-        )
-        val deletedMessages = listOf(droppedTargetTail) +
-            messages.subList(asstIdx + 1, messages.size).toList()
-
-        // Claim the streaming flag synchronously so a rapid second tap is
-        // rejected by the entry guard (same rationale as retryFromMessage T145).
-        AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
-
-        viewModelScope.launch {
-            var streamLaunched = false
-            try {
-                val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
-
-                // Locate the DB assistant row holding the target tool_use, and
-                // the parts-array index of that tool_use within it.
-                val dbMessages = chatRepository.loadMessages(sid)
-                var cutRow: MessageEntity? = null
-                var cutPartIdx = -1
-                outer@ for (entity in dbMessages) {
-                    if (entity.role != "assistant") continue
-                    val arr = try { org.json.JSONArray(entity.partsJson) } catch (_: Exception) { continue }
-                    for (i in 0 until arr.length()) {
-                        val o = arr.optJSONObject(i) ?: continue
-                        if (o.optString("type") != "toolUse") continue
-                        val tuId = o.optJSONObject("value")?.optString("toolUseId") ?: ""
-                        if (tuId == targetToolUseId) {
-                            cutRow = entity
-                            cutPartIdx = i
-                            break@outer
-                        }
-                    }
-                }
-                val row = cutRow
-                if (row == null || cutPartIdx < 0) {
-                    // Anchor not in DB (shouldn't happen for a rendered tool
-                    // block). Abort cleanly without a half-applied truncation.
-                    Log.w(TAG, "rerunFromToolBlock: toolUseId ${targetToolUseId.take(12)} not found in DB — aborting")
-                    return@launch
-                }
-
-                // Trim the row's parts to those strictly before the target
-                // tool_use, preserving array order (parts_json mirrors block
-                // order). An assistant turn may hold text + several tool_use
-                // parts; we keep everything ahead of the matched index.
-                val srcArr = org.json.JSONArray(row.partsJson)
-                val keptArr = org.json.JSONArray()
-                for (i in 0 until cutPartIdx) keptArr.put(srcArr.get(i))
-
-                if (cutPartIdx == 0) {
-                    // Nothing precedes the target in its DB row — trimming would
-                    // leave an empty assistant row. Drop the whole row instead
-                    // (keepCount = its sort_order). The UI degenerate guard
-                    // above normally catches this, but a merged-bubble layout
-                    // could route a first-in-row tool_use here; handle it so we
-                    // never persist a phantom empty assistant message.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder)
-                    Log.i(TAG, "rerunFromToolBlock cut at row start (empty trim) tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder} row=${row.id.take(8)}")
-                } else {
-                    // Delete every row after the trimmed assistant row, then
-                    // rewrite the trimmed row in place. deleteMessagesAfter
-                    // keeps rows with sort_order < keepCount, so keepCount =
-                    // thisRow.sortOrder + 1 drops the following tool_result row
-                    // + all later turns while keeping (then overwriting) this one.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder + 1)
-                    chatRepository.updateMessageParts(row.id, keptArr.toString())
-                    Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
-                }
-
-                // Trim the UI in-memory (same approach as retryFromMessage's
-                // `_messages.value = retainedHead`, which doesn't reload from
-                // DB and so doesn't disturb compact-marker graying): keep the
-                // target assistant message with only its blocks BEFORE the
-                // target, and drop every later message. Block trim mirrors the
-                // parts trim above so UI ↔ history stay in lockstep.
-                withContext(Dispatchers.Main) {
-                    val cur = _messages.value
-                    val ai = cur.indexOfFirst { it.id == assistantMessageId }
-                    if (ai >= 0) {
-                        val keptBlocks = cur[ai].toolBlocks.take(blockIdx)
-                        if (keptBlocks.isEmpty()) {
-                            // [T-android-rerun-from-tool-deletes-earlier-turns]
-                            // Target was the first block of its bubble — the DB
-                            // side dropped the whole row (cutPartIdx==0). Drop
-                            // the bubble in the UI too instead of leaving an
-                            // empty assistant message; earlier bubbles (the
-                            // turns that precede this one) are preserved by
-                            // subList(0, ai).
-                            _messages.value = cur.subList(0, ai).toList()
-                        } else {
-                            // Recompute `content` from the surviving text blocks
-                            // so it doesn't keep text the renderer just dropped.
-                            // The chat list renders ordering from toolBlocks, but
-                            // `content` feeds previews / copy, so keep it in sync.
-                            val keptText = keptBlocks.filter { it.isText }
-                                .joinToString("") { it.content }
-                            val trimmed = cur[ai].copy(
-                                content = keptText,
-                                toolBlocks = keptBlocks,
-                                isStreaming = false,
-                            )
-                            _messages.value = cur.subList(0, ai).toList() + trimmed
-                        }
-                    }
-                }
-                val keptIds = _messages.value.mapTo(mutableSetOf()) { it.id }
-                retainStreamFlushStates(keptIds)
-
-                // Rebuild agentHistory from the trimmed DB state.
-                agentHistory.clear()
-                toolLoopDetector.reset()
-                for (entity in chatRepository.loadMessages(sid)) {
-                    // [T-android-error-persist-current-turn] Carriers never reach the model.
-                    if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
-                    entity.toLLMMessage()?.let(agentHistory::add)
-                }
-
-                streamLaunched = runRerunStreamTail(initialProvider, "rerunFromToolBlock")
-            } finally {
-                if (!streamLaunched) {
-                    AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
-                }
-            }
-        }
-        return true
     }
 
-    /**
-     * Retry from a specific user message: truncate all messages after it
-     * (including the assistant response), rebuild agent history, and resend.
-     * Mirrors iOS's edit/retry behavior — no duplicate user messages.
-     */
     fun retryFromMessage(messageId: String) {
         if (afterCancelledRun { retryFromMessage(messageId) }) return
         if (_isStreaming.value) return
-        // [T-android-mute-reset-on-drain] Retry is new work, as on iOS.
-        com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
-        _canResume.value = false
-        val messages = _messages.value
-        val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
-        val message = messages[index]
-        // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
+        val snapshot = _messages.value
+        val index = snapshot.indexOfFirst { it.id == messageId }
+        if (index < 0 || snapshot[index].role != "user") return
+        val message = snapshot[index]
+        if (message.content.isBlank() && message.attachmentUris.isEmpty() && message.imageUris.isEmpty()) return
+        val keepThrough = BubbleRowLocator.groupSpan(snapshot, index).last
+        val ids = (message.sourceDbIds + message.id).toSet()
+        launchRewind(com.openminis.app.agent.AgentRewindJournal.Target.User(ids), "retryFromMessage") {
+            _messages.value = snapshot.take(keepThrough + 1).map { bubble ->
+                if (bubble.id == messageId && bubble.isQueued) {
+                    bubble.queuedPromptId?.let { id -> _promptQueue.value = _promptQueue.value.filterNot { it.id == id } }
+                    bubble.copy(isQueued = false, queuedPromptId = null)
+                } else bubble
+            }
+        }
+    }
+
+    /** UI captures the target and renders the committed cut; runtime owns the durable rewind and dispatch. */
+    private fun launchRewind(target: com.openminis.app.agent.AgentRewindJournal.Target,
+        label: String, publish: () -> Unit): Boolean {
+        val initial = currentProvider ?: return false
+        val owner = activeSessionId
+        val entry = _activeEntryId.value
+        var provider = initial
+        var prompt: String? = null
+        com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(owner)
         _forceScrollToBottom.tryEmit(Unit)
-        if (message.role != "user" || message.content.isBlank()) return
-
-        val initialProvider = currentProvider
-        if (initialProvider == null) {
-            _error.value = "No provider configured"
-            return
-        }
-        val provider: LLMProvider = initialProvider
+        _canResume.value = false
         _error.value = null
-
-        // [T-android-bubble-anchor-drain] Keep through the LAST bubble of a
-        // merged queue batch: they share one row, and retry keeps that row.
-        val keepThrough = BubbleRowLocator.groupSpan(messages, index).last
-        val deletedMessages = messages.subList(keepThrough + 1, messages.size).toList()
-
-        // Truncate UI messages: keep up to and including this user message.
-        // T189: if the retried bubble was still in the queued state (manual
-        // retry of a queued message before resumeQueueAfterCancel's grace
-        // window — or fallback when auto-resume is disabled), flip it out of
-        // queued visuals and drop its queue entry so the upcoming send
-        // doesn't double up against a later auto-drain.
-        val retainedHead = messages.subList(0, keepThrough + 1).map { m ->
-            if (m.id == messageId && m.isQueued) {
-                m.queuedPromptId?.let { pid ->
-                    _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
-                }
-                m.copy(isQueued = false, queuedPromptId = null)
-            } else m
-        }
-        _messages.value = retainedHead
-        // T-streaming-side-channel: scrub stream deltas pointing at
-        // messages we just truncated so they can't resurface later.
-        val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
-        retainStreamFlushStates(keptIds)
-
-        // T145: claim the streaming flag SYNCHRONOUSLY so a rapid second tap
-        // (or any concurrent send/retry attempt) is rejected by the entry
-        // guard. Previously this was set inside the suspended outer launch,
-        // leaving a multi-second window during DB cleanup + OAuth refresh
-        // where two retries could slip through and spawn duplicate streamJobs.
-        // The orphaned first job's `_isStreaming = false` at completion would
-        // then flip the UI to "stopped" while the second job was still running.
-        AppLogger.info(TAG_STREAM, "retry _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
-
-        viewModelScope.launch {
-            // If setup throws before the inner streamJob is launched, the
-            // streaming flag would be stuck true forever. Reset on the
-            // unhappy paths; happy path resets in the streamJob's tail.
-            var streamLaunched = false
-            try {
-            val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
-
-            // [T-android-bubble-anchor] Keep the retried bubble's own row and
-            // cut everything after it. Found by id, not by counting visible
-            // user rows - see BubbleRowLocator for the skews counting hit.
-            val located = BubbleRowLocator.locateUserRow(messages, index, chatRepository.loadMessages(sid))
-            logBubbleAnchor("retry", messageId, located)
-            val cutoffSortOrder = BubbleRowLocator.cutoffFor(located, keepBubble = true)
-            if (cutoffSortOrder >= 0) {
-                chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+        fun checkOwner() { if (activeSessionId != owner) throw CancellationException("rewind branch changed") }
+        launchAgentRun(viewModelScope, label, prepare = {
+            checkOwner()
+            com.openminis.app.agent.AgentRewindJournal(chatRepository, owner, agentHistory,
+                { activeSessionId }, { it.toLLMMessage() }, subagentJournal).prepare(target) { _, marker ->
+                checkOwner()
+                publish()
+                _cachedLatestMarker = marker
+                _compactSummary.value = marker?.summary
+                if (marker == null) _messages.value = _messages.value.map { it.copy(isCompactedHistory = false) }
+                retainStreamFlushStates(_messages.value.mapTo(mutableSetOf()) { it.id })
+                toolLoopDetector.reset()
             }
-
-            // Rebuild agentHistory from remaining DB messages
-            agentHistory.clear()
-            toolLoopDetector.reset()
-            val remaining = chatRepository.loadMessages(sid)
-            for (entity in remaining) {
-                // [T-android-error-persist-current-turn] Carriers never reach the model.
-                if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
-                entity.toLLMMessage()?.let(agentHistory::add)
+            checkOwner()
+            provider = providerPreparation.prepare(provider, entry, owner) { expected, refreshed ->
+                if (activeSessionId == owner && currentProvider === expected) currentProvider = refreshed
             }
-
-            streamLaunched = runRerunStreamTail(provider, "retryFromMessage")
-            } finally {
-                if (!streamLaunched) {
-                    AppLogger.info(TAG_STREAM, "retry _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
-                }
-            }
+            checkOwner()
+            prompt = providerPreparation.prompt(provider, buildSystemPrompt())
+        }) {
+            runAgentLoop(provider, prompt, buildFallbackProviders(provider))
         }
+        return true
     }
 
     /**
@@ -5542,71 +5293,6 @@ class ChatViewModel(
         val located = BubbleRowLocator.locateUserRow(messages, anchorIdx, chatRepository.loadMessages(sid))
         logBubbleAnchor("delete", messages[anchorIdx].id, located)
         return BubbleRowLocator.cutoffFor(located, keepBubble = target.role != "user")
-    }
-
-    /**
-     * [T-android-rerun-from-tool-block-position] Shared streaming tail used by
-     * both [retryFromMessage] and [rerunFromToolBlock]: refresh the OAuth
-     * token if needed, build the (OAuth-prefixed) system prompt, and launch
-     * the agent-loop stream job. Callers must have already (a) claimed
-     * `_isStreaming = true` synchronously, (b) truncated UI + DB to the desired
-     * re-entry point, and (c) rebuilt [agentHistory]. Returns true once the
-     * stream job is launched (the caller's outer `finally` resets
-     * `_isStreaming` only when this returns false / throws first).
-     */
-    private suspend fun runRerunStreamTail(
-        initialProvider: LLMProvider,
-        label: String,
-    ): Boolean {
-        var provider = initialProvider
-        // Refresh OAuth token if needed
-        if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-            try {
-                val activeEntryId = _activeEntryId.value
-                val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                if (instance != null) {
-                    val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                    val freshToken = manager?.validAccessToken()
-                    if (freshToken != null) {
-                        val storedKey = providerRepository.loadApiKey(instance.id)
-                        if (freshToken != storedKey) {
-                            providerRepository.saveApiKey(instance.id, freshToken)
-                            provider = com.openminis.app.provider.ProviderFactory.create(
-                                instance, freshToken, currentModel ?: provider.model, context,
-                                sessionId = activeSessionId,
-                                // [T-android-model-custom-params] Carry the
-                                // overrides across a token-refresh rebuild. No
-                                // entry is in scope here, but the provider being
-                                // replaced already holds them — without this a
-                                // refresh would silently drop the user's
-                                // temperature/headers mid-conversation.
-                                overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)
-                                    ?.modelOverrides,
-                            )
-                            currentProvider = provider
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "OAuth token refresh failed: ${e.message}")
-            }
-        }
-
-        val baseSystemPrompt = buildSystemPrompt()
-        val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-            val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
-            if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
-            else "$prefix\n\n${baseSystemPrompt ?: ""}"
-        } else baseSystemPrompt
-
-        // _isStreaming was already set synchronously by the caller.
-        val launchedProvider = provider
-        launchAgentRun(viewModelScope, label) {
-            runAgentLoop(provider = launchedProvider, systemPrompt = systemPrompt,
-                fallbackProviders = buildFallbackProviders(launchedProvider))
-        }
-        return true
     }
 
     /**
@@ -8833,83 +8519,36 @@ class ChatViewModel(
      * verbatim (incl. OAuth token refresh + Claude Code prefix), so a queued
      * prompt drain after cancel uses the same plumbing as a fresh send.
      */
+    private val queueRestart by lazy { com.openminis.app.agent.AgentQueueRestart(viewModelScope) }
+
     private fun resumeQueueAfterCancel() {
-        val cancelledRun = streamJob?.takeIf { it.isCancelled }
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(200)
-            cancelledRun?.join()
-            if (_promptQueue.value.isEmpty()) return@launch
-            if (_isStreaming.value) return@launch
-            // [T-android-compact-queued-drain] Defer while a compact is in
-            // flight — draining would mutate agentHistory mid-marker-write.
-            // Safe to just return: every SUCCESSFUL compact re-kicks this
-            // function from its own tail, so a deferred drain is never lost
-            // (and a failed compact leaves the queue pending by design).
-            if (_isCompacting.value) {
-                AppLogger.info(TAG, "resumeQueueAfterCancel: compact in flight — deferring to its completion kick")
-                return@launch
-            }
-
-            val initialProvider = currentProvider
-            if (initialProvider == null) {
-                AppLogger.warning(TAG, "resumeQueueAfterCancel: no provider, dropping queue")
-                _promptQueue.value = emptyList()
-                _messages.value = _messages.value.filterNot { it.isQueued }
-                return@launch
-            }
-            var provider: LLMProvider = initialProvider
-
-            // Refresh OAuth token if needed (mirrors sendMessage L2477-2501).
-            if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-                try {
-                    val activeEntryId = _activeEntryId.value
-                    val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                    val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                    if (instance != null) {
-                        val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                        val freshToken = manager?.validAccessToken()
-                        if (freshToken != null) {
-                            val storedKey = providerRepository.loadApiKey(instance.id)
-                            if (freshToken != storedKey) {
-                                providerRepository.saveApiKey(instance.id, freshToken)
-                                provider = com.openminis.app.provider.ProviderFactory.create(
-                                    instance, freshToken, currentModel ?: provider.model, context,
-                                    sessionId = activeSessionId,
-                                    // [T-android-model-custom-params] See the
-                                    // sibling refresh site: carry overrides
-                                    // across the rebuild.
-                                    overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)
-                                        ?.modelOverrides,
-                                )
-                                currentProvider = provider
-                            }
+        val owner = activeSessionId
+        queueRestart.kick(owner, streamJob?.takeIf { it.isCancelled }, com.openminis.app.agent.AgentQueueRestart.Effects(
+            currentSession = { activeSessionId }, queued = { _promptQueue.value.isNotEmpty() },
+            busy = { _isStreaming.value }, compacting = { _isCompacting.value },
+            providerAvailable = { currentProvider != null },
+            unavailable = { _error.value = "No provider configured; queued prompts are retained" }, launch = {
+                val initial = currentProvider
+                if (initial != null && activeSessionId == owner) {
+                    val entry = _activeEntryId.value
+                    var provider: LLMProvider = initial
+                    var prompt: String? = null
+                    _isStreaming.value = true
+                    _canResume.value = false
+                    _error.value = null
+                    launchAgentRun(viewModelScope, "resumeQueueAfterCancel", markFailure = false, prepare = {
+                        if (activeSessionId != owner) throw CancellationException("queue restart branch changed")
+                        provider = providerPreparation.prepare(provider, entry, owner) { expected, refreshed ->
+                            if (activeSessionId == owner && currentProvider === expected) currentProvider = refreshed
                         }
+                        if (activeSessionId != owner) throw CancellationException("queue restart branch changed")
+                        prompt = providerPreparation.prompt(provider, buildSystemPrompt())
+                    }) {
+                        drainQueuedPrompts(provider, prompt, buildFallbackProviders(provider),
+                            com.openminis.app.data.model.FallbackStrategy.default)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "OAuth token refresh failed (resumeQueueAfterCancel): ${e.message}")
                 }
-            }
-
-            val baseSystemPrompt = buildSystemPrompt()
-            val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-                val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
-                if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
-                else "$prefix\n\n${baseSystemPrompt ?: ""}"
-            } else baseSystemPrompt
-
-            // T145: claim the streaming flag synchronously before launching
-            // the streamJob so a concurrent send/retry tap is rejected by the
-            // entry guard. Mirrors sendMessage discipline.
-            AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=true (sync, sid=$activeSessionId)")
-            _isStreaming.value = true
-            _canResume.value = false
-            _error.value = null
-
-            launchAgentRun(this, "resumeQueueAfterCancel", markFailure = false) {
-                drainQueuedPrompts(provider, systemPrompt, buildFallbackProviders(provider),
-                    com.openminis.app.data.model.FallbackStrategy.default)
-            }
-        }
+            }))
     }
 
     /**

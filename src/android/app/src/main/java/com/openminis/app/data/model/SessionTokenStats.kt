@@ -38,9 +38,10 @@ data class SessionTokenStats(
                 val out = row.optLong("outputTokens", 0L)
                 input += fresh; output += out; read += cached; write += created
                 val total = fresh + cached + created
-                if (total > 0) { latestInput = total; latestRead = cached }
+                val eligible = row.optBoolean("contextEligible", true)
+                if (total > 0 && eligible) { latestInput = total; latestRead = cached }
                 if (RequestUsageRecord.isConversation(row)) {
-                    row.optInt("latestContextTokens", 0).takeIf { it > 0 }?.let { context = it }
+                    if (eligible) row.optInt("latestContextTokens", 0).takeIf { it > 0 }?.let { context = it }
                 } else if (total > 0) auxiliary++
                 val duration = row.optLong("streamMs", 0L)
                 // Keep time and output matched, excluding legacy records with no measured duration.

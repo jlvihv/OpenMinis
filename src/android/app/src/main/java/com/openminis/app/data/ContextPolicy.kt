@@ -397,6 +397,7 @@ object ContextSizeMeter {
     /** The pair in a usage row's JSON, or null for a row written before the pair existed. */
     fun calibrationSample(usageJson: String): CalibrationSample? {
         val o = runCatching { org.json.JSONObject(usageJson) }.getOrNull() ?: return null
+        if (!o.optBoolean("contextEligible", true)) return null
         val reported = o.optInt("latestContextTokens", 0)
         val estimated = o.optInt("estimatedRequestTokens", 0)
         if (reported <= 0 || estimated <= 0) return null
