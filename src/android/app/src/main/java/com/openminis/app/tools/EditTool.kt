@@ -17,7 +17,7 @@ object EditTool {
                 items = AgentToolParam("object", "Targeted replacement", properties = mapOf(
                     "oldText" to AgentToolParam("string", "Exact text to replace; must be unique in the original file and not overlap any other edits[].oldText."),
                     "newText" to AgentToolParam("string", "Replacement text for this targeted edit.")), required = listOf("oldText", "newText"))),
-            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language.")), listOf("path", "edits", "tool_title"), propertyOrdering = listOf("tool_title", "path", "edits"))
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call.")), listOf("path", "edits", "tool_title"), propertyOrdering = listOf("tool_title", "path", "edits"))
 
     internal fun arguments(args: JSONObject): List<PiFileEditor.Edit> {
         fun text(obj: JSONObject, key: String): String = obj.get(key).let { require(it is String) { "$key must be a string" }; it }

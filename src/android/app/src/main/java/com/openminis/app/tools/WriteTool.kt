@@ -14,7 +14,7 @@ object WriteTool {
         "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
         mapOf("path" to AgentToolParam("string", "Path to the file to write (relative or absolute)"),
             "content" to AgentToolParam("string", "Content to write to the file"),
-            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language.")), listOf("path", "content", "tool_title"), propertyOrdering = listOf("tool_title", "path", "content"))
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call.")), listOf("path", "content", "tool_title"), propertyOrdering = listOf("tool_title", "path", "content"))
 
     suspend fun execute(argsJson: String, sessionId: String, context: Context): ToolExecutionResult = withContext(Dispatchers.IO) {
         try {

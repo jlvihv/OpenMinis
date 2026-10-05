@@ -38,9 +38,9 @@ object ToolSpeech {
     fun announcement(name: String, argsJson: String?, title: String?): String {
         val args = parseArgs(argsJson)
         // Language follows the model's own summary, matching iOS: the title is
-        // written in the user's language (the tool schema asks for it), so it
-        // is a better signal than the device locale — a Chinese user talking to
-        // an English-answering model should hear one language, not a mix.
+        // the model's own wording, so it is a better signal than the device
+        // locale — a Chinese user talking to an English-answering model should
+        // hear one language, not a mix.
         val zh = title?.let { HAN.containsMatchIn(it) } ?: false
         val detail = clip(title)
 

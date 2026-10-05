@@ -17,7 +17,7 @@ object ReadTool {
             "path" to AgentToolParam("string", "Path to the file to read (relative or absolute)"),
             "offset" to AgentToolParam("integer", "Line number to start reading from (1-indexed)"),
             "limit" to AgentToolParam("integer", "Maximum number of lines to read"),
-            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language."),
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call."),
         ),
         required = listOf("path", "tool_title"),
         propertyOrdering = listOf("tool_title", "path", "offset", "limit"),

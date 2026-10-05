@@ -12,7 +12,7 @@ object BashTool {
         parameters = mapOf(
             "command" to AgentToolParam("string", "Shell command to execute"),
             "timeout" to AgentToolParam("number", "Timeout in seconds (optional)"),
-            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language."),
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call."),
         ),
         required = listOf("command", "tool_title"),
         propertyOrdering = listOf("tool_title", "command", "timeout"),

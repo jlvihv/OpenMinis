@@ -15,7 +15,7 @@ object BrowserTool {
         // to tell it is which tabs it may use, not a number that is now wrong.
         description = "Browse web/minis:// resources (not minis:// action links). screenshot = pixels; get_readable = article text; get_backbone = DOM outline; find_elements = controls; scroll_and_collect deduplicates items across infinite-scroll pages; fetch downloads through the page session and returns a minis:// URL. get_cookies (current site, including HttpOnly) returns a summary + env file, never raw values: reuse with `. /var/minis/offloads/env_cookies_xxx.sh && command`. Use list_tabs/new_tab ids only.",
         parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language."),
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call."),
             "action" to AgentToolParam("string", "Browser operation", enumValues = BrowserAction.allValues),
             "url" to AgentToolParam("string", "navigate/new_tab target or fetch URL"),
             "selector" to AgentToolParam("string", "CSS selector; scroll: container (omit = auto-detect)"),
