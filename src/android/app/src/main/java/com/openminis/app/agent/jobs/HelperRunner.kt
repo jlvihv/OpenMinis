@@ -13,9 +13,9 @@ import org.json.JSONObject
 // kills a run, and a final payload that is written back into the original
 // tool block and its stored tool_result.
 //
-// Fresh delegation orchestration lives in AgentSubagentRuntime; child UI and
-// live-block access are adapters. Parsing, limits, JSON envelopes and prompts
-// remain here, shared with resumed and scheduled child sessions.
+// Delegation and resume orchestration live in AgentSubagentRuntime; controls
+// live in AgentSubagentControls. Child UI/live-block access are adapters. Parsing,
+// limits, JSON envelopes and prompts remain shared with scheduled child sessions.
 
 /** Set on a child (helper) ChatViewModel before its first turn. */
 data class HelperConfig(

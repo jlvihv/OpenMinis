@@ -13,18 +13,23 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 
-/** Fresh delegation's reservation -> child setup -> wait/background -> durable completion lifecycle. */
+/** Delegation/resume reservations, child execution, monitoring and durable completion lifecycles. */
 internal class AgentSubagentRuntime(private val context: Context, private val repository: ChatRepository,
     private val providers: ProviderRepository, private val scope: CoroutineScope,
     private val journal: AgentSubagentJournal) {
     data class Parent(val sessionId: String, val toolId: String, val modelId: String?, val entryId: String?,
-        val helper: Boolean, val priorDelegations: Int, val checkBranch: () -> Unit)
+        val helper: Boolean, val priorDelegations: Int, val checkBranch: () -> Unit, val expectsResultRow: Boolean = true)
     data class Snapshot(val tool: String = "", val activity: String = "", val text: String = "",
         val turns: Int = 0, val error: String? = null)
+    data class ResumeAnchor(val childId: String, val toolId: String, val title: String, val agent: String?)
+    enum class Submission { SENT, QUEUED, COMPACTING, REJECTED }
     interface Child {
+        val modelName: String
+        val compacting: StateFlow<Boolean>
         val streaming: StateFlow<Boolean>
         suspend fun ready(): Boolean
         suspend fun submit(prompt: String): String?
+        suspend fun submitResume(prompt: String): Submission
         suspend fun cancel()
         suspend fun settled()
         fun wrapUp()
@@ -43,6 +48,118 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
         val userWaiting: () -> Boolean,
         val progress: suspend (String, String?) -> String?,
     )
+
+    /** Called on Main: claim the original child synchronously before any asynchronous setup. */
+    fun resume(parent: Parent, anchor: ResumeAnchor, effects: Effects): Boolean {
+        parent.checkBranch()
+        if (!scope.isActive || parent.helper || !AgentJobRegistry.canStartChildJob || AgentJobRegistry.jobForSession(anchor.childId) != null) return false
+        val roster = providers.subAgents
+        val definition = SubAgentRoster.resolve(anchor.agent, roster) ?: roster.firstOrNull() ?: return false
+        val owner = parent.copy(toolId = anchor.toolId)
+        val job = AgentJobRegistry.register(title = anchor.title.ifEmpty { "agent" }, origin = AgentJobOrigin.TOOL,
+            trigger = AgentJobTrigger.Immediate, target = AgentJobTarget.ChildOfCurrent(owner.sessionId, anchor.toolId),
+            prompt = null, then = AgentJobThen.FollowUpParent(null), agentName = definition.name.takeIf { !definition.isBuiltIn },
+            runSessionId = anchor.childId, wasResumed = true)
+        AgentJobRegistry.registerInterruptedCounter(owner.sessionId, effects.interruptedCount)
+        AgentJobRegistry.registerQueuedStarter(owner.sessionId, effects.queuedStarter)
+        val live = java.util.concurrent.atomic.AtomicReference<Child?>()
+        val verified = java.util.concurrent.atomic.AtomicBoolean(false)
+        val failureText = java.util.concurrent.atomic.AtomicReference<String?>()
+        val baseline = java.util.concurrent.atomic.AtomicReference<Set<String>?>()
+        val submittedRun = java.util.concurrent.atomic.AtomicBoolean(false)
+        AgentJobRegistry.setCompletionTask(job.id) { finished ->
+            val run = live.get()
+            if (run != null) withTimeoutOrNull(5_000L) { run.streaming.first { !it }; run.settled() }
+            val before = baseline.get()
+            val facts = HelperRunner.childRunFacts(if (verified.get() && submittedRun.get() && before != null)
+                repository.dao.loadMessages(anchor.childId).filterNot { it.id in before } else emptyList())
+            val summary = HelperRunner.runSummaryLine(facts.toolNames, facts.turns, facts.input, facts.output, facts.cacheRead)
+            withContext(Dispatchers.Main) { AgentJobRegistry.setSummaryLine(job.id, summary) }
+            val status = HelperRunner.resolvedStatus(HelperRunner.statusWord(finished.state), finished.resultText.orEmpty())
+            val json = HelperRunner.resultJson(status, finished.resultText.orEmpty(), run?.modelName.orEmpty(),
+                HelperModelTier.PRIMARY, "", facts.turns, finished.elapsedMs ?: 0L, anchor.childId, job.id, summary,
+                deliveredAs = "new turn in this conversation", agentName = definition.name.takeIf { !definition.isBuiltIn },
+                wasResumed = true, errorText = failureText.get() ?: run?.snapshot()?.error,
+                thinkingLevel = if (verified.get()) repository.getSession(anchor.childId)?.thinkingOverride else null)
+            journal.record(owner.sessionId, anchor.toolId, json, finished.state == AgentJobState.DONE, owner.expectsResultRow)
+            effects.publish(json, finished.state)
+        }
+        scope.launch(Dispatchers.Main, start = CoroutineStart.UNDISPATCHED) {
+            var child: Child? = null
+            try {
+                owner.checkBranch()
+                val row = repository.getSession(anchor.childId)
+                require(row != null && row.parentSessionId == owner.sessionId && row.parentToolUseId == anchor.toolId) {
+                    "resumed child does not belong to the captured parent tool"
+                }
+                verified.set(true)
+                baseline.set(repository.dao.loadMessages(anchor.childId).map { it.id }.toSet())
+                owner.checkBranch()
+                if (AgentJobRegistry.job(job.id)?.isActive != true) return@launch
+                child = effects.createChild(anchor.childId, HelperConfig(owner.sessionId, anchor.toolId, job.id,
+                    HelperRunner.MAX_TURNS, anchor.title, HelperModelTier.PRIMARY,
+                    definition.name.takeIf { !definition.isBuiltIn }, definition.instructions))
+                val run = child
+                live.set(run)
+                if (!run.ready()) error("resumed child could not resolve a provider")
+                owner.checkBranch()
+                if (AgentJobRegistry.job(job.id)?.isActive != true) { run.cancel(); return@launch }
+                AgentJobRegistry.registerSteerHook(job.id, run::steer)
+                AgentJobRegistry.registerMissedSteerDrain(job.id, run::missedSteers)
+                AgentJobRegistry.registerTabRelease(job.id) { scope.launch(NonCancellable + Dispatchers.Main) { run.releaseTabs() } }
+                AgentJobRegistry.markRunning(job.id, anchor.childId) { scope.launch(NonCancellable + Dispatchers.Main) { run.cancel() } }
+                effects.publish(HelperRunner.progressJson(anchor.childId, anchor.title, "", "", 0L, background = true), AgentJobState.RUNNING)
+                owner.checkBranch()
+                val submitted = run.submitResume(HelperRunner.resumeNotice())
+                submittedRun.set(submitted != Submission.REJECTED)
+                if (submitted == Submission.REJECTED) {
+                    AgentJobRegistry.finish(job.id, AgentJobState.FAILED, null)
+                    return@launch
+                }
+                if (submitted == Submission.COMPACTING) {
+                    run.compacting.first { !it }
+                    withTimeoutOrNull(5_000L) { run.streaming.first { it } }
+                }
+                run.streaming.first { !it }
+                withTimeoutOrNull(5_000L) { run.settled() }
+                val before = checkNotNull(baseline.get())
+                val facts = HelperRunner.childRunFacts(repository.dao.loadMessages(anchor.childId).filterNot { it.id in before })
+                AgentJobRegistry.setSummaryLine(job.id, HelperRunner.runSummaryLine(facts.toolNames, facts.turns, facts.input, facts.output, facts.cacheRead))
+                AgentJobRegistry.finish(job.id, if (run.snapshot().error != null) AgentJobState.FAILED else AgentJobState.DONE, facts.lastText)
+            } catch (cancelled: CancellationException) {
+                withContext(NonCancellable + Dispatchers.Main) { child?.cancel(); AgentJobRegistry.finish(job.id, AgentJobState.CANCELLED, null) }
+                throw cancelled
+            } catch (failure: Exception) {
+                failureText.set(failure.message ?: failure.javaClass.simpleName)
+                AppLogger.warning("AgentSubagentRuntime", "resume failed child=${anchor.childId.take(8)}: ${failure.message}")
+                withContext(NonCancellable + Dispatchers.Main) { child?.cancel(); AgentJobRegistry.finish(job.id, AgentJobState.FAILED, null) }
+            }
+        }
+        return true
+    }
+
+    /** Queue re-entry also runs under the runtime's scope, not a detached UI coroutine. */
+    fun queued(args: String, parent: Parent, effects: Effects): Boolean {
+        parent.checkBranch()
+        if (!scope.isActive) return false
+        val worker = scope.launch(Dispatchers.Main, start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val result = execute(args, parent, effects)
+                if (!result.success) {
+                    journal.record(parent.sessionId, parent.toolId, result.output, false, parent.expectsResultRow)
+                    effects.publish(result.output, AgentJobState.FAILED)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                AppLogger.warning("AgentSubagentRuntime", "queued delegation failed: ${failure.message}")
+                val rejection = HelperRunner.rejectionJson("child_start_failed", failure.message ?: "The helper session did not start.")
+                journal.record(parent.sessionId, parent.toolId, rejection, false, parent.expectsResultRow)
+                effects.publish(rejection, AgentJobState.FAILED)
+            }
+        }
+        worker.invokeOnCompletion { scope.launch(Dispatchers.Main) { AgentJobRegistry.drainIfStalled() } }
+        return true
+    }
 
     suspend fun execute(argsJson: String, parent: Parent, effects: Effects): ToolExecutionResult {
         val args = HelperRunner.parseArgs(argsJson)
@@ -70,13 +187,14 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
         if (reservation == null) {
             val queued = withContext(Dispatchers.Main) {
                 parent.checkBranch()
-                AgentJobRegistry.enqueueDelegation(AgentJobRegistry.QueuedDelegation(parent.sessionId, argsJson, parent.toolId))
+                AgentJobRegistry.enqueueDelegation(AgentJobRegistry.QueuedDelegation(parent.sessionId, argsJson, parent.toolId, expectsResultRow = parent.expectsResultRow))
             }
             if (!queued) return reject("helper_limit", "${AgentJobRegistry.MAX_CONCURRENT_CHILD_JOBS} sub agents are already running and the queue is full. Wait for some to finish, then delegate this task again — it was NOT queued.")
             val detail = if (overAllowance) "More than ${HelperRunner.MAX_PER_ASSISTANT_TURN} delegations in one turn. This task is QUEUED and will start automatically as slots free; its result arrives as a new message like any other. Do not re-delegate it."
                 else "All ${AgentJobRegistry.MAX_CONCURRENT_CHILD_JOBS} slots are busy. This task is QUEUED and will start automatically when one frees; its result arrives as a new message like any other. Do not re-delegate it."
             val json = HelperRunner.queuedJson(AgentJobRegistry.runningChildJobCount + AgentJobRegistry.queuedCount(parent.sessionId) - 1, detail)
             effects.publish(json, AgentJobState.RUNNING)
+            scope.launch(Dispatchers.Main) { AgentJobRegistry.drainIfStalled() }
             return ToolExecutionResult(json, true, toolTitle = title)
         }
         var child: Child? = null
@@ -214,7 +332,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
                 val json = resultJson(status, finished.resultText.orEmpty(), resolution, args, facts.turns,
                     finished.elapsedMs ?: System.currentTimeMillis() - started, childId, jobId, summary, agent,
                     child.snapshot().error, repository.getSession(childId)?.thinkingOverride, true)
-                journal.record(parent.sessionId, parent.toolId, json, finished.state == AgentJobState.DONE)
+                journal.record(parent.sessionId, parent.toolId, json, finished.state == AgentJobState.DONE, parent.expectsResultRow)
                 effects.publish(json, finished.state)
             }
         }

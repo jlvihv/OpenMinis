@@ -1605,6 +1605,7 @@ class ChatViewModel(
     private val subagentRuntime by lazy {
         com.openminis.app.agent.AgentSubagentRuntime(context, chatRepository, providerRepository, viewModelScope, subagentJournal)
     }
+    private val subagentControls by lazy { com.openminis.app.agent.AgentSubagentControls(subagentRuntime) }
 
     private val compactionSummarizer = CompactionSummarizer(COMPACT_IDLE_TIMEOUT_MS, com.openminis.app.agent.CompactionFailurePolicy::canSplit)
     private val compactionCoordinator = com.openminis.app.agent.CompactionCoordinator(
@@ -1639,539 +1640,100 @@ class ChatViewModel(
             context.getSharedPreferences(com.openminis.app.tools.CodemodeTool.PREFS, Context.MODE_PRIVATE)
                 .getInt(com.openminis.app.tools.CodemodeTool.INLINE_BUDGET_KEY, 3000))
 
-    /**
-     * [T-sub-agents-resume] Restart sub agent runs the app lost when it was
-     * killed.
-     *
-     * Everything needed is already on disk, which is why resume needs no new
-     * persistence: the child session row carries its parent and the parent's
-     * tool_use id, and the parent block's payload carries the title and the
-     * agent name. (A delegation that never STARTED is the opposite case — it
-     * has no child session and no stored args, so it can only be surfaced as
-     * "Never started", never resumed.)
-     *
-     * With no `child_session_id` every interrupted run of this conversation is
-     * resumed, which is the common case after a restart.
-     */
+    private fun subagentParent(toolId: String = "", prior: Int = 0, expectsResultRow: Boolean = true): com.openminis.app.agent.AgentSubagentRuntime.Parent {
+        val owner = activeSessionId
+        return com.openminis.app.agent.AgentSubagentRuntime.Parent(owner, toolId, currentModel?.id,
+            _activeEntryId.value, isHelper, prior, checkBranch = {
+                if (activeSessionId != owner) throw CancellationException("subagent parent branch changed")
+            }, expectsResultRow = expectsResultRow)
+    }
+
+    private fun subagentBlocks(): List<com.openminis.app.agent.AgentSubagentControls.Block> =
+        mergeStreamingOverlay(_messages.value, _streamingById.value).filter { it.role == "assistant" }
+            .flatMap { it.toolBlocks }.filter {
+                it.kind == "tool_use" && com.openminis.app.agent.jobs.HelperRunner.isSubAgentToolName(it.toolName)
+            }.map { subagentBlock(it) }
+
+    private fun subagentBlock(block: AssistantBlock) = com.openminis.app.agent.AgentSubagentControls.Block(
+        block.id, block.toolTitle, block.toolArgs, block.content)
+
     private fun executeResumeAgents(argsJson: String): ToolExecutionResult {
-        val o = runCatching { JSONObject(argsJson) }.getOrElse { JSONObject() }
-        val toolTitle = o.optString("tool_title", "").ifEmpty { "resume sub agents" }
-        val hr = com.openminis.app.agent.jobs.HelperRunner
-        if (isHelper) {
-            return ToolExecutionResult(
-                hr.rejectionJson("depth_limit", "A sub agent cannot resume another."),
-                false, toolTitle = toolTitle,
-            )
-        }
-        val wanted = o.optString("child_session_id", "").trim()
-        val candidates = interruptedChildIds(activeSessionId)
-            .let { all -> if (wanted.isEmpty()) all else all.filter { it == wanted } }
-        if (candidates.isEmpty()) {
-            return ToolExecutionResult(
-                JSONObject()
-                    .put("ok", true).put("resumed", 0)
-                    .put(
-                        "detail",
-                        if (wanted.isEmpty()) {
-                            "No interrupted sub agents in this conversation."
-                        } else {
-                            "That sub agent is not interrupted; nothing to resume."
-                        },
-                    ).toString(),
-                true, toolTitle = toolTitle,
-            )
-        }
-        // Resuming is a real run: it has to respect the same concurrency the
-        // delegate path does, or a restart with five lost agents would start
-        // five at once.
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        val resumed = org.json.JSONArray()
-        val deferred = org.json.JSONArray()
-        // [T-android-subagent-prompt-parity] Three outcomes, not two. A resume
-        // that cannot start because every slot is busy is QUEUED — it starts on
-        // its own as soon as one frees, exactly as a fresh delegation does
-        // (iOS HelperRunner.swift:1436). Android used to fold that case into
-        // the failure bucket and tell the model "None could be resumed.", which
-        // is both untrue and actively harmful: the model's reasonable reaction
-        // to a failed resume is to re-delegate the task from scratch, throwing
-        // away the partial work the resume existed to keep.
-        val queued = org.json.JSONArray()
-        for (childId in candidates) {
-            when {
-                registry.canStartChildJob -> {
-                    if (resumeInterruptedChild(childId)) resumed.put(childId) else deferred.put(childId)
-                }
-                enqueueResume(childId) -> queued.put(childId)
-                // The backlog itself is full — a real refusal, and the only
-                // case where the model should act.
-                else -> deferred.put(childId)
-            }
-        }
-        return ToolExecutionResult(
-            JSONObject()
-                // Queued counts as success: it WILL run, unattended.
-                .put("ok", resumed.length() > 0 || queued.length() > 0)
-                .put("resumed", resumed.length())
-                .put("child_session_ids", resumed)
-                .also { if (deferred.length() > 0) it.put("failed", deferred) }
-                .also { if (queued.length() > 0) it.put("queued", queued) }
-                .put(
-                    "detail",
-                    buildList {
-                        if (resumed.length() > 0) {
-                            add(
-                                "${resumed.length()} sub agent(s) restarted; each reports back as a new " +
-                                    "message when it finishes. Do not re-delegate them. Elapsed and turn " +
-                                    "counts cover only the resumed part.",
-                            )
-                        }
-                        // Byte-identical to iOS's queued-resume detail.
-                        if (queued.length() > 0) {
-                            add("All slots are busy; this resume is queued and starts when one frees.")
-                        }
-                        if (deferred.length() > 0 && resumed.length() == 0 && queued.length() == 0) {
-                            add("None could be resumed.")
-                        }
-                    }.joinToString(" "),
-                )
-                .toString(),
-            true, toolTitle = toolTitle,
-        )
+        val parent = subagentParent()
+        return subagentControls.resumeTool(argsJson, parent, subagentBlocks()) { id -> subagentEffects(parent.copy(toolId = id)) }
     }
 
-    /**
-     * [T-sub-agents-resume] Build the child view model for a resumed run.
-     *
-     * Same shape the delegate path uses; the resumed child keeps its OWN
-     * session (and therefore its transcript and the work it already did) and
-     * only gets a fresh job and budget.
-     */
-    private fun createChildViewModel(
-        childId: String,
-        parentSid: String,
-        toolId: String,
-        jobId: String,
-        subAgent: com.openminis.app.data.model.SubAgentDefinition,
-        maxTurns: Int,
-        /**
-         * [T-sub-agents-resume] The original task title. It feeds the child's
-         * identity preamble ("A parent agent delegated ONE focused task to you:
-         * …"), and a resumed child's first message is the resume notice, which
-         * does not restate the task — so an empty title here leaves it with no
-         * statement of what it was asked to do outside its own transcript.
-         */
-        title: String,
-    ): ChatViewModel =
-        // [T-android-vm-store-dual-pool] A sub agent is CREATED here, so this is
-        // where the CHILD pool is claimed. The tag is sticky, so the read-only
-        // transcript path cannot later reclassify it.
-        com.openminis.app.debug.HeadlessChatRunner.viewModelFor(
-            context, childId, com.openminis.app.ui.chat.ChatViewModelStore.PoolKind.CHILD,
-        ).also {
-            it.helperConfig = com.openminis.app.agent.jobs.HelperConfig(
-                parentSessionId = parentSid, parentToolUseId = toolId, jobId = jobId,
-                maxTurns = maxTurns, title = title,
-                tierUsed = com.openminis.app.agent.jobs.HelperModelTier.PRIMARY,
-                agentName = subAgent.name.takeIf { !subAgent.isBuiltIn },
-                agentInstructions = subAgent.instructions,
-            )
-            it.adoptBrowserTabPool(browserTabPool)
-        }
+    internal fun countInterruptedChildren(parentSessionId: String): Int =
+        if (parentSessionId.isEmpty() || activeSessionId != parentSessionId) 0 else subagentControls.interrupted(subagentBlocks()).size
 
-    /**
-     * [T-sub-agents-resume] Restart ONE interrupted child.
-     *
-     * Rebuilds the run from disk — there is no persisted registry, so the child
-     * row and the parent block are the only sources. The budget starts fresh:
-     * the original deadline passed while the app was dead, and re-applying it
-     * would kill the run immediately.
-     */
-    /**
-     * [T-android-subagent-prompt-parity] Park a resume in the shared delegation
-     * queue so it starts by itself when a slot frees (iOS HelperRunner.swift:1436).
-     *
-     * Carries [HelperRunner.QUEUED_RESUME_CHILD_KEY] so the single drain
-     * callback can tell this apart from a fresh delegation — see
-     * [startQueuedDelegation]. Returns false only when the backlog is also
-     * full, which is the one case the model has to act on.
-     */
-    private fun enqueueResume(childId: String): Boolean {
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        val parentSid = activeSessionId
-        if (parentSid.isEmpty()) return false
-        // Same registration the delegate path does: only a live view model can
-        // re-enter a queued item, and the counter feeds the queue's self-heal.
-        registry.registerQueuedStarter(parentSid) { item ->
-            activeSessionId == parentSid && item.parentSessionId == parentSid && startQueuedDelegation(item.argsJson, item.toolUseId)
-        }
-        registry.registerInterruptedCounter(parentSid) { if (activeSessionId == parentSid) countInterruptedChildren(parentSid) else 0 }
-        val args = try {
-            JSONObject()
-                .put(com.openminis.app.agent.jobs.HelperRunner.QUEUED_RESUME_CHILD_KEY, childId)
-                .toString()
-        } catch (_: Exception) {
-            return false
-        }
-        return registry.enqueueDelegation(
-            com.openminis.app.agent.jobs.AgentJobRegistry.QueuedDelegation(
-                parentSessionId = parentSid,
-                argsJson = args,
-                // The resumed run re-derives its own tool_use id from the
-                // child's parent block, so the queue entry only needs a unique
-                // key — reusing a real tool id here would collide with the
-                // block the original delegation still owns.
-                toolUseId = resumeQueueKey(childId),
-            ),
-        )
-    }
-
-    private fun resumeInterruptedChild(childId: String): Boolean {
-        val hr = com.openminis.app.agent.jobs.HelperRunner
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        val parentSid = activeSessionId
-        // Locate the parent block that owns this child, for the title, the
-        // agent name and the tool_use id the resumed run must write back to.
-        var toolId = ""
-        var title = ""
-        var agentName: String? = null
-        outer@ for (m in _messages.value) {
-            if (m.role != "assistant") continue
-            for (b in m.toolBlocks) {
-                if (b.kind != "tool_use") continue
-                if (!hr.isSubAgentToolName(b.toolName)) continue
-                val o = runCatching { JSONObject(b.content) }.getOrNull() ?: continue
-                if (o.optString("child_session_id") != childId) continue
-                toolId = b.id
-                title = b.toolTitle.ifEmpty { o.optString("title", "") }
-                agentName = o.optString("agent", "").ifEmpty { null }
-                break@outer
-            }
-        }
-        if (toolId.isEmpty()) {
-            AppLogger.warning(TAG, "[subagent] resume: no parent block for child ${childId.take(8)}")
-            return false
-        }
-        // A renamed or deleted definition falls back to the built-in rather
-        // than refusing: the run's task is what matters, and the user can
-        // always stop it.
-        val roster = providerRepository.subAgents
-        val subAgent = com.openminis.app.data.model.SubAgentRoster.resolve(agentName, roster)
-            ?: roster.firstOrNull()
-            ?: return false
-
-        // [T-sub-agents-resume] Claim the child session AT REGISTER TIME.
-        //
-        // `interruptedChildIds` treats a child with no live job as lost, and
-        // `runSessionId` used to be set only inside the coroutine below by
-        // markRunning. Anything asking again in that window — the model calling
-        // the tool twice in a turn, or a sibling's callback — saw the same
-        // child as still interrupted and started a SECOND run on it: two
-        // HelperConfigs written onto the one cached child view model, two
-        // resume notices, and one job that never finishes holding a
-        // concurrency slot for the life of the process.
-        val job = registry.register(
-            title = title.ifEmpty { "agent" },
-            origin = com.openminis.app.agent.jobs.AgentJobOrigin.TOOL,
-            trigger = com.openminis.app.agent.jobs.AgentJobTrigger.Immediate,
-            target = com.openminis.app.agent.jobs.AgentJobTarget.ChildOfCurrent(parentSid, toolId),
-            prompt = null,
-            then = com.openminis.app.agent.jobs.AgentJobThen.FollowUpParent(null),
-            agentName = subAgent.name.takeIf { !subAgent.isBuiltIn },
-            runSessionId = childId,
-            // [T-android-subagent-prompt-parity] This IS the resume path, so the
-            // final payload must carry the caveat about lost tool context and
-            // partial elapsed/turn counts.
-            wasResumed = true,
-        )
-        registry.registerInterruptedCounter(parentSid) { if (activeSessionId == parentSid) countInterruptedChildren(parentSid) else 0 }
-        registry.registerQueuedStarter(parentSid) { item ->
-            activeSessionId == parentSid && item.parentSessionId == parentSid && startQueuedDelegation(item.argsJson, item.toolUseId)
-        }
-        viewModelScope.launch {
-            // A cancelled scope would otherwise skip this body entirely and
-            // leave the job PENDING forever — and PENDING holds a slot.
-            try {
-                if (activeSessionId != parentSid) throw CancellationException("resumed child parent branch changed")
-                val childVm = withContext(Dispatchers.Main) {
-                    createChildViewModel(
-                        childId, parentSid, toolId, job.id, subAgent, hr.MAX_TURNS, title,
-                    )
-                }
-                registry.markRunning(job.id, childId) {
-                    viewModelScope.launch(Dispatchers.Main) { childVm.cancelStream() }
-                }
-                registry.registerSteerHook(job.id) { msg -> childVm.enqueueSteer(msg) }
-                registry.registerMissedSteerDrain(job.id) { childVm.drainMissedSteers() }
-                // [T-sub-agents-resume] Reattach the block to this run BEFORE
-                // it writes anything: the transcript button reads the child id
-                // off the block, and the first progress write overwrites the
-                // payload that currently carries it.
-                writeDelegateBlock(
-                    toolId,
-                    hr.progressJson(childId, title, "", "", 0L, background = true),
-                    ToolBlockStatus.RUNNING,
-                )
-                // [T-sub-agents-resume-finish] Final payload into the block +
-                // stored tool_result when the job closes, like the background
-                // path's hook. Registered BEFORE the prompt so a run that ends
-                // instantly still writes it.
-                registry.setCompletionHook(job.id) { finished ->
-                    viewModelScope.launch(Dispatchers.IO) {
-                        val facts = hr.childRunFacts(chatRepository.dao.loadMessages(childId))
-                        val summary = hr.runSummaryLine(facts.toolNames, facts.turns, facts.input, facts.output, facts.cacheRead)
-                        registry.setSummaryLine(finished.id, summary)
-                        val result = finished.resultText ?: ""
-                        val status = hr.resolvedStatus(hr.statusWord(finished.state), result)
-                        val json = hr.resultJson(
-                            status, result, childVm.modelName.value,
-                            com.openminis.app.agent.jobs.HelperModelTier.PRIMARY, "",
-                            facts.turns, finished.elapsedMs ?: 0L, childId, finished.id,
-                            summary, deliveredAs = "new turn in this conversation",
-                            agentName = subAgent.name.takeIf { !subAgent.isBuiltIn },
-                            wasResumed = true,
-                            errorText = childVm.messages.value.lastOrNull { it.role == "assistant" }?.error,
-                            thinkingLevel = chatRepository.getSession(childId)?.thinkingOverride,
-                        )
-                        val blockStatus = when (finished.state) {
-                            com.openminis.app.agent.jobs.AgentJobState.DONE -> ToolBlockStatus.SUCCESS
-                            com.openminis.app.agent.jobs.AgentJobState.CANCELLED -> ToolBlockStatus.CANCELLED
-                            com.openminis.app.agent.jobs.AgentJobState.TIMEOUT -> ToolBlockStatus.TIMEOUT
-                            else -> ToolBlockStatus.FAILED
-                        }
-                        withContext(Dispatchers.Main) { if (activeSessionId == parentSid) writeDelegateBlock(toolId, json, blockStatus) }
-                        persistFinalDelegateResult(toolId, json, finished.state == com.openminis.app.agent.jobs.AgentJobState.DONE, parentSid)
-                        AppLogger.info(TAG, "[subagent] RESUME END job=${finished.id.take(8)} state=${finished.state.wire}")
-                    }
-                }
-                val outcome = withContext(Dispatchers.Main) { childVm.submitPrompt(hr.resumeNotice()) }
-                if (outcome is SubmitOutcome.Rejected) {
-                    AppLogger.warning(TAG, "[subagent] resume not started for ${childId.take(8)}: ${outcome.reason}")
-                    registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.FAILED, null)
-                    return@launch
-                }
-                AppLogger.info(TAG, "[subagent] resumed child=${childId.take(8)} job=${job.id.take(8)}")
-                // [T-sub-agents-resume-finish] Close the job when the child goes
-                // idle. Nothing did before: a resumed run that completed normally
-                // stayed RUNNING for the life of the process — holding one of the
-                // child slots, never sending the parent its final callback, keeping
-                // the parent un-evictable and its delegate block spinning. Same
-                // tail as the runtime watcher (summary BEFORE finish,
-                // since finish builds the callback synchronously). A resumed run
-                // has no stated budget, so no wrap-up timer; Stop still cancels it
-                // through markRunning's hook, and finish is idempotent.
-                if (outcome is SubmitOutcome.Compacting) {
-                    // Not streaming yet: the send happens after compaction, so an
-                    // immediate idle check would close a run that has not started.
-                    childVm.isCompacting.first { !it }
-                    withTimeoutOrNull(5_000L) { childVm.isStreaming.first { it } }
-                }
-                childVm.isStreaming.first { !it }
-                val facts = hr.childRunFacts(chatRepository.dao.loadMessages(childId))
-                val state = if (childVm.messages.value.lastOrNull { it.role == "assistant" }?.error != null) {
-                    com.openminis.app.agent.jobs.AgentJobState.FAILED
-                } else {
-                    com.openminis.app.agent.jobs.AgentJobState.DONE
-                }
-                registry.setSummaryLine(job.id, hr.runSummaryLine(facts.toolNames, facts.turns, facts.input, facts.output, facts.cacheRead))
-                registry.finish(job.id, state, facts.lastText)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // Cancellation must not look like success: close the job so its
-                // slot is released, then let the cancellation propagate.
-                registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.CANCELLED, null)
-                throw e
-            } catch (e: Exception) {
-                AppLogger.warning(TAG, "[subagent] resume failed for ${childId.take(8)}: ${e.message}")
-                registry.finish(job.id, com.openminis.app.agent.jobs.AgentJobState.FAILED, null)
-            }
-        }
-        return true
-    }
-
-    /** [T-sub-agents-resume] The child sessions of this conversation the app lost. */
-    private fun interruptedChildIds(parentSessionId: String): List<String> {
-        if (parentSessionId.isEmpty()) return emptyList()
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        val out = mutableListOf<String>()
-        for (m in _messages.value) {
-            if (m.role != "assistant") continue
-            for (b in m.toolBlocks) {
-                if (b.kind != "tool_use") continue
-                if (!com.openminis.app.agent.jobs.HelperRunner.isSubAgentToolName(b.toolName)) continue
-                val o = runCatching { JSONObject(b.content) }.getOrNull() ?: continue
-                if (o.optString("status") != "running") continue
-                val childId = o.optString("child_session_id", "")
-                if (childId.isEmpty() || childId in out) continue
-                if (registry.jobForSession(childId) != null) continue
-                out.add(childId)
-            }
-        }
-        return out
-    }
-
-    /**
-     * [T-sub-agents-sibling-status] How many of this conversation's sub agents
-     * the app LOST.
-     *
-     * Counted from the transcript rather than the job registry, and that is the
-     * whole point: the registry lives in memory, so a process kill leaves no
-     * job behind — the runs that most need reporting are exactly the ones it
-     * can no longer see. A block still holding a "running" payload with a child
-     * session id, and no live job backing it, is one the app lost.
-     */
-    internal fun countInterruptedChildren(parentSessionId: String): Int {
-        if (parentSessionId.isEmpty()) return 0
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        var n = 0
-        for (m in _messages.value) {
-            if (m.role != "assistant") continue
-            for (b in m.toolBlocks) {
-                if (b.kind != "tool_use") continue
-                if (!com.openminis.app.agent.jobs.HelperRunner.isSubAgentToolName(b.toolName)) continue
-                val o = try {
-                    JSONObject(b.content)
-                } catch (_: Exception) {
-                    continue
-                }
-                if (o.optString("status") != "running") continue
-                val childId = o.optString("child_session_id", "")
-                if (childId.isEmpty()) continue
-                // A live job for this child means it is still running, not lost.
-                if (registry.jobForSession(childId) != null) continue
-                n += 1
-            }
-        }
-        return n
-    }
-
-    /**
-     * [T-sub-agents-queue] Start a delegation that was waiting for a slot.
-     *
-     * Called by the registry when one frees. Re-enters the ordinary path with
-     * the ORIGINAL arguments plus the re-entry marker, so the definition, the
-     * model group and every limit are re-resolved at the moment it actually
-     * starts rather than baked in at enqueue time — a roster edit while the
-     * task sat in the queue is then honoured.
-     *
-     * The block is relocated by tool_use id: message and block indices go stale
-     * while the queue waits, so the position it was enqueued at cannot be
-     * trusted.
-     */
-    /**
-     * [T-android-neverstarted-not-running] Run a delegation that was still on
-     * the in-memory queue when the process died.
-     *
-     * The queue does not survive a restart, so on reload such a block reports
-     * "Never started" — correct, but until now it was a dead end: the card
-     * offered a Stop button for work that was not running, and there was no way
-     * to make it happen short of asking the model to delegate it again.
-     *
-     * Everything needed is still on the block. `toolArgs` is restored from the
-     * persisted tool input on load, so the full task text, agent and model
-     * choice are intact — this re-enters through the SAME path the queue drain
-     * uses, so a manually started delegation is indistinguishable from one that
-     * started on its own.
-     *
-     * Returns false when it could not start (no live session, or the
-     * concurrency cap is full), leaving the card as it was rather than
-     * reporting a start that did not happen.
-     */
     fun startNeverStartedDelegation(block: AssistantBlock): Boolean {
-        val args = block.toolArgs
-        if (args.isBlank()) return false
-        // Re-running a control call would be meaningless — and `cancel` would
-        // be actively wrong. Only a delegation carries a task to run.
-        if (com.openminis.app.agent.jobs.HelperRunner.isControlOnly(args, block.content.ifEmpty { null })) {
-            return false
-        }
-        return startQueuedDelegation(args, block.id)
+        val parent = subagentParent()
+        return subagentControls.neverStarted(subagentBlock(block), parent, subagentBlocks()) { id -> subagentEffects(parent.copy(toolId = id)) }
     }
 
-    /** [T-android-subagent-card-resume] What the Resume button on an interrupted card did. */
     enum class CardResume { STARTED, QUEUED, REFUSED }
 
-    /** Queue key of a parked resume; see [enqueueResume]. */
-    private fun resumeQueueKey(childId: String) = "resume:$childId"
-
-    /**
-     * [T-android-subagent-card-resume] The Resume button on an interrupted
-     * sub agent's card. Port of iOS HelperBlockView.resume(), which calls the
-     * same restart the model's `resume` control call uses.
-     *
-     * Same three outcomes as that call (see the loop in the resume branch of
-     * the subagent handler): a free child slot starts the run now, a full
-     * set of slots parks it in the delegation queue to start by itself, and a
-     * full backlog refuses. Starting past the cap from a button would be the
-     * "five lost agents start at once" case the cap exists to stop.
-     *
-     * Guards against a second tap, and against racing the model's own resume:
-     * a started run registers its job synchronously, so the child stops being
-     * interrupted at once; a queued one leaves the block reading "interrupted"
-     * until it starts, so the queue is checked by key first.
-     */
     fun resumeInterruptedFromCard(block: AssistantBlock): CardResume {
-        val childId = com.openminis.app.agent.jobs.HelperRunner.childSessionIdFrom(block.content)
-            ?: return CardResume.REFUSED
-        if (com.openminis.app.agent.jobs.HelperRunner.isQueuedLive(resumeQueueKey(childId))) {
-            return CardResume.QUEUED
+        val child = com.openminis.app.agent.jobs.HelperRunner.childSessionIdFrom(block.content) ?: return CardResume.REFUSED
+        val parent = subagentParent()
+        return when (subagentControls.resumeCard(child, parent, subagentBlocks()) { id -> subagentEffects(parent.copy(toolId = id)) }) {
+            com.openminis.app.agent.AgentSubagentControls.Resume.STARTED -> CardResume.STARTED
+            com.openminis.app.agent.AgentSubagentControls.Resume.QUEUED -> CardResume.QUEUED
+            com.openminis.app.agent.AgentSubagentControls.Resume.REFUSED -> CardResume.REFUSED
         }
-        if (childId !in interruptedChildIds(activeSessionId)) {
-            AppLogger.info(TAG, "[subagent] card resume: ${childId.take(8)} is not interrupted")
-            return CardResume.REFUSED
-        }
-        val outcome = when {
-            com.openminis.app.agent.jobs.AgentJobRegistry.canStartChildJob ->
-                if (resumeInterruptedChild(childId)) CardResume.STARTED else CardResume.REFUSED
-            enqueueResume(childId) -> CardResume.QUEUED
-            else -> CardResume.REFUSED
-        }
-        AppLogger.info(TAG, "[subagent] card resume child=${childId.take(8)} -> $outcome")
-        return outcome
     }
 
-    fun startQueuedDelegation(argsJson: String, toolUseId: String): Boolean {
-        if (activeSessionId.isEmpty()) return false
-        // [T-android-subagent-prompt-parity] A queued RESUME re-enters through
-        // resumeInterruptedChild, not executeDelegateTask. Routing it as a
-        // fresh delegation would restart the task from nothing and discard the
-        // partial work the resume exists to preserve.
-        val resumeChildId = runCatching {
-            JSONObject(argsJson)
-                .optString(com.openminis.app.agent.jobs.HelperRunner.QUEUED_RESUME_CHILD_KEY, "")
-        }.getOrDefault("").ifEmpty { null }
-        if (resumeChildId != null) {
-            return resumeInterruptedChild(resumeChildId)
-        }
-        val args = try {
-            JSONObject(argsJson)
-                .put(com.openminis.app.agent.jobs.HelperRunner.QUEUED_REENTRY_KEY, true)
-                // A queued task always runs in the background: its tool call
-                // already returned `queued`, so there is nothing left to block.
-                .put("wait", false)
-                .toString()
-        } catch (_: Exception) {
-            return false
-        }
-        // The block is addressed by tool_use id through the override map, which
-        // is what survives the message/block indices going stale while the task
-        // sat in the queue. `toolBlocks` here is a scratch list: the delegation
-        // writes its live state through writeDelegateBlock(toolId, …), which
-        // patches whichever message actually holds that id.
-        val scratch = mutableListOf(
-            AssistantBlock(
-                id = toolUseId,
-                kind = "tool_use",
-                content = "",
-                toolName = com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME,
-            ),
-        )
-        viewModelScope.launch {
-            runCatching {
-                executeDelegateTask(args, toolUseId, scratch, "", "")
-            }.onFailure {
-                AppLogger.warning(TAG, "[subagent] queued re-entry failed: ${it.message}")
-            }
-        }
-        return true
+    fun startQueuedDelegation(argsJson: String, toolUseId: String, expectsResultRow: Boolean = true): Boolean {
+        val parent = subagentParent(expectsResultRow = expectsResultRow)
+        return subagentControls.queued(argsJson, toolUseId, parent, subagentBlocks()) { id -> subagentEffects(parent.copy(toolId = id)) }
+    }
+
+    private fun subagentEffects(parent: com.openminis.app.agent.AgentSubagentRuntime.Parent,
+        toolBlocks: MutableList<AssistantBlock> = mutableListOf(), assistantId: String = "", currentText: String = "",
+        inline: java.util.concurrent.atomic.AtomicBoolean? = null, run: Job? = streamJob): com.openminis.app.agent.AgentSubagentRuntime.Effects {
+        val owner = parent.sessionId
+        val toolId = parent.toolId
+        return com.openminis.app.agent.AgentSubagentRuntime.Effects(
+            createChild = { childId, config -> withContext(Dispatchers.Main) {
+                parent.checkBranch()
+                val pool = browserTabPool
+                val vm = com.openminis.app.debug.HeadlessChatRunner.viewModelFor(context, childId,
+                    com.openminis.app.ui.chat.ChatViewModelStore.PoolKind.CHILD)
+                check(!vm.isStreaming.value && !vm.isCompacting.value) { "child already has an active run" }
+                vm.helperConfig = config
+                vm.adoptBrowserTabPool(pool)
+                ChatSubagentChild(vm, childId, pool)
+            } },
+            queuedStarter = { item ->
+                activeSessionId == owner && item.parentSessionId == owner && startQueuedDelegation(item.argsJson, item.toolUseId, item.expectsResultRow)
+            }, interruptedCount = { countInterruptedChildren(owner) },
+            publish = { content, state -> withContext(Dispatchers.Main) {
+                if (activeSessionId == owner && parent.expectsResultRow) {
+                    val status = when (state) {
+                        com.openminis.app.agent.jobs.AgentJobState.DONE -> ToolBlockStatus.SUCCESS
+                        com.openminis.app.agent.jobs.AgentJobState.CANCELLED -> ToolBlockStatus.CANCELLED
+                        com.openminis.app.agent.jobs.AgentJobState.TIMEOUT -> ToolBlockStatus.TIMEOUT
+                        com.openminis.app.agent.jobs.AgentJobState.FAILED -> ToolBlockStatus.FAILED
+                        com.openminis.app.agent.jobs.AgentJobState.RUNNING, com.openminis.app.agent.jobs.AgentJobState.PENDING -> ToolBlockStatus.RUNNING
+                        null -> null
+                    }
+                    writeDelegateBlock(toolId, content, status)
+                    if (inline?.get() == true && assistantId.isNotEmpty() && streamJob === run && run?.isActive == true) {
+                        val i = toolBlocks.indexOfFirst { it.id == toolId }
+                        if (i >= 0) {
+                            toolBlocks[i] = toolBlocks[i].copy(content = content)
+                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                        }
+                    }
+                }
+            } }, clear = { withContext(Dispatchers.Main) {
+                if (activeSessionId == owner) clearDelegateOverride(toolId)
+            } }, userWaiting = { activeSessionId == owner && _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER } },
+            progress = { text, previous -> withContext(Dispatchers.Main) {
+                if (activeSessionId != owner) null else {
+                    previous?.let { id -> if (_promptQueue.value.any { it.id == id }) removeQueuedPrompt(id) }
+                    if (submitPrompt(text) is SubmitOutcome.Queued) _promptQueue.value.lastOrNull()?.id else null
+                }
+            } })
     }
 
     /**
@@ -8591,14 +8153,14 @@ class ChatViewModel(
         val ownerSession = activeSessionId
         val ownerRun = streamJob
         fun active() = activeSessionId == ownerSession && streamJob === ownerRun && ownerRun?.isActive == true
-        fun effects(id: String, blocks: MutableList<AssistantBlock>): com.openminis.app.agent.AgentToolExecutor.Effects {
+        fun effects(id: String, blocks: MutableList<AssistantBlock>, nested: Boolean = false): com.openminis.app.agent.AgentToolExecutor.Effects {
             val bash = ChatBashProjection(viewModelScope, id, blocks, active = ::active,
                 publish = { updateAssistantMessage(assistantId, currentText, true, blocks) })
             return com.openminis.app.agent.AgentToolExecutor.Effects(
                 subagent = { args, action -> withContext(Dispatchers.Main) { when (action) {
                     "resume" -> executeResumeAgents(args)
                     "status", "steer", "cancel" -> executeAgentStatus(args)
-                    else -> executeDelegateTask(args, id, blocks, assistantId, currentText)
+                    else -> executeDelegateTask(args, id, blocks, assistantId, currentText, expectsResultRow = !nested)
                 } } }, disabled = ::toolDisabledResult, bashLine = bash::line,
                 openUrl = { url -> if (active()) MinisOpenUrlBroker.offer(url) },
                 codemodeUpdate = { calls ->
@@ -8624,246 +8186,31 @@ class ChatViewModel(
         return executor.execute(name, argsJson, toolId, input, effects(toolId, toolBlocks),
             nestedEffects = { nestedName, id ->
                 effects(id, mutableListOf(AssistantBlock(id = id, kind = "tool_use", toolName = nestedName,
-                    content = "", toolStatus = ToolBlockStatus.RUNNING)))
+                    content = "", toolStatus = ToolBlockStatus.RUNNING)), nested = true)
             })
     }
 
-    /**
-     * [T-agent-port-round3] The child's transcript as the UI sees it: its
-     * canonical messages with the live streaming overlay merged in. While the
-     * child's turn streams, its in-flight tool blocks live ONLY in the
-     * side-channel — reading `messages` alone never shows the inner tool until
-     * the turn ends (device run 15:13: "running in background" with no tool).
-     */
-    private fun childLiveMessages(childVm: ChatViewModel): List<ChatMessage> {
-        val msgs = childVm.messages.value
-        val stream = childVm.streamingById.value
-        return if (stream.isEmpty()) msgs else mergeStreamingOverlay(msgs, stream)
-    }
-
-    private fun childLiveToolBlock(childVm: ChatViewModel): AssistantBlock? =
-        childLiveMessages(childVm).lastOrNull { it.role == "assistant" }
-            ?.toolBlocks?.lastOrNull { it.kind == "tool_use" }
-
-    private suspend fun executeDelegateTask(
-        argsJson: String,
-        toolId: String,
-        toolBlocks: MutableList<AssistantBlock>,
-        assistantId: String,
-        currentText: String,
-    ): ToolExecutionResult {
-        val owner = activeSessionId
-        val run = streamJob
-        val inline = java.util.concurrent.atomic.AtomicBoolean(true)
+    private suspend fun executeDelegateTask(argsJson: String, toolId: String,
+        toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String,
+        expectsResultRow: Boolean = true): ToolExecutionResult {
         val hr = com.openminis.app.agent.jobs.HelperRunner
         val index = toolBlocks.indexOfFirst { it.id == toolId }
         val prior = toolBlocks.take(index.coerceAtLeast(0)).count {
             it.kind == "tool_use" && hr.isSubAgentToolName(it.toolName) &&
                 !hr.isControlOnly(it.toolArgs.ifEmpty { null }, it.content.ifEmpty { null })
         }
-        val parent = com.openminis.app.agent.AgentSubagentRuntime.Parent(owner, toolId, currentModel?.id,
-            _activeEntryId.value, isHelper, prior, checkBranch = {
-                if (activeSessionId != owner) throw CancellationException("subagent parent branch changed")
-            })
-        val effects = com.openminis.app.agent.AgentSubagentRuntime.Effects(
-            createChild = { childId, config -> withContext(Dispatchers.Main) {
-                parent.checkBranch()
-                val pool = browserTabPool
-                val vm = com.openminis.app.debug.HeadlessChatRunner.viewModelFor(context, childId,
-                    com.openminis.app.ui.chat.ChatViewModelStore.PoolKind.CHILD)
-                vm.helperConfig = config
-                vm.adoptBrowserTabPool(pool)
-                ChatSubagentChild(vm, childId, pool)
-            } },
-            queuedStarter = { item ->
-                activeSessionId == owner && item.parentSessionId == owner && startQueuedDelegation(item.argsJson, item.toolUseId)
-            }, interruptedCount = { if (activeSessionId == owner) countInterruptedChildren(owner) else 0 },
-            publish = { content, state -> withContext(Dispatchers.Main) {
-                if (activeSessionId == owner) {
-                    val status = when (state) {
-                        com.openminis.app.agent.jobs.AgentJobState.DONE -> ToolBlockStatus.SUCCESS
-                        com.openminis.app.agent.jobs.AgentJobState.CANCELLED -> ToolBlockStatus.CANCELLED
-                        com.openminis.app.agent.jobs.AgentJobState.TIMEOUT -> ToolBlockStatus.TIMEOUT
-                        com.openminis.app.agent.jobs.AgentJobState.FAILED -> ToolBlockStatus.FAILED
-                        com.openminis.app.agent.jobs.AgentJobState.RUNNING, com.openminis.app.agent.jobs.AgentJobState.PENDING -> ToolBlockStatus.RUNNING
-                        null -> null
-                    }
-                    writeDelegateBlock(toolId, content, status)
-                    if (inline.get() && assistantId.isNotEmpty() && streamJob === run && run?.isActive == true) {
-                        val i = toolBlocks.indexOfFirst { it.id == toolId }
-                        if (i >= 0) {
-                            toolBlocks[i] = toolBlocks[i].copy(content = content)
-                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
-                        }
-                    }
-                }
-            } }, clear = { withContext(Dispatchers.Main) {
-                if (activeSessionId == owner) clearDelegateOverride(toolId)
-            } }, userWaiting = { activeSessionId == owner && _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER } },
-            progress = { text, previous -> withContext(Dispatchers.Main) {
-                if (activeSessionId != owner) null else {
-                    previous?.let { id -> if (_promptQueue.value.any { it.id == id }) removeQueuedPrompt(id) }
-                    if (submitPrompt(text) is SubmitOutcome.Queued) _promptQueue.value.lastOrNull()?.id else null
-                }
-            } })
-        return try { subagentRuntime.execute(argsJson, parent, effects) } finally { inline.set(false) }
+        val parent = subagentParent(toolId, prior, expectsResultRow)
+        val inline = java.util.concurrent.atomic.AtomicBoolean(true)
+        return try {
+            subagentRuntime.execute(argsJson, parent, subagentEffects(parent, toolBlocks, assistantId, currentText, inline))
+        } finally { inline.set(false) }
     }
 
-    private suspend fun persistFinalDelegateResult(toolId: String, content: String, success: Boolean,
-        ownerSession: String = activeSessionId) {
-        subagentJournal.record(ownerSession, toolId, content, success)
-    }
-
-    /**
-     * [T-p2-background-default] `agent_status`: let the parent model look at
-     * (or cancel) its delegated agents without waiting for the completion
-     * message. Scope: jobs whose target parent is this session.
-     */
-    private fun executeAgentStatus(argsJson: String): ToolExecutionResult {
-        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-        val o = runCatching { JSONObject(argsJson) }.getOrElse { JSONObject() }
-        val action = o.optString("action", "status").lowercase()
-        val jobIdArg = o.optString("job_id", "").trim()
-        val toolTitle = o.optString("tool_title", "").ifEmpty { "subagent" }
-        val sid = activeSessionId
-        var jobs = registry.list().filter { it.target.parentSessionIdOrNull == sid }
-        if (jobIdArg.isNotEmpty()) {
-            jobs = jobs.filter { it.id == jobIdArg || it.id.startsWith(jobIdArg) }
-            if (jobs.isEmpty()) {
-                return ToolExecutionResult(JSONObject().put("ok", false).put("error", "job_not_found").put("job_id", jobIdArg).toString(), false, toolTitle = toolTitle)
-            }
+    private fun executeAgentStatus(argsJson: String): ToolExecutionResult =
+        subagentControls.status(argsJson, subagentParent()) { childId ->
+            runCatching { com.openminis.app.debug.HeadlessChatRunner.existingViewModel(childId) }.getOrNull()
+                ?.let { ChatSubagentChild.snapshotOf(it) }
         }
-        // [T-sub-agents-steer] Course-correct a RUNNING sub agent without
-        // stopping it. Distinct from cancel-then-re-delegate precisely because
-        // the work already done is kept.
-        if (action == "steer") {
-            val message = o.optString("message", "").trim()
-            if (jobIdArg.isEmpty()) {
-                return ToolExecutionResult(
-                    JSONObject().put("ok", false).put("error", "job_id_required_for_steer").toString(),
-                    false, toolTitle = toolTitle,
-                )
-            }
-            if (message.isEmpty()) {
-                return ToolExecutionResult(
-                    JSONObject().put("ok", false).put("error", "message_required_for_steer").toString(),
-                    false, toolTitle = toolTitle,
-                )
-            }
-            val target = jobs.firstOrNull()
-                ?: return ToolExecutionResult(
-                    JSONObject().put("ok", false).put("error", "job_not_found").put("job_id", jobIdArg).toString(),
-                    false, toolTitle = toolTitle,
-                )
-            if (!target.isActive) {
-                return ToolExecutionResult(
-                    JSONObject().put("ok", false).put("status", "rejected")
-                        .put("job_id", target.id)
-                        .put("reason", "already_finished")
-                        .put("state", target.state.wire)
-                        .put("detail", "That sub agent has already finished — its result stands. Delegate a new task instead.")
-                        .toString(),
-                    false, toolTitle = toolTitle,
-                )
-            }
-            val delivered = registry.steer(target.id, message)
-            if (!delivered) {
-                return ToolExecutionResult(
-                    JSONObject().put("ok", false).put("status", "rejected")
-                        .put("job_id", target.id)
-                        .put("reason", "child_not_running")
-                        .put("detail", "That sub agent has no live session to steer.")
-                        .toString(),
-                    false, toolTitle = toolTitle,
-                )
-            }
-            return ToolExecutionResult(
-                JSONObject().put("ok", true).put("status", "queued")
-                    .put("job_id", target.id)
-                    .also { j -> target.agentName?.let { j.put("agent", it) } }
-                    .put(
-                        "detail",
-                        "Queued. The sub agent reads it at its next turn; a tool call already running " +
-                            "is not interrupted. It may finish before consuming it.",
-                    )
-                    .toString(),
-                true, toolTitle = toolTitle,
-            )
-        }
-        if (action == "cancel") {
-            if (jobIdArg.isEmpty()) {
-                return ToolExecutionResult(JSONObject().put("ok", false).put("error", "job_id_required_for_cancel").toString(), false, toolTitle = toolTitle)
-            }
-            for (job in jobs) if (job.isActive) registry.cancel(job.id, "agent_status cancel by parent model")
-        }
-        val entries = org.json.JSONArray()
-        for (job0 in jobs) {
-            val job = registry.job(job0.id) ?: job0
-            val missed = registry.missedSteersFor(job.id)
-            val d = JSONObject()
-                .put("job_id", job.id)
-                .put("title", job.title)
-                .also { j -> job.agentName?.let { j.put("agent", it) } }
-                .also { j ->
-                    if (missed.isNotEmpty()) {
-                        j.put("missed_steer", org.json.JSONArray(missed))
-                        j.put(
-                            "missed_steer_note",
-                            "The run ended before reading these — the result does not reflect them.",
-                        )
-                    }
-                }
-                .put("state", job.state.wire)
-                // [T-sub-agents-v1] `model_origin` is what iOS reports and what
-                // explains an inconsistent fan-out; `tier_used` stays for the
-                // legacy readers that already parse it.
-                .put("model_origin", job.modelOrigin ?: JSONObject.NULL)
-                .put("tier_used", job.tierUsed ?: JSONObject.NULL)
-                .put("elapsed_s", (job.elapsedMs ?: 0L) / 1000)
-                .put("child_session_id", job.runSessionId ?: JSONObject.NULL)
-                .put("delivery", if (job.then is com.openminis.app.agent.jobs.AgentJobThen.None) "tool_result" else "new_message_when_done")
-            val cid = job.runSessionId
-            if (cid != null && job.state == com.openminis.app.agent.jobs.AgentJobState.RUNNING) {
-                // [T-sub-agents-v1] Only ever LOOK UP the child here — never
-                // construct one. This runs on the tool dispatcher's IO thread,
-                // and ViewModelProvider is not thread-safe: constructing under
-                // a race could hand back a second instance for the same
-                // session and silently split the child's state. A RUNNING job
-                // always has its view model already.
-                val cvm = runCatching {
-                    com.openminis.app.debug.HeadlessChatRunner.existingViewModel(cid)
-                }.getOrNull()
-                val msgs = cvm?.messages?.value.orEmpty()
-                val tool = cvm?.let { childLiveToolBlock(it) }
-                if (tool != null) { d.put("current_tool", tool.toolName); d.put("current_status", tool.toolTitle.take(120)) }
-                d.put("loop_iteration", msgs.count { it.role == "assistant" })
-            }
-            if (!job.isActive) job.resultText?.let { d.put("result", it.take(2000)) }
-            entries.put(d)
-        }
-        // [T-sub-agents-queue] Report the backlog too. Without it a model that
-        // fanned out five tasks and asked for status saw only the three that
-        // started — the queued two were invisible, which invites exactly the
-        // re-delegation the queue exists to prevent.
-        val queuedWaiting = registry.queuedCount(sid)
-        val baseNote = "Running agents deliver their final result automatically as a new message in this conversation; you do not need to poll for it."
-        val out = JSONObject()
-            .put("ok", true)
-            .put("action", action)
-            .put("count", entries.length())
-            .put("agents", entries)
-            .put("queued", queuedWaiting)
-            .put(
-                "note",
-                if (queuedWaiting > 0) {
-                    "$baseNote $queuedWaiting more are queued and will start as slots free — do not re-delegate them."
-                } else {
-                    baseNote
-                },
-            )
-        return ToolExecutionResult(out.toString(), true, toolTitle = toolTitle)
-    }
-
 
     private fun visionPlaceholder(): String? {
         if (currentModelHasNativeVision) return null

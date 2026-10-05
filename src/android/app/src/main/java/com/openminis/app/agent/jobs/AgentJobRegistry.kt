@@ -263,6 +263,7 @@ object AgentJobRegistry {
         val argsJson: String,
         val toolUseId: String,
         val queuedAtMs: Long = System.currentTimeMillis(),
+        val expectsResultRow: Boolean = true,
     )
 
     /** Backlog bound. Past this a delegation is refused, and says so plainly. */
