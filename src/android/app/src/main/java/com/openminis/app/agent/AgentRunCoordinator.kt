@@ -51,7 +51,8 @@ internal class AgentRunCoordinator {
                 withContext(Dispatchers.Main) { prepare() }
                 currentCoroutineContext().ensureActive()
                 prepared = true
-                run(owner, label, bypassSlot, markFailure, title, stop, beforeInactive, failed, body)
+                run(owner, label, bypassSlot, markFailure, title,
+                    { if (job === ownedJob) stop() }, beforeInactive, failed, body)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {

@@ -1465,6 +1465,7 @@ class ChatViewModel(
 
     private val runCoordinator = com.openminis.app.agent.AgentRunCoordinator()
     private val cancellationCoordinator = com.openminis.app.agent.AgentCancellationCoordinator()
+    private val stopRuntime = com.openminis.app.agent.AgentStopRuntime(runCoordinator, cancellationCoordinator)
     private val streamJob: Job? get() = runCoordinator.job
     private val cancellationPending get() = streamJob?.let { it.isCancelled && !it.isCompleted } == true
     internal suspend fun awaitAgentRunSettlement() { streamJob?.join() }
@@ -1512,24 +1513,8 @@ class ChatViewModel(
                     dispatched = true
                     body()
                 } finally {
-                    val committed = cancellationCoordinator.finish()
-                    runCatching { subagentJournal.flush(committed?.sessionId ?: sessionId) }.onFailure {
-                        AppLogger.warning(TAG, "[subagent] result reconciliation failed: ${it.message}")
-                    }
-                    if (committed != null) withContext(NonCancellable + Dispatchers.Main) {
-                        if (activeSessionId == committed.sessionId) {
-                            committed.assistantRow?.let {
-                                messagePublication.stamp(committed.sessionId, committed.bubbleId, it)
-                            }
-                            committed.messages.forEach { message ->
-                                if (agentHistory.none { it.dbMessageId != null && it.dbMessageId == message.dbMessageId }) {
-                                    val pending = if (message.role == LLMMessage.Role.ASSISTANT)
-                                        agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
-                                    else -1
-                                    if (pending >= 0) agentHistory[pending] = message else agentHistory.add(message)
-                                }
-                            }
-                        }
+                    cancellationCoordinator.settle(sessionId, agentHistory, { activeSessionId }, subagentJournal) { committed ->
+                        committed.assistantRow?.let { messagePublication.stamp(committed.sessionId, committed.bubbleId, it) }
                     }
                 }
             })
@@ -3999,6 +3984,7 @@ class ChatViewModel(
 
     /** Select a specific model entry (bypasses group selection). */
     private fun cancelWorkBoundToPreviousModel(reason: String) {
+        if (runCoordinator.mutating) return
         if (!_isStreaming.value && streamJob?.isActive != true) return
         val leaving = currentProvider?.model?.displayName ?: "(unresolved)"
         if (!isBoundToAbandonedModel()) {
@@ -4029,19 +4015,14 @@ class ChatViewModel(
         // Treat it as a user-initiated stop of THIS turn: the error handler
         // then marks the message interrupted/resumable instead of reporting
         // the old model's failure.
+        val stopped = stopRuntime.stop(activeSessionId, sessionId.takeIf { isDraft && it != activeSessionId },
+            com.openminis.app.agent.AgentStopRuntime.Reason.MODEL_RETRY_SWITCH)
+        if (stopped !is com.openminis.app.agent.AgentStopRuntime.Result.Run) return
         lastTurnWasCancelled = true
-        streamJob?.cancel()
         _isStreaming.value = false
-        // The countdown text ("… — retrying (2/3)…") names the old model and
-        // is the ghost the user actually sees. It is owned by the ladder we
-        // just cancelled, so nothing else will clear it.
         _autoRetryAttempt.value = 0
         _autoRetryCountdown.value = 0
         clearInlineError()
-        SessionActivityTracker.setInactive(activeSessionId)
-        if (isDraft && realSessionId.isNotEmpty() && activeSessionId != sessionId) {
-            SessionActivityTracker.setInactive(sessionId)
-        }
         // [T-android-switch-model-let-stream-finish] Deliberately NOT
         // `handleUserCancelledCleanup()`. That is Stop's per-turn closer: its
         // tool branch flips in-flight tool blocks to CANCELLED, persists
@@ -6975,78 +6956,22 @@ class ChatViewModel(
     }
 
     fun cancelStream() {
-        if (runCoordinator.mutating) { streamJob?.cancel(); return }
-        AppLogger.info(TAG_STREAM, "cancelStream invoked _isStreaming=false (sid=$activeSessionId)")
-        // [T-android-context-usage-hint] Suppress this turn's usage line — see
-        // [lastTurnWasCancelled]. Set before `_isStreaming = false` below, so
-        // the edge collector observes the flag already raised.
+        val owner = activeSessionId
+        val alias = sessionId.takeIf { isDraft && it != owner }
+        val stopped = stopRuntime.stop(owner, alias)
+        if (stopped !is com.openminis.app.agent.AgentStopRuntime.Result.Run) return
         lastTurnWasCancelled = true
-        // [T-sub-agents-queue] The user stopped this turn, so work it queued
-        // must not start afterwards.
-        //
-        // [T-android-stop-sibling-subagent] The comment here used to claim
-        // running sub agents were "cancelled by the existing paths". They were
-        // not: the only caller of cancelAll was session deletion, so stopping a
-        // turn left its whole fan-out running. Mute first (so a sibling that
-        // already finished cannot re-wake this turn), then drop the queue
-        // before cancelling, because each cancel drains the queue and would
-        // otherwise start the very delegations being stopped.
-        com.openminis.app.agent.jobs.AgentJobRegistry.muteDelegationResults(activeSessionId)
-        com.openminis.app.agent.jobs.AgentJobRegistry.dropQueuedDelegations(activeSessionId, "user-stopped")
-        com.openminis.app.agent.jobs.AgentJobRegistry.cancelAll(activeSessionId, "user-stopped")
-        val stopView = cancellationCoordinator.requestStop()
-        streamJob?.cancel()
         _isStreaming.value = false
-        // T-streaming-side-channel: flush any in-flight delta back into the
-        // canonical message so the rest of cancelStream's cleanup (publish
-        // overlay excerpt, persist, retry-eligible state) sees the real
-        // content rather than a stale pre-stream snapshot.
         flushAllStreamingDeltas()
-        // T171: drop activity tracker immediately, don't wait for the
-        // streamJob's finally block. When OkHttp is wedged in a blocking
-        // execute() call.cancel() may unwind eventually but the finally
-        // doesn't run until then — meanwhile RPC chat.session.status would
-        // still report isRunning=true and the user thinks the stop button
-        // did nothing.
-        // [T-android-overlay-reply-status-34599] User-initiated cancel:
-        // surface any reply we already streamed + tag outcome as
-        // Cancelled so the overlay's glyph reflects the actual end
-        // state (⊘) instead of carrying over the prior tool's outcome.
-        publishOverlayReplyExcerpt(activeSessionId)
+        publishOverlayReplyExcerpt(owner)
         SessionActivityTracker.clearToolRunning(com.openminis.app.service.ToolOutcome.Cancelled)
-        SessionActivityTracker.setInactive(activeSessionId)
-        if (isDraft && realSessionId.isNotEmpty() && activeSessionId != sessionId) {
-            SessionActivityTracker.setInactive(sessionId)
-        }
-        // Stop whichever shell the agent loop is actually dispatching against.
-        // Before `ensureSession()` that is the draft id; after, the real id.
-        // Stopping the wrong one leaves a runaway yt-dlp/ffmpeg alive.
-        ExecutionCoordinator.stopCurrentCommand(activeSessionId)
-        if (isDraft && realSessionId.isNotEmpty() && activeSessionId != sessionId) {
-            // Mid-turn rename: sweep any lingering draft shell too.
-            ExecutionCoordinator.stopCurrentCommand(sessionId)
-        }
-        // [T-android-stop-retry-countdown] Stop during an auto-retry countdown:
-        // the countdown wrote "<error> — retrying (n/3)…" onto the row and only
-        // clears it after the delay completes, which a cancelled job never
-        // reaches. Take it down here, the same as the model-switch cancel does,
-        // so the row does not keep a transient error nothing will advance.
         if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
             _autoRetryAttempt.value = 0
             _autoRetryCountdown.value = 0
             clearInlineError()
         }
-        handleUserCancelledCleanup(stopView)
-
-        // T189: iOS parity (AIChatViewModel.swift L2592-2610). If the user
-        // enqueued prompts during the cancelled stream, auto-resume the drain
-        // instead of leaving them stuck as dashed bubbles waiting for a manual
-        // long-press retry.
-        val pending = _promptQueue.value
-        if (pending.isNotEmpty()) {
-            AppLogger.info(TAG_STREAM, "cancel — ${pending.size} queued prompt(s) remain, restarting drain")
-            resumeQueueAfterCancel()
-        }
+        handleUserCancelledCleanup(stopped.view)
+        if (_promptQueue.value.isNotEmpty()) resumeQueueAfterCancel()
     }
 
     /**

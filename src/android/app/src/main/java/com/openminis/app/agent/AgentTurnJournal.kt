@@ -23,13 +23,14 @@ internal class AgentTurnJournal(
     private var assistantRow: MessageEntity? = null
     private var assistantMessage: LLMMessage? = null
     private var resultsCommitted = false
+    private var emptyReceiptCommitted = false
     private var presentation = emptyMap<String, AgentJournalWriter.ToolPresentation>()
     private val completed = mutableMapOf<String, List<AgentContentPart>>()
 
     val stopRequested: Boolean get() = synchronized(state) { requested }
     data class StopView(val bubbleId: String, val pendingIds: Set<String>, val resumable: Boolean)
     data class Commit(val sessionId: String, val bubbleId: String,
-        val messages: List<LLMMessage>, val assistantRow: MessageEntity?)
+        val messages: List<LLMMessage>, val assistantRow: MessageEntity?, val acceptedParts: List<AgentContentPart>)
 
     fun requestStop(): StopView = synchronized(state) {
         requested = true
@@ -59,6 +60,12 @@ internal class AgentTurnJournal(
     suspend fun assistant(parts: List<AgentContentPart>, receipt: AgentJournalWriter.Receipt, reasoning: String?,
         metadata: Map<String, AgentJournalWriter.ToolPresentation>): MessageEntity? = commits.withLock {
         withContext(NonCancellable + Dispatchers.IO) {
+            if (parts.isEmpty()) {
+                if (!synchronized(state) { emptyReceiptCommitted }) {
+                    writer.usageOnly(receipt)?.let { synchronized(state) { emptyReceiptCommitted = true } }
+                }
+                return@withContext null
+            }
             val existing = synchronized(state) { assistantRow }
             existing ?: writer.assistant(parts, receipt, reasoning, metadata)?.also { row ->
                 synchronized(state) {
@@ -67,6 +74,17 @@ internal class AgentTurnJournal(
                         contentParts = parts, reasoningContent = reasoning, dbMessageId = row.id)
                     this@AgentTurnJournal.receipt = receipt
                 }
+            }
+        }
+    }
+
+    suspend fun retireAttempt() = withContext(NonCancellable + Dispatchers.IO) {
+        commits.withLock {
+            if (synchronized(state) { assistantRow == null && !emptyReceiptCommitted })
+                writer.usageOnly(synchronized(state) { receipt })
+            synchronized(state) {
+                receipt = receipt.copy(usage = null, streamMs = 0, calibration = null)
+                emptyReceiptCommitted = false
             }
         }
     }
@@ -80,11 +98,20 @@ internal class AgentTurnJournal(
     suspend fun finishStop(): Commit? = withContext(NonCancellable + Dispatchers.IO) {
         commits.withLock {
             val stopped = synchronized(state) { requested }
-            if (!stopped) return@withLock null
+            if (!stopped) {
+                // A failed request/model-switch may have measured usage without committing visible output.
+                if (synchronized(state) { assistantRow == null && !emptyReceiptCommitted }) {
+                    writer.usageOnly(synchronized(state) { receipt })?.let { synchronized(state) { emptyReceiptCommitted = true } }
+                }
+                return@withLock null
+            }
             val parts = content.parts()
             val calls = parts.filterIsInstance<AgentContentPart.ToolUse>()
             val additions = mutableListOf<LLMMessage>()
             val prior = synchronized(state) { assistantRow }
+            if (prior == null && parts.isEmpty() && !synchronized(state) { emptyReceiptCommitted }) {
+                writer.usageOnly(synchronized(state) { receipt })?.let { synchronized(state) { emptyReceiptCommitted = true } }
+            }
             synchronized(state) { assistantMessage }?.let(additions::add)
             if (prior == null && parts.isNotEmpty()) {
                 val interrupted = if (calls.isEmpty()) parts + AgentContentPart.Text(
@@ -102,7 +129,7 @@ internal class AgentTurnJournal(
                 synchronized(state) { resultsCommitted = true }
                 additions.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = results, dbMessageId = row?.id))
             }
-            Commit(sessionId, bubbleId, additions, synchronized(state) { assistantRow })
+            Commit(sessionId, bubbleId, additions, synchronized(state) { assistantRow }, parts)
         }
     }
 }

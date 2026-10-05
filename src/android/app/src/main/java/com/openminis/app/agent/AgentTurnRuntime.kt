@@ -98,6 +98,7 @@ internal class AgentTurnRuntime<T>(
         }, retrying = recovery.retrying, countdown = recovery.countdown,
             retryCancelled = recovery.retryCancelled, clearRetry = recovery.clearRetry,
             rollback = { discard ->
+                journal.retireAttempt()
                 recovery.rollbackPresentation(discard)
                 content.resetAttempt()
             }, healOverflow = { error ->

@@ -60,6 +60,10 @@ internal class AgentModelTurn(
     ) {
         dispatch = null
         calibration = null
+        usage = null
+        streamMs = 0
+        reportedContext = 0
+        receipt()
         val attempt = AgentStreamAttempt(sessionId, turn, provider.javaClass.simpleName, historySize,
             content, trace, provider.streamTextIsMonolithic, firstChunk,
             duration = { elapsed -> streamMs += elapsed; journal.recordDuration(streamMs) })
