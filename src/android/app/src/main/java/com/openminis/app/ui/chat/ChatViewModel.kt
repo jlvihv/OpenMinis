@@ -53,7 +53,6 @@ import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.agent.CompactionSummarizer
 import com.openminis.app.agent.AgentLoopEngine
-import com.openminis.app.agent.CompactIdleTimeoutException
 import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.agent.shell.OnDemandBash
 import com.openminis.app.sandbox.ExecutionCoordinator
@@ -68,7 +67,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,7 +83,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -232,81 +229,11 @@ class ChatViewModel(
          * hint of an over-length problem disqualifies it, and an unrecognised
          * message falls through to splitting as before.
          */
-        internal fun looksLikeParameterRejection(error: LLMError.ProviderError): Boolean {
-            val msg = error.message?.lowercase() ?: return false
-            // Any whiff of a size problem → not ours, keep splitting.
-            val sizeMarkers = listOf(
-                "context_length", "context length", "too long", "too large",
-                "maximum context", "max_tokens", "token limit", "exceeds",
-                "reduce the length", "payload",
-            )
-            if (sizeMarkers.any { msg.contains(it) }) return false
-            // A named request parameter the endpoint will not accept. The reported
-            // case: "reasoning.effort: 'none' is not supported".
-            val paramMarkers = listOf(
-                "is not supported", "unsupported parameter", "unsupported value",
-                "invalid_request_error", "invalid parameter", "unrecognized request argument",
-                "does not support parameter", "extra_forbidden",
-            )
-            return paramMarkers.any { msg.contains(it) }
-        }
+        internal fun looksLikeParameterRejection(error: LLMError.ProviderError): Boolean =
+            com.openminis.app.agent.CompactionFailurePolicy.parameterRejection(error)
 
-        internal fun shouldSplitOnError(error: Throwable): Boolean {
-            if (error is CancellationException) return false
-            // [T-compact-idle-timeout] A stream that went silent proves nothing
-            // about payload size — the request was accepted and was streaming
-            // until the connection died. Splitting would issue two more calls
-            // into the same broken pipe and spend the call budget discovering
-            // that twice.
-            if (error is CompactIdleTimeoutException) return false
-            if (error is LLMError) {
-                return when (error) {
-                    // Never worth a smaller payload:
-                    //  - Cancelled: the user stopped it; retrying fights that.
-                    //  - NetworkError: never reached a model, size is irrelevant.
-                    //  - RateLimited (429): refusing on quota, not length —
-                    //    halving just doubles the rejected calls under backoff.
-                    //  - TransientError (5xx): server-side fault, payload
-                    //    independent; retrying smaller multiplies the outage.
-                    //  - InvalidApiKey: auth, not size.
-                    is LLMError.Cancelled,
-                    is LLMError.NetworkError,
-                    is LLMError.RateLimited,
-                    is LLMError.TransientError,
-                    is LLMError.InvalidApiKey,
-                    -> false
-                    // [OpenMinis#377] A 4xx that REJECTS THE REQUEST SHAPE cannot be
-                    // fixed by sending less of it. Reported as a compaction that halved
-                    // 963 → 481 → 240 → 120 messages and failed four times on one
-                    // unchanged parameter (`reasoning.effort:"none"` on a model that does
-                    // not accept it), spending the call budget and minutes of wall clock
-                    // before surfacing.
-                    //
-                    // NOT keyed on the status code alone, which was the first attempt and
-                    // is wrong: over-length refusals are ALSO HTTP 400
-                    // (`context_length_exceeded` on OpenAI, and the providers attach
-                    // `httpStatus = 400` to them), so a blanket 4xx block would disable
-                    // splitting for the exact case it exists to serve.
-                    //
-                    // Keyed instead on the two things that distinguish a parameter
-                    // rejection from a size rejection, both checked on the message:
-                    //  - it names a REQUEST PARAMETER as unsupported/invalid, and
-                    //  - it does NOT carry any of the over-length markers.
-                    // The negative half matters more than the positive one: this
-                    // function's history is that enumerating how each vendor words an
-                    // over-length refusal was provably incomplete (OpenMinis#133), so
-                    // anything that looks even slightly like a size problem keeps
-                    // splitting. The burden of proof stays on NOT retrying.
-                    is LLMError.ProviderError -> !looksLikeParameterRejection(error)
-                    else -> true
-                }
-            }
-            // Raw OkHttp/socket failures are the Android equivalent of iOS's
-            // NSURLErrorDomain bail-out: offline / DNS / TLS / timeout, all
-            // payload-size independent.
-            if (error is java.io.IOException) return false
-            return true
-        }
+        internal fun shouldSplitOnError(error: Throwable): Boolean =
+            com.openminis.app.agent.CompactionFailurePolicy.canSplit(error)
 
         /**
          * [T-android-offload-warmup-scan] The index mapping behind
@@ -1565,7 +1492,7 @@ class ChatViewModel(
      * Cancelling routes through the same `finally` that clears the lock, so a
      * user-cancelled compaction leaves no state behind.
      */
-    private var compactJob: Job? = null
+    private val compactJob: Job? get() = compactionRuntime.job
 
     /** Cancel an in-flight compaction. No-op when nothing is running. */
     fun cancelCompact() {
@@ -1670,12 +1597,15 @@ class ChatViewModel(
     /** Structured agent history for the agent loop (contentParts-based). */
     private val agentHistory = mutableListOf<LLMMessage>()
 
-    private val compactionSummarizer = CompactionSummarizer(COMPACT_IDLE_TIMEOUT_MS, ::shouldSplitOnError)
+    private val compactionSummarizer = CompactionSummarizer(COMPACT_IDLE_TIMEOUT_MS, com.openminis.app.agent.CompactionFailurePolicy::canSplit)
     private val compactionCoordinator = com.openminis.app.agent.CompactionCoordinator(
-        compactionSummarizer, compactCallsIssued, MAX_COMPACT_LLM_CALLS, ::shouldSplitOnError,
+        compactionSummarizer, compactCallsIssued, MAX_COMPACT_LLM_CALLS, com.openminis.app.agent.CompactionFailurePolicy::canSplit,
     ) { depth, issued ->
         _compactProgress.value = _compactProgress.value?.copy(depth = depth, callsIssued = issued)
     }
+
+    private val compactionRuntime = com.openminis.app.agent.AgentCompactionRuntime(
+        compactionCoordinator, compactCallsIssued, COMPACT_MAX_TOTAL_MS)
 
     /**
      * Agent tool definitions are rebuilt so capability switches take effect immediately.
@@ -3040,7 +2970,7 @@ class ChatViewModel(
             )
             return
         }
-        val provider = currentProvider ?: run {
+        if (currentProvider == null) {
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
@@ -3074,7 +3004,6 @@ class ChatViewModel(
         // total budget off it was what cancelled healthy streams mid-flight.
         val transcriptChars = compactionCoordinator.transcript(toCompact).length
         val timeoutMs = COMPACT_MAX_TOTAL_MS
-        compactCallsIssued.set(0)
         _compactProgress.value = CompactProgress(
             startedAtMs = System.currentTimeMillis(),
             depth = 0,
@@ -3089,103 +3018,15 @@ class ChatViewModel(
                 "idleTimeout=${COMPACT_IDLE_TIMEOUT_MS / 1000}s, " +
                 "maxTotal=${timeoutMs / 1000}s, callBudget=$MAX_COMPACT_LLM_CALLS",
         )
-        compactJob = viewModelScope.launch(Dispatchers.IO) {
-            // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
-            // the queued-prompt drain below; failure/cancel/empty-summary paths
-            // keep today's behavior (queued bubbles stay pending + cancellable).
-            var compactSucceeded = false
-            // Distinguishes "we gave up on time" from other failures so the
-            // user-facing message can say so and invite a retry.
-            var timedOut = false
-            try {
-                val existing = _compactSummary.value
-                // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
-                // joined transcript exceeds the model's context window, halve
-                // the message list and summarize each half independently, then
-                // merge. depth cap=3 prevents pathological recursion.
-                //
-                // [T-android-compact-runaway] withTimeout bounds the WHOLE run,
-                // including every split segment. Without it the only ceiling was
-                // the provider's 10-minute readTimeout multiplied by however
-                // many sequential segments the split produced.
-                // [T-android-compact-fallback] Retry the summary on the NEXT
-                // model when the current one refuses for a reason another model
-                // can satisfy (429 / 5xx / auth / quota).
-                //
-                // Compact previously called the provider directly with no chain
-                // at all: a rate-limited or exhausted model threw, and the only
-                // recovery was `generateCompactSummaryWithSplitting`'s halving —
-                // which re-sends to the SAME dead model, so it could never help.
-                // `shouldSplitOnError` already returns false for exactly these
-                // classes, so they arrive here untouched rather than being
-                // burned on split retries first.
-                //
-                // Classification is the agent loop's, not a new one:
-                // RateLimited / isHttpServerError / isFallbackable, plus
-                // FallbackStrategy.always. Reusing it is what keeps compact and
-                // normal turns agreeing about what "worth switching" means.
-                var summary = ""
-                run {
-                    val strategy = com.openminis.app.data.model.FallbackStrategy.default
-                    val tried = mutableSetOf<String>()
-                    _activeEntryId.value?.let { tried.add(it) }
-                    var attempt = 0
-                    while (true) {
-                        attempt++
-                        try {
-                            summary = withTimeout(timeoutMs) {
-                                generateCompactSummaryWithSplitting(
-                                    ownerSessionId = compactSessionId,
-                                    messages = toCompact,
-                                    previousSummary = existing,
-                                    depth = 0,
-                                )
-                            }.trim()
-                            break
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (e: Exception) {
-                            val actual = unwrapFlowException(e)
-                            val err = actual as? com.openminis.app.data.model.LLMError
-                            val worthSwitching = err?.isFallbackable == true ||
-                                err?.isHttpServerError == true ||
-                                actual is com.openminis.app.data.model.LLMError.RateLimited ||
-                                strategy == com.openminis.app.data.model.FallbackStrategy.always
-                            val next = if (!worthSwitching) null else {
-                                buildFallbackProviders(
-                                    currentProvider ?: throw e,
-                                ).firstOrNull { it.entryId !in tried }
-                            }
-                            if (next == null) throw e
-                            tried.add(next.entryId)
-                            val from = currentModel?.displayName ?: "?"
-                            withContext(Dispatchers.Main) {
-                                if (activeSessionId != compactSessionId) throw CancellationException("compaction branch changed")
-                                adoptFallbackCandidate(next)
-                                _compactProgress.value = _compactProgress.value
-                                    ?.copy(modelName = next.provider.model.displayName)
-                            }
-                            AppLogger.warning(
-                                TAG,
-                                "[Compact] attempt $attempt on $from failed " +
-                                    "(${actual.javaClass.simpleName}) — retrying on " +
-                                    next.provider.model.displayName,
-                            )
-                            // Each candidate gets its own call budget; otherwise
-                            // the first model's spent attempts would starve the
-                            // replacement before it issues a single request.
-                            compactCallsIssued.set(0)
-                        }
-                    }
-                }
-                if (summary.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compaction produced no output — try again later.", "compact")
-                    }
-                    return@launch
-                }
-
-                compactionJournal.commit(summary, publish = { marker ->
+        compactionRuntime.launch(viewModelScope, compactionJournal,
+            currentSession = { activeSessionId }, entryId = _activeEntryId.value,
+            previousSummary = _compactSummary.value, provider = { currentProvider },
+            prepare = { prepareCompactionInput(compactSessionId) }, candidates = ::buildFallbackProviders,
+            identity = { it.entryId }, adopted = { next ->
+                adoptFallbackCandidate(next)
+                _compactProgress.value = _compactProgress.value?.copy(modelName = next.provider.model.displayName)
+            }, publish = { marker ->
+                    val summary = marker.summary
                     val lastCompactedDbId = requireNotNull(marker.lastCompactedMessageId)
                     _compactSummary.value = marker.summary
                     _cachedLatestMarker = marker
@@ -3288,105 +3129,30 @@ class ChatViewModel(
                 }, restored = { previous ->
                     _cachedLatestMarker = previous
                     _compactSummary.value = previous?.summary
-                })
-            } catch (e: TimeoutCancellationException) {
-                // [T-android-compact-runaway] MUST precede the CancellationException
-                // arm — TimeoutCancellationException extends it, so the generic
-                // re-throw would otherwise swallow our own timeout and surface it
-                // as a silent cancel with no message.
-                timedOut = true
-                // [T-compact-idle-timeout] Reaching this now means the 15-minute
-                // runaway backstop fired — the stream kept producing data the
-                // whole time (or it would have hit the idle timer first), so
-                // "slow or rate-limited" is the wrong advice here.
-                val elapsed = (timeoutMs / 1000L).toInt()
-                val calls = compactCallsIssued.get()
-                Log.w(TAG, "[Compact] hit the ${elapsed}s total ceiling ($calls model call(s) issued)")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction stopped after ${elapsed / 60} minutes " +
-                            "($calls model call(s) attempted) — the model kept producing " +
-                            "output without finishing. Try compacting again, or start a " +
-                            "new session if it keeps happening.",
-                        iconKind = "compact",
-                    )
-                }
-            } catch (e: CompactIdleTimeoutException) {
-                // [T-compact-idle-timeout] The stream stopped sending data. This
-                // is the "really stuck" case the idle timer exists to catch, and
-                // unlike the ceiling above it says something actionable: the
-                // connection or the model went quiet, so retrying is reasonable.
-                timedOut = true
-                val calls = compactCallsIssued.get()
-                Log.w(TAG, "[Compact] idle timeout: ${e.message} ($calls model call(s) issued)")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction stalled — no response from the model for " +
-                            "${COMPACT_IDLE_TIMEOUT_MS / 1000}s " +
-                            "($calls model call(s) attempted). Check your connection " +
-                            "and try compacting again.",
-                        iconKind = "compact",
-                    )
-                }
-            } catch (e: CancellationException) {
-                // User-initiated (cancelCompact) or scope teardown. Tell the
-                // user only if they are still around to read it; the `finally`
-                // below releases the lock either way.
-                if (compactionJournal.committed == null && activeSessionId == compactSessionId && compactJob?.isCancelled == true) {
-                    runCatching {
-                        withContext(NonCancellable + Dispatchers.Main) {
-                            appendSystemInfo("Compaction cancelled.", "compact")
-                        }
+                }, notice = { event, calls ->
+                    val text = when (event) {
+                        com.openminis.app.agent.AgentCompactionRuntime.Notice.Empty -> "Compaction produced no output — try again later."
+                        com.openminis.app.agent.AgentCompactionRuntime.Notice.TotalTimeout ->
+                            "Compaction stopped after ${timeoutMs / 60_000L} minutes ($calls model call(s) attempted) — the model kept producing output without finishing. Try compacting again, or start a new session if it keeps happening."
+                        com.openminis.app.agent.AgentCompactionRuntime.Notice.IdleTimeout ->
+                            "Compaction stalled — no response from the model for ${COMPACT_IDLE_TIMEOUT_MS / 1000}s ($calls model call(s) attempted). Check your connection and try compacting again."
+                        com.openminis.app.agent.AgentCompactionRuntime.Notice.Cancelled -> "Compaction cancelled."
+                        is com.openminis.app.agent.AgentCompactionRuntime.Notice.Failed -> "Compaction failed: ${event.error.message ?: event.error.javaClass.simpleName}"
                     }
-                }
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Compact failed", e)
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
-                        iconKind = "compact",
-                    )
-                }
-            } finally {
-                compactSucceeded = compactionJournal.committed != null
-                _isCompacting.value = false
-                _compactProgress.value = null
-                AppLogger.info(
-                    TAG,
-                    "[Compact] finished: success=$compactSucceeded timedOut=$timedOut " +
-                        "calls=${compactCallsIssued.get()}",
-                )
-                // [T-ctx-measure-outbound] The glow still shows the last report —
-                // the size of the context just replaced.
-                if (compactSucceeded) runCatching {
-                    publishMeasuredContextUsage()
-                    // [T-ctx-usage-after-compact] …and replace the placeholder
-                    // line, which still carried the pre-compaction figure.
-                    announceContextUsageAfterCompaction()
-                    AppLogger.info(TAG, "[CtxMeter] compacted marker=${_cachedLatestMarker?.id?.take(8)} measured $compactMeasuredBefore→${measureOutboundContextTokens()}")
-                }
-                // [T-android-auto-compact-inloop] Signal the awaiting in-loop
-                // caller. In `finally` so a thrown/cancelled compaction can
-                // never strand the agent loop waiting on a callback.
-                onFinished?.invoke(compactSucceeded)
-            }
-            // [T-android-compact-queued-drain] A successful compact must let
-            // any queued prompts proceed — previously nothing re-triggered the
-            // drain after compact (loop-end / cancel / tool-boundary are the
-            // only drain triggers), so a prompt sitting in the queue when a
-            // compact ran stayed in the dashed "queued" state forever. Reuse
-            // resumeQueueAfterCancel: it re-checks queue-non-empty + not-
-            // streaming + not-compacting after its grace delay (so an ✕ tap at
-            // the compact-finish instant is a clean no-op), refreshes OAuth,
-            // and drains through the normal stream-slot machinery — no new
-            // reentrancy path. Runs after `finally` so isCompacting is already
-            // false. Mirrors the iOS fix for the same report.
-            if (compactSucceeded && _promptQueue.value.isNotEmpty()) {
-                AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
-                resumeQueueAfterCancel()
-            }
-        }
+                    appendSystemInfo(text, "compact")
+                }, settled = { outcome ->
+                    _isCompacting.value = false
+                    _compactProgress.value = null
+                    AppLogger.info(TAG, "[Compact] finished: success=${outcome.succeeded} timedOut=${outcome.timedOut} calls=${outcome.calls}")
+                    if (outcome.succeeded && outcome.visible) runCatching {
+                        publishMeasuredContextUsage()
+                        announceContextUsageAfterCompaction()
+                        AppLogger.info(TAG, "[CtxMeter] compacted marker=${_cachedLatestMarker?.id?.take(8)} measured $compactMeasuredBefore→${measureOutboundContextTokens()}")
+                    }
+                }, successful = {
+                    if (_promptQueue.value.isNotEmpty()) resumeQueueAfterCancel()
+                }, finished = onFinished)
+
     }
 
     /**
@@ -3995,24 +3761,10 @@ class ChatViewModel(
     ): com.openminis.app.agent.HistoryProjection.WalkBack =
         historyProjection.walkBack(agentHistory, anchorIdx, maxUserTextTurns, maxMessages)
 
-    /**
-     * Summarize [messages], recursively halving when a whole-input attempt
-     * fails. Mirrors iOS `generateCompactSummaryWithSplitting`.
-     *
-     * Depth cap = 3 (matches iOS) so a pathologically large conversation
-     * still terminates instead of fanning out indefinitely. At each split we
-     * halve by message count, summarize each half independently, then
-     * concatenate the partial summaries oldest-first. The concatenation is a
-     * plain string join, NOT a further LLM call — see the comment at the join
-     * for why the extra round-trip was removed. Both platforms must keep this
-     * the same, or the summary a session carries differs by device.
-     */
-    private suspend fun generateCompactSummaryWithSplitting(
+    /** Snapshot request inputs; runtime owns summary requests, splitting and task settlement. */
+    private suspend fun prepareCompactionInput(
         ownerSessionId: String,
-        messages: List<LLMMessage>,
-        previousSummary: String? = null,
-        depth: Int = 0,
-    ): String {
+    ): com.openminis.app.agent.AgentCompactionRuntime.Input {
         val (provider, journal, attribution) = withContext(Dispatchers.Main) {
             if (activeSessionId != ownerSessionId) throw CancellationException("compaction branch changed")
             val selected = currentProvider ?: throw IllegalStateException("No LLM provider available for compaction")
@@ -4021,10 +3773,10 @@ class ChatViewModel(
         }
         val history = if (compactionSummarizer.canReuse(provider))
             applyRequestImageBudget(effectiveAgentHistory()) else emptyList()
-        return compactionCoordinator.summarize(messages, previousSummary,
+        return com.openminis.app.agent.AgentCompactionRuntime.Input(
             CompactionSummarizer.Context(provider, history, compactSummarySystemPrompt, lastDispatchRatio,
                 attribution, journal::compactionUsage),
-            provider.model.contextWindow ?: 128_000, depth)
+            provider.model.contextWindow ?: 128_000)
     }
 
     /**
