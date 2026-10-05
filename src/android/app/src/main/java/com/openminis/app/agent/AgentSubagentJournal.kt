@@ -22,7 +22,9 @@ internal class AgentSubagentJournal(private val repository: ChatRepository,
     private val retiredJobs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     fun isRetired(job: String): Boolean = job in retiredJobs
 
-    suspend fun <T> rewind(block: suspend (retire: (String, Set<String>, Set<String>) -> Unit) -> T): T = lock.withLock {
+    suspend fun <T> withHistoryMutation(block: suspend () -> T): T = lock.withLock { block() }
+
+    suspend fun <T> rewind(block: suspend (retire: (String, Set<String>, Set<String>) -> Unit) -> T): T = withHistoryMutation {
         block { session, jobs, tools ->
             retiredJobs.addAll(jobs)
             completed.keys.removeAll { it.session == session && it.tool in tools }

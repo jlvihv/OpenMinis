@@ -533,6 +533,15 @@ interface ChatDao {
     @Query("DELETE FROM compact_markers WHERE session_id = :sessionId")
     suspend fun deleteCompactMarkers(sessionId: String)
 
+    @Transaction
+    suspend fun revertLatestCompactMarker(sessionId: String, expected: CompactMarkerEntity): CompactMarkerEntity? {
+        check(expected.sessionId == sessionId && latestCompactMarker(sessionId) == expected) {
+            "The compact marker changed before revert; no history was changed"
+        }
+        check(deleteCompactMarker(expected.id) == 1) { "The compact marker is missing" }
+        return latestCompactMarker(sessionId)
+    }
+
     /** Delete a single compact marker by id (for revert-compact). */
     @Query("DELETE FROM compact_markers WHERE id = :id")
     suspend fun deleteCompactMarker(id: String): Int

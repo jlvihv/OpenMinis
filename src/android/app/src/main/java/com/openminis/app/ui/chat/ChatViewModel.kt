@@ -2736,77 +2736,25 @@ class ChatViewModel(
      * Mirrors iOS `revertCompact()`. Refuses to run mid-stream.
      */
     fun revertCompact() {
-        if (_isStreaming.value) {
-            appendSystemInfo("Cannot revert compact while a response is in progress.", "compact")
-            return
-        }
-        if (_isCompacting.value) {
-            appendSystemInfo("Cannot revert compact while compaction is in progress.", "compact")
-            return
-        }
-        val current = _cachedLatestMarker ?: run {
+        if (_isStreaming.value || streamJob?.isActive == true || compactJob?.isCompleted == false) return
+        val marker = _cachedLatestMarker ?: run {
             appendSystemInfo("Nothing to revert — no compact marker on this session.", "compact")
             return
         }
-        val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isEmpty()) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            AppLogger.info(TAG, "[Compact] ━━━ REVERT ━━━ session=${sid.take(8)} markerId=${current.id.take(8)} v=${current.version}")
-            val removed = runCatching { chatRepository.dao.deleteCompactMarker(current.id) }.getOrNull() ?: 0
-            if (removed <= 0) {
-                Log.w(TAG, "[Compact] revert: deleteCompactMarker returned 0 rows for id=${current.id.take(8)}")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo("Revert failed: marker not found in DB.", "compact")
-                }
-                return@launch
-            }
-
-            // Refresh cache to next-most-recent marker (or null).
-            val next = chatRepository.dao.latestCompactMarker(sid)
-            _cachedLatestMarker = next
-            _compactSummary.value = next?.summary
-
-            // Rebuild UI from DB so the previous marker's divider re-emerges
-            // (or all dividers vanish if there are no remaining markers).
-            // Drop any stale compact-divider system rows first; the reload
-            // path will re-insert one only if the new latest marker calls
-            // for it.
-            withContext(Dispatchers.Main) {
+        val owner = activeSessionId
+        com.openminis.app.agent.AgentCompactionRevert(chatRepository, runCoordinator, subagentJournal, { activeSessionId }).launch(
+            viewModelScope, owner, marker,
+            failed = { if (activeSessionId == owner) _error.value = it.message ?: "Compact revert failed" },
+            publish = { next ->
+                _cachedLatestMarker = next
+                _compactSummary.value = next?.summary
                 _messages.value = _messages.value.filterNot { msg ->
-                    msg.role == "system" &&
-                        msg.toolBlocks.firstOrNull()?.toolName == "compact"
+                    msg.role == "system" && msg.toolBlocks.firstOrNull()?.toolName == "compact"
                 }
-            }
-
-            // Reload session messages — the existing path runs Phase 2.5
-            // graying via applyCompactMarkerGraying() with the new cached
-            // marker, so divider position falls back to the previous one
-            // (or disappears entirely). loadSession() launches its own
-            // viewModelScope job, so call from the Main thread.
-            pendingRevertLogMarker = current.id.take(8)
-            withContext(Dispatchers.Main) {
-                reloadSessionFromDb()
-            }
-
-            if (next != null) {
-                AppLogger.info(TAG, "[Compact] revert DONE: now showing previous marker id=${next.id.take(8)} v=${next.version}")
-            } else {
-                AppLogger.info(TAG, "[Compact] revert DONE: no remaining markers, full history active")
-            }
-        }
-    }
-
-    /**
-     * Re-load the current session's UI message list from disk so any
-     * cached-marker change (revert) gets re-applied through Phase-2.5-
-     * style restore. Defers to the existing [loadSession] entry; that
-     * function reads `_cachedLatestMarker` we just refreshed and routes
-     * through [applyCompactMarkerGraying] to (re)position the divider.
-     */
-    private fun reloadSessionFromDb() {
-        if (realSessionId.isEmpty() && sessionId.isEmpty()) return
-        loadSession()
+                pendingRevertLogMarker = marker.id.take(8)
+            }, reload = {
+                loadSession(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.currentCoroutineContext()))?.join()
+            })
     }
 
     /**
@@ -3876,7 +3824,7 @@ class ChatViewModel(
         }
     }.getOrDefault(false)
 
-    private fun loadSession() {
+    private fun loadSession(scope: kotlinx.coroutines.CoroutineScope = viewModelScope): Job? {
         // T-android-crash-detected-halt: when CrashFrequencyDetector
         // tripped (#459, ≥3 crashes in last hour), skip the heavy
         // session-restore path entirely. Re-running the same persisted
@@ -3895,9 +3843,9 @@ class ChatViewModel(
                 "loadSession.skipped",
                 "reason=safeMode",
             )
-            return
+            return null
         }
-        viewModelScope.launch {
+        return scope.launch {
             // [T-HANG-DIAG] timing markers to localise where session entry
             // stalls. Sentinel-tagged so a single grep -v can strip them
             // when this diagnostic is removed. Declared OUTSIDE the try
