@@ -8728,67 +8728,11 @@ class ChatViewModel(
         // alternative (hand-rolled barriers around every mutation site) would
         // be easy to get subtly wrong for no measurable gain.
         val allToolBlocks = java.util.Collections.synchronizedList(mutableListOf<AssistantBlock>())
-        // Per-tool ring of the most recent `accumulated` JSON snapshots emitted
-        // by `LLMStreamChunk.ToolInputDelta`. Capped at TOOL_INPUT_CHUNK_RING_MAX
-        // entries per tool id so memory stays bounded even on long streams.
-        // The preflight validator below drains this on a blocked call so we
-        // can reconstruct how the model assembled (or failed to assemble) the
-        // args.
-        // [T-android-concurrent-tools] Concurrent: the dispatch loop's slots
-        // read and `remove` their own entry from different IO threads. A plain
-        // mutableMapOf is a HashMap — concurrent structural modification can
-        // corrupt its buckets or surface a null, which is exactly how the
-        // ToolLoopDetector's ArrayDeque failed on device. The per-tool ring
-        // lists inside stay plain: each is filled during streaming (single
-        // thread) and only READ afterwards by the one slot that owns that id.
-        val toolInputChunkRings: MutableMap<String, MutableList<String>> =
-            java.util.concurrent.ConcurrentHashMap()
+        // The runtime records normalized input traces before UI consumption.
+        val toolInputChunkRings = com.openminis.app.agent.AgentToolInputTrace(TOOL_INPUT_CHUNK_RING_MAX)
         var accumulatedText = ""
         var lastContextTokens = 0  // updated each turn from API usage
 
-        // T94 fix 2: throttle text-delta UI updates to ~20fps (50ms).
-        // Pre-T94 the LLMStreamChunk.Text branch hopped to Dispatchers.Main
-        // for every chunk — Anthropic SSE on a slow turn fires 50-100 deltas
-        // per second, each one triggering a full _messages.value reassignment
-        // and a Compose recomposition of the whole chat list. The combined
-        // Main-thread cost is what saturated the touch-event queue and
-        // produced the "Waited 5001ms for MotionEvent" ANRs we saw on
-        // host.example.com. We coalesce deltas in `pendingChunkText` and only
-        // flip the UI on a 50ms timer; the per-stream end and per-retry
-        // rollback paths flush whatever's pending so no characters are lost.
-        // T256: tiered streaming throttle, mirrors iOS AIChatViewModel.swift
-        // 6135-6155. The fixed 50ms window saturated the Pixel 4a UI thread
-        // (95p frame 77ms / 29% janky). 6-segment ladder lets short replies
-        // stay snappy (150ms ≈ 6.5 fps which is fine for <500-char snippets)
-        // while long-form output (>32k chars) drops to 0.5-2s gates.
-        // Newline fast-path keeps short messages flowing at human-readable
-        // pace while still avoiding the per-token recompose storm.
-        var lastUiUpdateMs = 0L
-        var lastFlushedLen = 0
-        // T307: per-delta String += chunk.text on Pixel-class heaps was O(n²)
-        // — every SSE chunk allocated a fresh String the size of turnText so
-        // far, then GC walked the entire char[]. DeepSeek V4 emitting long
-        // multilingual + emoji turns blew past the 256 MB heap on Pixel 4a,
-        // showing up as `AbstractStringBuilder.append:548` in
-        // `ChatViewModel$runAgentLoop$5.emit`. Switch the three hot per-delta
-        // accumulators (`pendingChunkText`, `turnText`, and the trailing
-        // text-block's growing `content`) to StringBuilder so growth is
-        // amortised O(n). Cross-turn `accumulatedText` is unaffected — it
-        // grows per turn, not per delta.
-        val pendingChunkSb = StringBuilder()
-        // T256 tier 2: per-tool-kind input-delta gates. write/edit
-        // pills churn JSON the user can't read anyway — 1Hz update is plenty;
-        // other tools get 5Hz so command/url previews stay legible.
-        var lastFileToolInputMs = 0L
-        var lastOtherToolInputMs = 0L
-        fun textDeltaThrottleMs(len: Int): Long = when {
-            len < 500     -> 150L
-            len < 2_000   -> 300L
-            len < 32_000  -> 500L
-            len < 64_000  -> 1_000L
-            len < 128_000 -> 1_500L
-            else          -> 2_000L
-        }
 
         // [T-android-switch-model-next-request] The prompt this loop sends. A
         // var only for the mid-turn switch: the Claude Code OAuth prefix is
@@ -9249,40 +9193,20 @@ class ChatViewModel(
             // only the NEW parts from this turn (not the full accumulated history).
             // Matches iOS's per-turn RawMessage persistence.
             val turnStartBlockIndex = allToolBlocks.size
-            // T307: per-delta StringBuilder for the running turn text + the
-            // currently-open trailing text block. `turnText` snapshots are
-            // taken (via .toString()) at flush boundaries only, never per
-            // delta. `currentTextBlockSb` mirrors the trailing text block's
-            // growing content; reset to a fresh builder whenever a new text
-            // block opens (which happens after a tool_use / thinking break
-            // interrupts the text run).
-            val turnTextSb = StringBuilder()
-            var currentTextBlockSb: StringBuilder? = null
-            // [T-android-tool-splits-reply-fix] Index (into allToolBlocks) of
-            // THIS turn's single text block, used only when the provider's
-            // streamed content is monolithic (streamTextIsMonolithic — OpenAI
-            // Chat Completions). -1 until the turn's first text delta. The
-            // merge scope is ONE streamed response: text arriving after a
-            // tool RESULT round-trip belongs to the NEXT agent-loop turn,
-            // which is a separate assistant message — so genuine
-            // multi-segment turns are unaffected by the merge.
-            var turnTextBlockIdx = -1
-            // One-shot observability: future endpoints that adopt qwen-style
-            // post-tool_calls content chunking show up in the log.
-            var loggedPostToolTextMerge = false
-            // Materialise the active text block's StringBuilder into its
-            // immutable content. Monolithic mode targets the tracked turn
-            // text block — which may NOT be the last block once trailing
-            // content arrived after tool_calls; ordered mode keeps the
-            // original trailing-block behaviour.
-            fun materializeActiveTextBlock() {
-                val sb = currentTextBlockSb ?: return
-                val idx = if (currentProvider.streamTextIsMonolithic) turnTextBlockIdx else allToolBlocks.lastIndex
-                if (idx >= 0 && idx < allToolBlocks.size && allToolBlocks[idx].kind == "text") {
-                    allToolBlocks[idx] = allToolBlocks[idx].copy(content = sb.toString())
-                }
-            }
-            val turnThinking = StringBuilder()
+            val projection = ChatStreamProjection(turn, turnStartBlockIndex, allToolBlocks, runJournal.sessionId,
+                prefix = { accumulatedText }, firstText = {
+                    if (!didStopStaleReadAloud) {
+                        didStopStaleReadAloud = true
+                        _stopStaleReadAloud.tryEmit(Unit)
+                    }
+                }, publish = { snapshot ->
+                    withContext(Dispatchers.Main) {
+                        if (activeSessionId == runJournal.sessionId) {
+                            snapshot.reason?.let { com.openminis.app.diagnostics.StreamJitterProbe.publish(it, snapshot.content.length) }
+                            updateAssistantMessage(assistantId, snapshot.content, true, snapshot.blocks)
+                        }
+                    }
+                })
             var lastUsage: LLMUsage? = null
             var turnAttribution = runAttribution
             var turnCalibration: Triple<Int, Int, String?>? = null
@@ -9345,8 +9269,9 @@ class ChatViewModel(
                     // Silence here + no network error = the request is hung
                     // below the provider (DNS/TCP/TLS/read), which no existing
                     // log covers. `firstChunkSeen` is flipped in the collector.
+                    projection.configure(currentProvider.streamTextIsMonolithic, currentProvider.model.id)
                     val attempt = com.openminis.app.agent.AgentStreamAttempt(runJournal.sessionId, turn,
-                        currentProvider.javaClass.simpleName, agentHistory.size, turnContent,
+                        currentProvider.javaClass.simpleName, agentHistory.size, turnContent, toolInputChunkRings,
                         currentProvider.streamTextIsMonolithic,
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
                         duration = { turnStreamMs += it; turnJournal.recordDuration(turnStreamMs) })
@@ -9433,321 +9358,11 @@ class ChatViewModel(
                     turnChunks
                     }, consume = { chunk ->
                 when (chunk) {
-                    is LLMStreamChunk.ThinkingDelta -> {
-                        turnThinking.append(chunk.text)
-                        // [T-android-live-update-content] Surface the
-                        // thinking phase to the FGS notification / overlay.
-                        // Deduped inside the tracker, so per-token cost is
-                        // one StateFlow read.
-                        SessionActivityTracker.setThinking(true)
-                        // Update thinking block in UI
-                        val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
-                        if (thinkIdx < 0) {
-                            allToolBlocks.add(AssistantBlock(
-                                id = "thinking_$turn",
-                                kind = "thinking",
-                                content = turnThinking.toString(),
-                                toolTitle = "Thinking",
-                            ))
-                        } else {
-                            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(content = turnThinking.toString())
-                        }
-                        withContext(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
-                        }
-                    }
-                    is LLMStreamChunk.Text -> {
-                        // [T-android-live-update-content] Visible text ends the
-                        // thinking phase (deduped inside the tracker).
-                        SessionActivityTracker.setThinking(false)
-                        // [T-android-readaloud-stop-stale] First actual text of
-                        // this reply — stop the previous reply's Read Aloud so
-                        // old and new audio don't overlap. Deferred to here
-                        // rather than fired from send() on purpose: while the
-                        // model is still thinking there is nothing to supersede
-                        // the old speech with, so it keeps playing until real
-                        // new text arrives.
-                        if (!didStopStaleReadAloud) {
-                            didStopStaleReadAloud = true
-                            _stopStaleReadAloud.tryEmit(Unit)
-                        }
-                        // Mark thinking block as done when text starts flowing
-                        val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
-                        if (thinkIdx >= 0 && allToolBlocks[thinkIdx].toolStatus != ToolBlockStatus.SUCCESS) {
-                            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(toolStatus = ToolBlockStatus.SUCCESS)
-                        }
-                        // T307: append-only on the StringBuilder; .toString()
-                        // is taken once below at flush time, not per delta.
-                        turnTextSb.append(chunk.text)
-                        // Append to the trailing text block — or open a new one if the last
-                        // block isn't a text block (i.e. a tool call or thinking was in between).
-                        // This preserves the chronological interleaving of text and tool calls
-                        // across a single assistant turn. The block's `content` field stays
-                        // immutable String — we keep a parallel StringBuilder for the active
-                        // block and materialise via .toString() only on flush.
-                        val lastIdx = allToolBlocks.lastIndex
-                        val monolithic = currentProvider.streamTextIsMonolithic
-                        val activeSb = if (monolithic && turnTextBlockIdx >= 0 && currentTextBlockSb != null) {
-                            // [T-android-tool-splits-reply-fix] Chat Completions
-                            // content is ONE string per response — a content
-                            // delta arriving after tool_calls deltas (qwen
-                            // chunking artifact) is still part of the same
-                            // pre-tool sentence. Merge it back instead of
-                            // fabricating a post-tool text block, which split
-                            // sentences mid-word in the chat UI. Scope: this
-                            // streamed response only (see turnTextBlockIdx).
-                            if (!loggedPostToolTextMerge &&
-                                allToolBlocks.subList(turnTextBlockIdx + 1, allToolBlocks.size).any { it.kind == "tool_use" }
-                            ) {
-                                loggedPostToolTextMerge = true
-                                AppLogger.info(
-                                    TAG_STREAM,
-                                    "[T-android-tool-splits-reply-fix] post-tool_calls content delta merged into pre-tool text block (model=${currentProvider.model.id})",
-                                )
-                            }
-                            currentTextBlockSb!!.append(chunk.text)
-                            currentTextBlockSb!!
-                        } else if (!monolithic && lastIdx >= 0 && allToolBlocks[lastIdx].kind == "text" && currentTextBlockSb != null) {
-                            currentTextBlockSb!!.append(chunk.text)
-                            currentTextBlockSb!!
-                        } else {
-                            // New text run — either first text after a tool_use/thinking
-                            // break, or first text in this turn. Open a fresh block AND
-                            // a fresh accumulator. The new block's content carries the
-                            // first delta verbatim; subsequent deltas append to the SB.
-                            val freshSb = StringBuilder(chunk.text)
-                            currentTextBlockSb = freshSb
-                            val block = AssistantBlock(
-                                id = "text_${turn}_${allToolBlocks.size}",
-                                kind = "text",
-                                content = chunk.text,
-                            )
-                            if (monolithic) {
-                                // Single text block per response. If tool blocks
-                                // already arrived (content-after-tool_calls
-                                // chunking with no preface text), insert BEFORE
-                                // the first tool block of this turn so the
-                                // persisted order matches the canonical
-                                // {content, tool_calls} message shape.
-                                val firstToolIdx = (turnStartBlockIndex until allToolBlocks.size)
-                                    .firstOrNull { allToolBlocks[it].kind == "tool_use" }
-                                if (firstToolIdx != null) {
-                                    allToolBlocks.add(firstToolIdx, block)
-                                    turnTextBlockIdx = firstToolIdx
-                                } else {
-                                    allToolBlocks.add(block)
-                                    turnTextBlockIdx = allToolBlocks.lastIndex
-                                }
-                            } else {
-                                allToolBlocks.add(block)
-                            }
-                            freshSb
-                        }
-                        // T94 fix 2 + T256: tiered text-delta throttle. Mutate local
-                        // state every delta (above) so block boundaries stay correct
-                        // for ToolUseStart / ToolInputDelta which read allToolBlocks
-                        // directly. Only push to _messages when the length-aware gate
-                        // opens (or a newline lands during a short reply). Pending
-                        // text lives in `pendingChunkSb` so the stream-end final
-                        // flush at line ~3580 can drain it.
-                        pendingChunkSb.append(chunk.text)
-                        val len = turnTextSb.length
-                        val unflushed = len - lastFlushedLen
-                        val throttle = textDeltaThrottleMs(len)
-                        val newlineFlush = len < 5_000 && chunk.text.contains('\n') && unflushed >= 50
-                        val nowMs = System.currentTimeMillis()
-                        if (nowMs - lastUiUpdateMs >= throttle || newlineFlush) {
-                            lastUiUpdateMs = nowMs
-                            lastFlushedLen = len
-                            pendingChunkSb.setLength(0)
-                            // Materialise SB → String for both the active block's
-                            // content (so Compose sees an immutable snapshot) and
-                            // for the assistant message body. These are O(n) calls
-                            // but happen at throttled cadence, not per delta.
-                            // (activeSb === currentTextBlockSb by construction.)
-                            SessionActivityTracker.publishLiveReply(activeSessionId, activeSb)
-                            materializeActiveTextBlock()
-                            val turnSnap = turnTextSb.toString()
-                            withContext(Dispatchers.Main) {
-                                com.openminis.app.diagnostics.StreamJitterProbe.publish("publish", accumulatedText.length + turnSnap.length)
-                                updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
-                            }
-                        }
-                    }
-                    is LLMStreamChunk.ToolUseStart -> {
-                        // [T-dedupe-toolcallid] Rewrite duplicate id ASAP — the
-                        // renamed value drives the AssistantBlock.id used by
-                        // ToolCallComplete / ToolInputDelta lookups and ends
-                        // up as the persisted tool_call_id on the next request.
-                        val toolUseId = chunk.id
-                        android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolUseStart id=$toolUseId name=${chunk.name}")
-                        // Mark thinking block as done when tool use starts
-                        val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
-                        if (thinkIdx >= 0 && allToolBlocks[thinkIdx].toolStatus != ToolBlockStatus.SUCCESS) {
-                            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(toolStatus = ToolBlockStatus.SUCCESS)
-                        }
-                        // T154: when the last few text deltas landed inside the 50ms throttle
-                        // window, the UI hadn't yet been pushed with the trailing text — and
-                        // adding the tool_use block before that push freezes the preceding
-                        // text fragment in StreamingMarkdownText (its `messageIsStreaming`
-                        // flag flips off the next layout pass) with chars chopped off the
-                        // end. Mirror iOS AnthropicAgentProvider.swift Step 1 / Step 2:
-                        // first push the latest accumulated text *unthrottled* so the text
-                        // block freezes at its complete value, yield to let Compose render
-                        // it, then add the tool_use block in a separate transaction. The
-                        // pendingChunkText/lastUiUpdateMs reset mirrors the throttle path
-                        // so the next text delta doesn't try to flush stale state.
-                        if (turnTextSb.isNotEmpty() && pendingChunkSb.isNotEmpty()) {
-                            pendingChunkSb.setLength(0)
-                            lastUiUpdateMs = System.currentTimeMillis()
-                            lastFlushedLen = turnTextSb.length
-                            // T307: pre-tool-use flush also materialises the
-                            // active text block + a turn-text snapshot.
-                            materializeActiveTextBlock()
-                            // [T-android-tool-splits-reply-fix] Ordered mode:
-                            // the tool block breaks the text run, so the next
-                            // text delta opens a new block. Monolithic mode
-                            // keeps the accumulator alive — same-response
-                            // content deltas arriving after tool_calls merge
-                            // back into the pre-tool text block instead.
-                            if (!currentProvider.streamTextIsMonolithic) {
-                                currentTextBlockSb = null
-                            }
-                            val turnSnap = turnTextSb.toString()
-                            withContext(Dispatchers.Main) {
-                                com.openminis.app.diagnostics.StreamJitterProbe.publish("pretool-flush", accumulatedText.length + turnSnap.length)
-                                updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
-                            }
-                            yield()
-                        }
-                        // T256 tier 2: force the next ToolInputDelta to flush
-                        // immediately by zeroing both gate timestamps. iOS does the
-                        // same in .startToolUse (AIChatViewModel.swift:6075-6116) so
-                        // the user sees the pill name/title arrive without waiting
-                        // out the 1s/200ms gate.
-                        lastFileToolInputMs = 0L
-                        lastOtherToolInputMs = 0L
-                        // Guard: only add if not already present (prevent duplicate blocks from repeated ToolUseStart)
-                        if (allToolBlocks.none { it.id == toolUseId }) {
-                            allToolBlocks.add(AssistantBlock(
-                                id = toolUseId,
-                                kind = "tool_use",
-                                toolName = chunk.name,
-                                toolStatus = ToolBlockStatus.STREAMING,
-                                toolTitle = friendlyToolTitle(chunk.name),
-                                startTimeMs = System.currentTimeMillis(),
-                            ))
-                            withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
-                            }
-                        }
-                    }
-                    is LLMStreamChunk.ToolInputDelta -> {
-                        // [T-dedupe-toolcallid] Translate to the currently-in-flight
-                        // renamed id so the per-tool ring + block lookup match
-                        // the block that ToolUseStart created.
-                        val toolInputId = chunk.id
-                        // [T-android-log-hotpath] Fires per tool-argument chunk.
-                        if (AppLogger.traceEnabled) {
-                            android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolInputDelta id=$toolInputId len=${chunk.accumulated.length}")
-                        }
-                        // Maintain a per-tool ring of the most recent `accumulated`
-                        // snapshots so the preflight validator below can dump them
-                        // when an empty/invalid call is detected. Cheap (single
-                        // append + bounded trim) and lives outside any throttle so
-                        // every delta lands here.
-                        val ring = toolInputChunkRings.getOrPut(toolInputId) { mutableListOf() }
-                        ring.add(chunk.accumulated)
-                        if (ring.size > TOOL_INPUT_CHUNK_RING_MAX) {
-                            // Drop from the front so we keep the most recent N.
-                            ring.subList(0, ring.size - TOOL_INPUT_CHUNK_RING_MAX).clear()
-                        }
-                        val idx = allToolBlocks.indexOfFirst { it.id == toolInputId }
-                        if (idx >= 0) {
-                            val prev = allToolBlocks[idx]
-                            // Stream-parse partial JSON (mirrors iOS extractPartialStringValue):
-                            //   - pull "tool_title" out early so the pill header updates live
-                            //   - keep the raw accumulated JSON in toolArgs so detail-sheet
-                            //     renderers (extractShellCommand, args.optString("command"), …)
-                            //     can pick up fields as they appear.
-                            //   - leave content empty during streaming (real output arrives
-                            //     after ToolCallComplete).
-                            val codeTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) {
-                                com.openminis.app.tools.CodemodeTool.titleFromSource(
-                                    extractPartialStringValue("code", chunk.accumulated) ?: chunk.accumulated)
-                            } else null
-                            val completeTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) codeTitle
-                                else com.openminis.app.service.completedToolTitle(chunk.accumulated)
-                            SessionActivityTracker.publishToolTitle(activeSessionId, prev.toolName, completeTitle)
-                            val partialTitle = if (prev.toolName == com.openminis.app.tools.CodemodeTool.NAME) codeTitle
-                                else extractPartialStringValue("tool_title", chunk.accumulated)
-                            val liveTitle = when {
-                                !partialTitle.isNullOrEmpty() -> partialTitle
-                                prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
-                                else -> friendlyToolTitle(prev.toolName)
-                            }
-                            allToolBlocks[idx] = prev.copy(
-                                toolArgs = chunk.accumulated,
-                                toolTitle = liveTitle,
-                                content = "",
-                            )
-                            // T256 tier 2: gate UI push by tool kind. write/edit
-                            // pump multi-KB JSON through the SSE — pushing every delta
-                            // pegs the UI thread for no readable benefit (the user can't
-                            // skim a partial JSON blob anyway). Mirrors iOS
-                            // AIChatViewModel.swift:6229-6259 (1s file / 200ms other).
-                            // Local state above is mutated unconditionally so when the
-                            // gate eventually opens — or ToolCallComplete force-flushes —
-                            // the latest accumulated args are pushed.
-                            val toolName = prev.toolName
-                            val isHeavyFileTool = com.openminis.app.tools.CoreToolNames.isMutation(toolName)
-                            val gateMs = if (isHeavyFileTool) 1_000L else 200L
-                            val nowMs = System.currentTimeMillis()
-                            val lastTs = if (isHeavyFileTool) lastFileToolInputMs else lastOtherToolInputMs
-                            if (nowMs - lastTs >= gateMs) {
-                                if (isHeavyFileTool) lastFileToolInputMs = nowMs
-                                else lastOtherToolInputMs = nowMs
-                                withContext(Dispatchers.Main) {
-                                    updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
-                                }
-                            }
-                        }
-                    }
-                    is LLMStreamChunk.ToolCallComplete -> {
-                        // [T-dedupe-toolcallid] Rewrite duplicate id so the
-                        // persisted tool_calls list, the block lookup, and
-                        // the downstream tool-result join all key on the
-                        // same value (matches the rename applied at start).
-                        val toolCompleteId = chunk.id
-                        android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
-                        SessionActivityTracker.publishToolTitle(
-                            activeSessionId, chunk.name,
-                            providedToolTitle(chunk.name, chunk.args) ?: friendlyToolTitle(chunk.name),
-                        )
-                        // [T-android-gemini3-thoughtsig / #179] Stash the Gemini
-                        // 3.x thought signature keyed by the (deduped) tool call id.
-                        val idx = allToolBlocks.indexOfFirst { it.id == toolCompleteId }
-                        if (idx >= 0) {
-                            val providedTitle = providedToolTitle(chunk.name, chunk.args)
-                            val title = providedTitle ?: friendlyToolTitle(chunk.name)
-                            // PENDING — JSON params fully received, waiting for execution
-                            // dispatcher to invoke the tool. executeTool() flips to RUNNING.
-                            allToolBlocks[idx] = allToolBlocks[idx].copy(
-                                toolStatus = ToolBlockStatus.PENDING,
-                                toolTitle = title,
-                                toolArgs = chunk.args.toString(),
-                                content = "", // Clear ToolInputDelta JSON accumulation before real output arrives
-                                // [T-android-gemini3-thoughtsig / #179] Persist the
-                                // signature onto the block so buildTurnParts (the DB
-                                // path) round-trips it. Preserve any prior value if
-                                // this chunk lacked one.
-                                thoughtSignature = chunk.thoughtSignature ?: allToolBlocks[idx].thoughtSignature,
-                            )
-                            withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
-                            }
-                        }
-                    }
+                    is LLMStreamChunk.ThinkingDelta,
+                    is LLMStreamChunk.Text,
+                    is LLMStreamChunk.ToolUseStart,
+                    is LLMStreamChunk.ToolInputDelta,
+                    is LLMStreamChunk.ToolCallComplete -> projection.accept(chunk)
                     is LLMStreamChunk.Usage -> {
                         lastUsage = chunk.usage
                         turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(
@@ -9797,24 +9412,7 @@ class ChatViewModel(
                     // turn-finalize paths below assume _messages reflects all
                     // accumulated text-deltas, so we must not leave the last
                     // 0-50ms worth on the floor.
-                    if (pendingChunkSb.isNotEmpty()) {
-                        pendingChunkSb.setLength(0)
-                        // T307: also flush the active text block's pending
-                        // tail and snapshot turnText.
-                        materializeActiveTextBlock()
-                        val turnSnap = turnTextSb.toString()
-                        withContext(Dispatchers.Main) {
-                            com.openminis.app.diagnostics.StreamJitterProbe.publish("final-flush", accumulatedText.length + turnSnap.length)
-                            updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
-                        }
-                    }
-                    // T256: reset throttle bookkeeping for the next turn so the
-                    // first delta of the next assistant message fires immediately
-                    // rather than coalescing against this turn's stale baseline.
-                    lastFlushedLen = 0
-                    lastUiUpdateMs = 0L
-                    lastFileToolInputMs = 0L
-                    lastOtherToolInputMs = 0L
+                    projection.finish()
                     collectDone = true
                     // [T-android-fallback-chain-refill] A turn that streamed
                     // cleanly ends the failure streak: whatever was wrong with
@@ -9904,27 +9502,11 @@ class ChatViewModel(
                             // `accumulatedText + newTurnText`, so this transient
                             // value is overwritten cleanly (no duplication).
                             withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                             }
                         }
-                        // T307: SB-based per-turn accumulators reset.
-                        turnTextSb.setLength(0)
-                        currentTextBlockSb = null
-                        // [T-android-tool-splits-reply-fix] The tracked turn
-                        // text block was just rolled back with the rest of
-                        // this turn's partial blocks.
-                        turnTextBlockIdx = -1
-                        turnThinking.clear()
+                        projection.resetAttempt()
                         turnContent.resetAttempt()
-                        // T94 fix 2 + T256: throttle bookkeeping is per-stream
-                        // attempt; reset alongside the partial-block rollback so
-                        // the next attempt's first delta fires through immediately
-                        // rather than coalescing against stale baselines.
-                        pendingChunkSb.setLength(0)
-                        lastUiUpdateMs = 0L
-                        lastFlushedLen = 0
-                        lastFileToolInputMs = 0L
-                        lastOtherToolInputMs = 0L
                         continue  // retry on same provider
                     }
                     // Retries exhausted or non-retryable — proceed to fallback / throw.
@@ -10004,10 +9586,7 @@ class ChatViewModel(
                                     "compact",
                                 )
                             }
-                            turnTextSb.setLength(0)
-                            currentTextBlockSb = null
-                            turnTextBlockIdx = -1
-                            turnThinking.clear()
+                            projection.resetAttempt()
                             turnContent.resetAttempt()
                             continue
                         }
@@ -10137,16 +9716,9 @@ class ChatViewModel(
                         // provider streams into a fresh `turnTextSb` (reset just
                         // below) and re-publishes `accumulatedText + newTurnText`.
                         withContext(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                            updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                         }
-                        // Reset turn state for retry with new provider
-                        turnTextSb.setLength(0)
-                        currentTextBlockSb = null
-                        // [T-android-tool-splits-reply-fix] Fresh stream from a
-                        // different provider — and the add(0, info) above
-                        // shifted every block index anyway.
-                        turnTextBlockIdx = -1
-                        turnThinking.clear()
+                        projection.resetAttempt()
                         turnContent.resetAttempt()
                         // loop continues — will retry collect with currentProvider
                     } else {
@@ -10218,7 +9790,7 @@ class ChatViewModel(
                 AppLogger.warning(
                     TAG_STREAM,
                     "empty turn detected: turn=$turn finishReason=$turnFinishReason " +
-                        "reasoningLen=${turnThinking.length} reasoningBlobLen=${turnContent.opaqueReasoningLength ?: -1} " +
+                        "reasoningLen=${projection.thinkingLength} reasoningBlobLen=${turnContent.opaqueReasoningLength ?: -1} " +
                         "model=${provider.model.id} provider=${provider.name}"
                 )
             }
@@ -14361,71 +13933,8 @@ class ChatViewModel(
             com.openminis.app.agent.AndroidHistoryMedia(context, fsSessionId, mediaStore.mediaBaseDir, visionPlaceholder()),
         ).decode(this)
 
-    /**
-     * Extract a string value for `key` from *partial* (possibly truncated) JSON
-     * without needing a complete, parseable object. Mirrors iOS
-     * `extractPartialStringValue(_:from:)` in AIChatViewModel.swift.
-     *
-     * Returns content up to the first unescaped `"`, or the remaining buffer
-     * if the closing quote has not streamed yet.
-     */
-    private fun extractPartialStringValue(key: String, json: String): String? {
-        val patterns = listOf("\"$key\": \"", "\"$key\":\"")
-        for (p in patterns) {
-            val at = json.indexOf(p)
-            if (at < 0) continue
-            val after = json.substring(at + p.length)
-            return unescapePartialJsonString(findUnescapedEnd(after))
-        }
-        return null
-    }
-
-    /** Return substring up to the first unescaped `"`, or the whole string if none. */
-    private fun findUnescapedEnd(s: String): String {
-        var i = 0
-        val n = s.length
-        while (i < n) {
-            val c = s[i]
-            if (c == '\\') {
-                // Skip escaped character (could be `\"`, `\\`, `\n`, etc.)
-                i += 2
-                continue
-            }
-            if (c == '"') return s.substring(0, i)
-            i++
-        }
-        return s
-    }
-
-    /** Unescape common JSON string escapes. */
-    private fun unescapePartialJsonString(s: String): String =
-        s.replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\\"", "\"")
-            .replace("\\/", "/")
-            .replace("\\\\", "\\")
-
-    /**
-     * Humanize a snake_case tool name into a Title-Case label for pill headers
-     * while the model's own `tool_title` arg has not yet streamed in.
-     * e.g. `write` → "Write File", `bash` → "Execute Shell".
-     */
     private fun providedToolTitle(toolName: String, args: JSONObject): String? =
-        if (toolName == com.openminis.app.tools.CodemodeTool.NAME) com.openminis.app.tools.CodemodeTool.titleFromArguments(args)
-        else args.optString("tool_title", "").takeIf { it.isNotBlank() }
-
-    private fun friendlyToolTitle(toolName: String): String = when (toolName) {
-        "bash" -> "Execute Bash"
-        "read" -> "Read File"
-        "write" -> "Write File"
-        "edit" -> "Edit File"
-        "browser" -> "Browse Web"
-        "web_search" -> "Search Web"
-        else -> toolName
-            .split('_')
-            .filter { it.isNotEmpty() }
-            .joinToString(" ") { it.replaceFirstChar { ch -> ch.uppercase() } }
-    }
+        StreamToolPresentation.provided(toolName, args)
 
     /**
      * Parse the JSON tool-arguments string into a plain Map for the loop

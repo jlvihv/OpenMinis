@@ -16,6 +16,7 @@ internal class AgentStreamAttempt(
     private val providerName: String,
     private val historySize: Int,
     private val content: AgentTurnContent,
+    private val inputTrace: AgentToolInputTrace,
     private val monolithic: Boolean,
     private val firstChunk: () -> Unit,
     private val duration: (Long) -> Unit,
@@ -41,7 +42,9 @@ internal class AgentStreamAttempt(
                     firstChunk()
                     println("[T-STALL-DIAG] stream FIRST-CHUNK sid=$sessionId turn=$turn ttfbMs=${SystemClock.elapsedRealtime() - started} kind=${chunk.javaClass.simpleName}")
                 }
-                consume(content.accept(chunk, monolithic))
+                val observed = content.accept(chunk, monolithic)
+                if (observed is LLMStreamChunk.ToolInputDelta) inputTrace.append(observed.id, observed.accumulated)
+                consume(observed)
             }
             completed()
         } finally {
