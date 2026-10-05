@@ -449,13 +449,9 @@ class ChatViewModel(
          * AIChatViewModel.preflightEmptyStringAllowedFields.
          * [T-preflight-empty-string-allowed]
          */
-        private val PREFLIGHT_EMPTY_STRING_ALLOWED_FIELDS: Map<String, Set<String>> = mapOf(
-            "write" to setOf("content"),
-        )
-
-        /** True when "" is a legal value for this exact (tool, field) pair. */
+        /** Compatibility entry for existing callers; runtime owns validation policy. */
         internal fun preflightEmptyStringAllowed(tool: String, field: String): Boolean =
-            PREFLIGHT_EMPTY_STRING_ALLOWED_FIELDS[tool]?.contains(field) == true
+            com.openminis.app.agent.AgentToolRound.emptyStringAllowed(tool, field)
 
         /**
          * Reject tool calls that have empty args or are missing required fields
@@ -483,50 +479,7 @@ class ChatViewModel(
             args: JSONObject,
             tools: List<AgentToolDefinition>,
         ): String? {
-            // Unknown tool names go through to the existing `else` branch in
-            // executeTool() which returns "Unknown tool: …". Preflight stays
-            // silent so we don't double-fail.
-            val toolDef = tools.firstOrNull { it.name == name } ?: return null
-            val enforced = toolDef.required
-            if ("tool_title" in enforced && (args.opt("tool_title") !is String || args.getString("tool_title").isBlank())) {
-                return "Tool '$name': tool_title is required and must be a non-blank string."
-            }
-            // Reject missing required arguments before any tool side effects.
-            if (args.length() == 0 && enforced.isNotEmpty()) {
-                return "Tool '$name' was called with empty arguments {} but requires: ${enforced.joinToString(", ")}."
-            }
-            val missing = mutableListOf<String>()
-            for (field in enforced) {
-                // Absent — or present as an explicit JSON null. org.json reports
-                // has() == true for `{"x": null}` and opt() hands back
-                // JSONObject.NULL, which is not a String, so a null previously
-                // slipped through BOTH checks and reached the tool as a non-String
-                // value. Both spellings are genuinely missing.
-                if (!args.has(field) || args.isNull(field)) {
-                    missing.add(field)
-                    continue
-                }
-                val raw = args.opt(field)
-                // Only the truly-empty literal "" is rejected — NOT whitespace.
-                // The earlier `.trim().isEmpty()` over-rejected legitimate payloads,
-                // most notably edit with `new_string: "\n"` (replace a block
-                // with a newline) or `old_string: "  "` (match consecutive spaces).
-                // Both are valid edits, neither is stream corruption.
-                //
-                // And even "" is legal for whitelisted (tool, field) pairs:
-                // edit.new_string == "" is the documented "delete old_string"
-                // form, not a missing value. [T-preflight-empty-string-allowed]
-                if (raw is String && raw.isEmpty() &&
-                    !preflightEmptyStringAllowed(name, field)
-                ) {
-                    missing.add(field)
-                }
-            }
-            if (missing.isNotEmpty()) {
-                return "Tool '$name' is missing required parameter(s): ${missing.joinToString(", ")}."
-            }
-            if (name in setOf("read", "write", "edit", "bash")) return com.openminis.app.tools.CoreToolNames.validate(args, toolDef)
-            return null
+            return com.openminis.app.agent.AgentToolRound.validate(name, args, tools)
         }
         // [T-android-stream-flush-dualpath] Newline fast-path thresholds (iOS parity).
         // [T-android-larky-longsession-followup] see uiMessages / hasOlderMessages.
@@ -9961,225 +9914,33 @@ class ChatViewModel(
             }
 
             // Execute all tool calls
-            val resultParts = mutableListOf<AgentContentPart>()
-            val batchParts = com.openminis.app.agent.AgentToolBatchCoordinator.execute(toolCalls, MAX_CONCURRENT_TOOLS, completed = turnJournal::completed) { (id, name, args) ->
-                        val resultParts = mutableListOf<AgentContentPart>()
-                        run slot@ {
-                        // [T-android-overlay-tool-title] Pull tool_title uniformly
-                        // from args for ALL tools — without this browser's
-                        // tool_title never reached the overlay (only bash
-                        // had a per-tool status override that surfaced it). Reading
-                        // it here also means new tools added later automatically
-                        // get title-in-overlay behavior without per-call plumbing.
-                        val dispatchToolTitle = try {
-                            providedToolTitle(name, args)
-                        } catch (_: Exception) { null }
-                        SessionActivityTracker.updateToolStatus(
-                            status = "Running: $name",
-                            toolName = name,
-                            isRunning = true,
-                            toolTitle = dispatchToolTitle,
-                        )
-                        // JSON repair (T-tool-json-repair b2c4f8a6): salvage truncated /
-                        // type-mismatched / typo'd args BEFORE preflight rejects them.
-                        // Mutates `args` in place; downstream argsStr and preflight see
-                        // the repaired payload. Mirrors iOS repairToolArgs in
-                        // AIChatViewModel.swift.
-                        val repairs = com.openminis.app.provider.ToolJsonRepair.repair(
-                            name, args, toolInputChunkRings[id]?.lastOrNull(), agentTools,
-                        )
-                        if (repairs.isNotEmpty()) {
-                            AppLogger.warning(
-                                "ToolPreflight",
-                                "[ToolRepair] REPAIRED tool=$name id=$id strategies=[${repairs.joinToString(", ")}] " +
-                                    "argsKeys=[${args.keys().asSequence().toList().sorted().joinToString(",")}] " +
-                                    "rawTail=<<<${toolInputChunkRings[id]?.lastOrNull()?.take(500) ?: ""}>>>"
-                            )
+            val resultParts = com.openminis.app.agent.AgentToolRound(toolLoopDetector, toolInputChunkRings, agentTools).execute(
+                toolCalls, MAX_CONCURRENT_TOOLS, turnJournal,
+                starting = { name, args ->
+                    SessionActivityTracker.updateToolStatus(status = "Running: $name", toolName = name,
+                        isRunning = true, toolTitle = runCatching { providedToolTitle(name, args) }.getOrNull())
+                },
+                running = { id ->
+                    withContext(Dispatchers.Main) {
+                        val index = allToolBlocks.indexOfFirst { it.id == id }
+                        if (index >= 0 && allToolBlocks[index].toolStatus == ToolBlockStatus.PENDING) {
+                            allToolBlocks[index] = allToolBlocks[index].copy(toolStatus = ToolBlockStatus.RUNNING)
+                            updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                         }
-                        // [T-truncated-args-visibility #119] Non-null when THIS call's
-                        // arguments arrived truncated and were auto-closed. Only the
-                        // truncation strategy means the VALUE was cut short; coercion
-                        // and fuzzy-name repairs fix the shape of a complete argument.
-                        // Mirrors iOS truncationRepairTag.
-                        val truncationRepairTag: String? = repairs.firstOrNull { it.startsWith("truncation+") }
-
-                        // [T-truncated-args-visibility #119] Refuse truncated WRITES.
-                        // Auto-closing an unterminated JSON string is indistinguishable
-                        // from the model ending `content` there, so a half file lands on
-                        // disk while UI and tool result both report success. For writes a
-                        // partial artifact is silent corruption of user data and is worse
-                        // than no write at all; read-only and shell tools keep the
-                        // repair-and-run behaviour. Mirrors iOS ConcurrentTools.
-                        if (truncationRepairTag != null && (com.openminis.app.tools.CoreToolNames.isMutation(name) || name == "codemode")) {
-                            val path = args.optString("path", "").ifBlank { args.optString("file_path", "") }
-                            AppLogger.warning(
-                                "ToolPreflight",
-                                "[ToolRepair] REFUSED truncated write tool=$name id=$id strategy=$truncationRepairTag path=$path"
-                            )
-                            val modelMessage = if (name == "codemode") {
-                                "Error: This codemode call was NOT executed because its source was truncated in transit " +
-                                    "($truncationRepairTag). Re-issue a complete script; do not continue a partial script."
-                            } else buildString {
-                                append("Error: This call was NOT executed. Its argument stream was truncated ")
-                                append("in transit (repair strategy: $truncationRepairTag), so the `content` ")
-                                append("your client sent was cut short and would have written an incomplete file")
-                                if (path.isNotBlank()) append(" to $path")
-                                append(". Nothing was written to disk — the target file is unchanged.\n\n")
-                                append("The most likely cause is the response hitting its output-token limit ")
-                                append("mid-argument. Re-issue this write in smaller pieces: write the first ")
-                                append("part, then append the rest with follow-up calls, rather than repeating ")
-                                append("the same oversized call.")
-                            }
-                            val refusedIdx = allToolBlocks.indexOfFirst { it.id == id }
-                            if (refusedIdx >= 0) {
-                                val elapsed = System.currentTimeMillis() - allToolBlocks[refusedIdx].startTimeMs
-                                allToolBlocks[refusedIdx] = allToolBlocks[refusedIdx].copy(
-                                    toolStatus = ToolBlockStatus.FAILED,
-                                    content = "Blocked: arguments were truncated in transit",
-                                    durationMs = elapsed,
-                                )
-                                withContext(Dispatchers.Main) {
-                                    updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
-                                }
-                            }
-                            toolLoopDetector.record(name, parseToolParams(args.toString()),
-                                result = null, errorMessage = modelMessage, toolCallId = id)
-                            resultParts.add(AgentContentPart.ToolResult(
-                                id = id, name = name,
-                                content = modelMessage,
-                                isError = true,
-                            ))
-                            toolInputChunkRings.remove(id)
-                            return@slot
+                    }
+                },
+                blocked = { id, message ->
+                    withContext(Dispatchers.Main) {
+                        val index = allToolBlocks.indexOfFirst { it.id == id }
+                        if (index >= 0) {
+                            allToolBlocks[index] = allToolBlocks[index].copy(toolStatus = ToolBlockStatus.FAILED,
+                                content = message, durationMs = System.currentTimeMillis() - allToolBlocks[index].startTimeMs)
+                            updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                         }
-                        val argsStr = args.toString()
-                        val paramsMap = parseToolParams(argsStr)
-                        // Flip PENDING → RUNNING right before the execute dispatch so the UI
-                        // (tool pill spinner) shows the exact moment execution begins.
-                        val preIdx = allToolBlocks.indexOfFirst { it.id == id }
-                        if (preIdx >= 0 && allToolBlocks[preIdx].toolStatus == ToolBlockStatus.PENDING) {
-                            allToolBlocks[preIdx] = allToolBlocks[preIdx].copy(toolStatus = ToolBlockStatus.RUNNING)
-                            withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
-                            }
-                        }
-
-                        // Loop-detector check BEFORE execution. CRITICAL outcomes short-circuit
-                        // the call: synthesize an error result so the tool_use/tool_result pair
-                        // stays balanced and the LLM sees the block reason.
-                        // [T-scheduled-tool-prefill] A prefilled call is the
-                        // scheduler repeating a fixed command on purpose (the same
-                        // command every day is the point), not the model looping.
-                        // Exempt it from the pre-check so a long-lived follow-up
-                        // session cannot trip the same-args threshold on it.
-                        val precheck = if (com.openminis.app.scheduled.ScriptedToolTurn.isScriptedId(id)) {
-                            com.openminis.app.agent.LoopCheckResult.NONE
-                        } else {
-                            toolLoopDetector.check(name, paramsMap)
-                        }
-                        if (precheck.level == Level.CRITICAL) {
-                            val blockedMsg = precheck.message ?: "[LOOP BLOCKED] tool execution blocked"
-                            android.util.Log.w("ToolChain[VM]",
-                                "[turn=$turn] tool BLOCKED by loop detector name=$name msg=$blockedMsg")
-                            AppLogger.warning("ChatViewModel",
-                                "tool blocked by loop detector name=$name reason=$blockedMsg")
-                            val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
-                            if (blockIdx >= 0) {
-                                val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
-                                allToolBlocks[blockIdx] = allToolBlocks[blockIdx].copy(
-                                    toolStatus = ToolBlockStatus.FAILED,
-                                    content = blockedMsg,
-                                    durationMs = elapsed,
-                                )
-                            }
-                            // Record the blocked attempt so consecutive blocks still
-                            // count toward the unknown-tool / circuit-breaker windows.
-                            toolLoopDetector.record(name, paramsMap,
-                                result = null, errorMessage = blockedMsg, toolCallId = id)
-                            resultParts.add(AgentContentPart.ToolResult(
-                                id = id, name = name,
-                                content = blockedMsg,
-                                isError = true,
-                            ))
-                            return@slot
-                        }
-
-                        // Preflight: reject empty / missing-required-field tool calls
-                        // BEFORE the UI flips to RUNNING and BEFORE executeTool() does
-                        // any actual work. Mirrors iOS preflightValidateToolCall in
-                        // AIChatViewModel.swift. Synthesizes a tool_result error so the
-                        // model can self-correct on the next turn without us spawning
-                        // shells or touching the filesystem on `{}` args.
-                        val preflightError = preflightValidateToolCall(name, args, agentTools)
-                        if (preflightError != null) {
-                            val chunkRing: List<String> = toolInputChunkRings.remove(id) ?: emptyList()
-                            AppLogger.warning(
-                                "ToolPreflight",
-                                "BLOCKED tool=$name id=$id reason=\"$preflightError\" " +
-                                    "argsKeys=[${args.keys().asSequence().toList().sorted().joinToString(",")}] " +
-                                    "chunkCount=${chunkRing.size} " +
-                                    "lastChunk=<<<${chunkRing.lastOrNull()?.take(500) ?: ""}>>>"
-                            )
-                            chunkRing.forEachIndexed { i, snap ->
-                                AppLogger.warning(
-                                    "ToolPreflight",
-                                    "  chunk[$i] bytes=${snap.toByteArray(Charsets.UTF_8).size} raw=<<<${snap.take(500)}>>>"
-                                )
-                            }
-                            // English literal — string resource lookup intentionally
-                            // avoided to keep this commit independent of any in-flight
-                            // strings.xml refactor in other sessions. Promote to a
-                            // localized R.string entry in a follow-up if needed.
-                            val uiMessage = "Blocked invalid tool call"
-                            val modelMessage = "Error: Tool call rejected before execution. $preflightError The arguments your client sent were empty or missing required fields — re-issue the call with all required parameters filled in. Do not retry with the same empty arguments."
-                            val blockIdxPre = allToolBlocks.indexOfFirst { it.id == id }
-                            if (blockIdxPre >= 0) {
-                                val elapsedPre = System.currentTimeMillis() - allToolBlocks[blockIdxPre].startTimeMs
-                                allToolBlocks[blockIdxPre] = allToolBlocks[blockIdxPre].copy(
-                                    toolStatus = ToolBlockStatus.FAILED,
-                                    content = uiMessage,
-                                    durationMs = elapsedPre,
-                                )
-                            }
-                            toolLoopDetector.record(
-                                toolName = name, params = paramsMap,
-                                result = null, errorMessage = modelMessage, toolCallId = id
-                            )
-                            resultParts.add(AgentContentPart.ToolResult(
-                                id = id, name = name,
-                                content = modelMessage,
-                                isError = true,
-                            ))
-                            withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
-                            }
-                            return@slot
-                        }
-
-                        android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool START name=$name args=${argsStr.take(200)}")
-                        val result = executeTool(name, argsStr, id, allToolBlocks, assistantId, accumulatedText)
-                        turnJournal.recordToolPresentation(id, com.openminis.app.agent.AgentJournalWriter.ToolPresentation(
-                            result.toolTitle, result.pageURL.orEmpty(), result.imageFilePath.orEmpty()))
-                        android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool END name=$name success=${result.success} title=${result.toolTitle} outputLen=${result.output.length} output=${result.output.take(200)}")
-
-                        // Record post-execution. WARNING text is appended to the tool
-                        // result so the model sees it on its next turn. No block here —
-                        // CRITICAL only fires from check() and we already returned above.
-                        val errMsgForDetector = if (!result.success) result.output else null
-                        val postRecord = toolLoopDetector.record(
-                            toolName = name,
-                            params = paramsMap,
-                            result = if (result.success) result.output else null,
-                            errorMessage = errMsgForDetector,
-                            toolCallId = id,
-                        )
-                        val outputForLLM = if (postRecord.level == Level.WARNING && postRecord.message != null) {
-                            AppLogger.debug("ChatViewModel",
-                                "appending loop-warning to tool result name=$name key=${postRecord.warningKey}")
-                            "${result.output}\n\n${postRecord.message}"
-                        } else {
-                            result.output
-                        }
+                    }
+                },
+                finished = { id, name, result, truncated ->
+                    withContext(Dispatchers.Main) {
 
                         val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
                         if (blockIdx >= 0) {
@@ -10200,7 +9961,7 @@ class ChatViewModel(
                                 // treats it as active; the completion hook flips it later.
                                 name == com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME &&
                                     com.openminis.app.agent.jobs.HelperRunner.isRunningPayload(result.output) -> ToolBlockStatus.RUNNING
-                                result.success && truncationRepairTag != null -> ToolBlockStatus.FAILED
+                                result.success && truncated -> ToolBlockStatus.FAILED
                                 result.success -> ToolBlockStatus.SUCCESS
                                 result.timedOut -> ToolBlockStatus.TIMEOUT
                                 else -> ToolBlockStatus.FAILED
@@ -10231,36 +9992,12 @@ class ChatViewModel(
                             )
                         }
 
-                        // [T-truncated-args-visibility #119] Tell the MODEL its own
-                        // arguments were altered. Writes never reach here (refused
-                        // above); this covers the tools we still run repaired, where the
-                        // model would otherwise assume the args it emitted were the args
-                        // that ran. Mirrors iOS ConcurrentTools.
-                        val outputForLLMWithNote = if (truncationRepairTag != null) {
-                            outputForLLM + "\n\n<system-reminder>The argument stream for this call was " +
-                                "truncated in transit and auto-closed by the client (repair strategy: " +
-                                "$truncationRepairTag) before execution. The arguments actually used may be " +
-                                "incomplete — verify the result and re-issue the call with complete " +
-                                "arguments if anything is missing.</system-reminder>"
-                        } else {
-                            outputForLLM
-                        }
-
-                        resultParts.add(AgentContentPart.ToolResult(
-                            id = id,
-                            name = name,
-                            content = outputForLLMWithNote,
-                            isError = !result.success,
-                            imageData = result.imageData,
-                            imageMimeType = result.imageMimeType,
-                            imageLinuxPath = result.imageLinuxPath,
-                            detailsJson = result.detailsJson,
-                        ))
-                        resultParts.addAll(result.additionalImages)
-                        }
-                        resultParts
-            }
-            resultParts.addAll(batchParts)
+                    }
+                },
+                invoke = { name, args, id ->
+                    executeTool(name, args, id, allToolBlocks, assistantId, accumulatedText)
+                },
+            )
 
             // Update UI with tool statuses. Mark as awaiting the next model
             // response so "Minis is thinking" shows during the network gap
@@ -10495,16 +10232,6 @@ class ChatViewModel(
         markLiveInterruption()
         _canResume.value = true
     }
-
-    /**
-     * Instance entry point used by the tool-dispatch path. The real logic lives
-     * in the companion so tests can reach it without a ChatViewModel.
-     */
-    private fun preflightValidateToolCall(
-        name: String,
-        args: JSONObject,
-        tools: List<AgentToolDefinition>,
-    ): String? = preflightValidateToolCallImpl(name, args, tools)
 
     private suspend fun executeTool(
         name: String,
@@ -13603,28 +13330,6 @@ class ChatViewModel(
     private fun providedToolTitle(toolName: String, args: JSONObject): String? =
         StreamToolPresentation.provided(toolName, args)
 
-    /**
-     * Parse the JSON tool-arguments string into a plain Map for the loop
-     * detector. Malformed JSON degrades gracefully to an empty map — the
-     * detector still hashes the tool name, so identical bad calls are still
-     * detected as a loop.
-     */
-    private fun parseToolParams(argsJson: String): Map<String, Any?> {
-        if (argsJson.isBlank()) return emptyMap()
-        return try {
-            val obj = JSONObject(argsJson)
-            val out = HashMap<String, Any?>(obj.length())
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                val v = obj.get(k)
-                out[k] = if (v == JSONObject.NULL) null else v
-            }
-            out
-        } catch (_: Exception) {
-            emptyMap()
-        }
-    }
 }
 
 /**
