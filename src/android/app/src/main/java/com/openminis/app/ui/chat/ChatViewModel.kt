@@ -53,6 +53,7 @@ import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.agent.CompactionSummarizer
 import com.openminis.app.agent.AgentLoopEngine
+import com.openminis.app.agent.AgentConversationRuntime
 import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.sandbox.ExecutionCoordinator
 import com.openminis.app.terminal.MinisOpenUrlBroker
@@ -5342,14 +5343,6 @@ class ChatViewModel(
         val entryId: String,
     )
 
-    private data class LoopModelSelection(
-        val provider: LLMProvider,
-        val candidates: List<FallbackCandidate>,
-        val strategy: com.openminis.app.data.model.FallbackStrategy,
-        val entryId: String?,
-        val attribution: com.openminis.app.data.model.ModelAttributionSnapshot,
-    )
-
     private fun buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> = emptyList()
 
     /**
@@ -6637,10 +6630,17 @@ class ChatViewModel(
             }
 
             try {
+                // A previous loop may have applied a pick/fallback; queued work starts on that binding.
+                val (drainProvider, drainPrompt, drainFallbacks) = withContext(Dispatchers.Main) {
+                    conversation.checkBranch()
+                    val selected = currentProvider ?: provider
+                    Triple(selected, if (selected === provider) systemPrompt else systemPromptFor(selected, systemPrompt),
+                        if (selected === provider) fallbackProviders else buildFallbackProviders(selected))
+                }
                 runAgentLoop(
-                    provider = provider,
-                    systemPrompt = systemPrompt,
-                    fallbackProviders = fallbackProviders,
+                    provider = drainProvider,
+                    systemPrompt = drainPrompt,
+                    fallbackProviders = drainFallbacks,
                     fallbackStrategy = fallbackStrategy,
                     // [T-scheduled-tool-prefill] A queued scheduled prompt keeps
                     // its prefilled calls: they run as this loop's first turn.
@@ -7892,15 +7892,13 @@ class ChatViewModel(
         systemPrompt: String?,
         fallbackProviders: List<FallbackCandidate> = emptyList(),
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy = com.openminis.app.data.model.FallbackStrategy.default,
-        // [T-scheduled-tool-prefill] Tool calls already decided for this
-        // loop's first turn. See [pendingScriptedTurn] below.
+        // Tool calls already decided for this run's first turn.
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
+        resumePrevious: Boolean = false,
     ) {
         val runJournal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
-        val conversationJournal = com.openminis.app.agent.AgentConversationJournal(runJournal, agentHistory) { activeSessionId }
-        val continuation = com.openminis.app.agent.AgentTurnContinuation(agentHistory, runJournal)
-        val replyContent = com.openminis.app.agent.AgentReplyContent()
-        var runAttribution = modelSnapshotFor(provider.model, _activeEntryId.value)
+        val initialSelection = AgentConversationRuntime.Selection(provider, fallbackProviders, fallbackStrategy,
+            _activeEntryId.value, modelSnapshotFor(provider.model, _activeEntryId.value))
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
         // [T-android-mem-probe-trust] Send-path context shape. The existing
         // `messages-shape` probe only runs on session LOAD, so the 2026-08-15
@@ -7972,39 +7970,13 @@ class ChatViewModel(
         // alternative (hand-rolled barriers around every mutation site) would
         // be easy to get subtly wrong for no measurable gain.
         val allToolBlocks = java.util.Collections.synchronizedList(mutableListOf<AssistantBlock>())
-        // The runtime records normalized input traces before UI consumption.
-        val toolInputChunkRings = com.openminis.app.agent.AgentToolInputTrace(TOOL_INPUT_CHUNK_RING_MAX)
         var accumulatedText = ""
-        var lastContextTokens = 0  // updated each turn from API usage
+        val turnCap = helperConfig?.maxTurns ?: MAX_AGENT_TURNS
+        val runtime = AgentConversationRuntime(runJournal, agentHistory, { activeSessionId }, initialSelection,
+            systemPrompt, turnCap, helperConfig != null, contextPlanner, cancellationCoordinator,
+            compactionSummarizer, toolLoopDetector, TOOL_INPUT_CHUNK_RING_MAX, CANCELLED_MARKER, scriptedTurnFor(prefill), resumePrevious)
+        val conversationJournal = runtime.conversation
 
-
-        // [T-android-switch-model-next-request] The prompt this loop sends. A
-        // var only for the mid-turn switch: the Claude Code OAuth prefix is
-        // the one provider-specific part of it.
-        var loopSystemPrompt = systemPrompt
-        // A flag left over from a turn that ended before it could be applied
-        // is stale once this turn starts on the class-level provider; a switch
-        // made after the caller captured `provider` (the class-level provider
-        // has already moved on) is kept, and applied before the first request
-        // (the iOS d6e475a35 turn-start race).
-        withContext(Dispatchers.Main) {
-            if (this@ChatViewModel.currentProvider === provider) pendingModelSwitch = false
-        }
-
-        // Fallback state — mirrors iOS streamWithGroupFallback
-        var currentProvider = provider
-        // [T-fallback-respects-user-switch] The class-level binding this loop
-        // started from. A group fallback below adopts its new member as the
-        // session binding ONLY while the class-level provider is still this one;
-        // if the user picked another model mid-turn, the fallback must not
-        // overwrite that choice (class provider, top bar, persisted binding).
-        var classProviderAtSend = this@ChatViewModel.currentProvider
-        val providerRecovery = com.openminis.app.agent.AgentProviderRecovery(
-            fallbackProviders, fallbackStrategy, _activeEntryId.value,
-            identity = { it.entryId }, candidates = ::buildFallbackProviders,
-        )
-        val requestCycle = com.openminis.app.agent.AgentRequestCycle(providerRecovery,
-            provider = { currentProvider }, entryId = { _activeEntryId.value }, candidateProvider = { it.provider })
 
         // Add placeholder assistant message (once). Mark as awaiting so the
         // "Minis is thinking" indicator shows during the initial request gap
@@ -8014,115 +7986,72 @@ class ChatViewModel(
         // turns the user explicitly asked not to surface, even when a
         // forced-reasoning model still streams reasoning_content.
         val turnThinkingLevel = _thinkingLevel.value
-        withContext(Dispatchers.Main) {
-            _messages.value = _messages.value + ChatMessage(
-                id = assistantId, role = "assistant", content = "", isStreaming = true,
-                isAwaitingModelResponse = true,
-                thinkingLevel = turnThinkingLevel,
-            )
-        }
-
-        // [T-android-auto-compact-inloop] How many times the in-loop guard has
-        // compacted during THIS runAgentLoop. Bounds compact-thrash: once the
-        // cap is hit, a still-over-threshold history stops the turn rather than
-        // compacting forever. Mirrors iOS maxInLoopCompactions.
-        val contextGate = com.openminis.app.agent.AgentContextGate(contextPlanner, conversationJournal::checkBranch)
-        // [T-ctx-valve-spend-survives-retry] Do NOT re-arm the uncalibrated
-        // send-once here. The planner spends it when the provider rejects
-        // a request as too long; when the self-heal finds nothing to offload the
-        // rejection ends the loop, and resetting here made Retry fire the valve
-        // and re-send the exact request that was just rejected. It is re-armed
-        // only by an accepted response (see the usage handler) or a session change
-        // (seedContextCalibration).
-        // [T-android-empty-after-toolresult-reminder] One-shot guard for the
-        // "<system-reminder> + retry one round" recovery when the server returns
-        // an empty response right after a tool result. Fires at most once per
-        // runAgentLoop so it can never loop; if the reminder round is also empty
-        // we surface a real error instead of a silent blank bubble. Mirrors iOS
-        // AIChatViewModel.didInjectEmptyToolReminderThisRun.
-
-        // [T-android-scheduled-resume-nudge] Set when a scheduled fire was
-        // inserted at a tool gap of THIS loop. If the model then answers it and
-        // stops while the interrupted task is unfinished, one hidden resume
-        // nudge is sent (iOS c9131e862 scheduledResumeNudgeOwed).
-
         // [T-android-readaloud-stop-stale] One-shot per REPLY (not per turn):
         // the first text delta stops any Read Aloud still playing from the
         // previous reply. Scoped outside the turn loop so a tool-loop reply
         // that emits text across several turns doesn't re-fire it and cut off
         // its own speech mid-sentence.
         var didStopStaleReadAloud = false
-        // [T-p1-delegate-task] Helpers get a much tighter ceiling (design §4.3).
-        val turnCap = helperConfig?.maxTurns ?: MAX_AGENT_TURNS
-        // [T-agent-wrapup-turn] Once true the tool list is withdrawn for the
-        // rest of this run: a model with no tools can only answer in text.
-        val helperTurnPolicy = com.openminis.app.agent.AgentHelperTurnPolicy(agentHistory, helperConfig != null)
-        // [T-scheduled-tool-prefill] One-shot: the next turn that reaches the
-        // request point streams these calls instead of asking the provider,
-        // then clears it. Local to this run, so it cannot leak into a later
-        // loop or survive a cancel. A mid-loop injection that carries its own
-        // prefill re-arms it (see the injectQueuedPromptsAsNewTurn call site).
-        var pendingScriptedTurn: com.openminis.app.scheduled.ScriptedToolTurn? = scriptedTurnFor(prefill)
-        val outcome = AgentLoopEngine(turnCap).run agentTurn@ { frame ->
-            val turn = frame.index
-            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed")
-            // [T-android-switch-model-next-request] The user picked another
-            // model while this turn ran. Apply it HERE, before the next
-            // request: the request or tool call that was in flight when they
-            // switched finished on the old model, undisturbed. Port of iOS
-            // 86a045284. The picker has already rebuilt the class-level
-            // provider and updated the entry, name and context window; the
-            // loop only has to adopt it. A group fallback that moved this
-            // turn meanwhile stayed turn-local (fallbackMayRebindSession), so
-            // it cannot overwrite the pick (iOS d6e475a35).
-            if (pendingModelSwitch) {
-                // [T-android-switch-model-fallback-rebind] The fallback chain and
-                // strategy are rebuilt for the pick in the same Main-thread
-                // snapshot that reads it. They used to stay the ones built at
-                // send time from the group the user just LEFT: the new model's
-                // first 429 then popped a member of that old group, and since
-                // classProviderAtSend already equals the pick, the fallback was
-                // allowed to rebind the session — overwriting the user's choice
-                // with a model they had moved away from. iOS 86a045284 moves
-                // activeGroupId on the switch for the same reason.
-                val switched = withContext(Dispatchers.Main) {
-                    val c = this@ChatViewModel.currentProvider
-                    if (c != null && modelSwitchToApply(pendingModelSwitch, c, currentProvider)) {
+        val outcome = runtime.run(
+            models = AgentConversationRuntime.Models(
+                begin = { launched -> withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    if (currentProvider === launched) pendingModelSwitch = false
+                    currentProvider
+                } },
+                takeSelection = { running -> withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    val chosen = currentProvider
+                    if (chosen != null && modelSwitchToApply(pendingModelSwitch, chosen, running)) {
                         pendingModelSwitch = false
-                        val strategy = com.openminis.app.data.model.FallbackStrategy.default
-                        LoopModelSelection(c, buildFallbackProviders(c), strategy, _activeEntryId.value,
-                            modelSnapshotFor(c.model, _activeEntryId.value))
+                        AgentConversationRuntime.Selection(chosen, buildFallbackProviders(chosen),
+                            com.openminis.app.data.model.FallbackStrategy.default, _activeEntryId.value,
+                            modelSnapshotFor(chosen.model, _activeEntryId.value))
                     } else null
-                }
-                val chosen = switched?.provider
-                if (switched != null && chosen != null) {
-                    providerRecovery.switch(switched.candidates, switched.strategy, switched.entryId)
-                    runAttribution = switched.attribution
-                    val from = currentProvider.model.displayName
-                    currentProvider = chosen
-                    classProviderAtSend = chosen
-                    loopSystemPrompt = systemPromptFor(chosen, loopSystemPrompt)
-                    AppLogger.info(
-                        TAG_STREAM,
-                        "[SwitchModel] applied at next request: $from → ${chosen.model.displayName} turn=${turn + 1}",
-                    )
-                }
-            }
-            // Sanitize history before each API call (mirrors iOS pre-API validation)
-            sanitizeAgentHistory()
-            helperTurnPolicy.beforeTurn(frame, helperWrapUpRequested)
-            // [T-sub-agents-steer] Deliver any course correction the parent
-            // sent while this child was working. Placed AFTER the wrap-up
-            // block on purpose: when both land in the same turn the "write the
-            // deliverable now" instruction must be the last thing read.
-            if (helperConfig != null) {
-                val steers = synchronized(pendingSteerMessages) {
-                    val out = pendingSteerMessages.toList()
-                    pendingSteerMessages.clear()
-                    out
-                }
-                if (steers.isNotEmpty()) {
-                    val steer = conversationJournal.appendSteers(steers) ?: throw IllegalStateException("nonempty steer batch produced no message")
+                } }, identity = { it.entryId }, candidates = ::buildFallbackProviders,
+                provider = { it.provider }, attribution = { modelSnapshotFor(it.provider.model, it.entryId) },
+                prompt = ::systemPromptFor,
+                bindFallback = { expected, candidate, realChange -> withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    if (!fallbackMayRebindSession(currentProvider, expected)) false else {
+                        currentProvider = candidate.provider
+                        _modelName.value = candidate.provider.model.displayName
+                        val entry = providerRepository.config.value.modelEntries.find { it.id == candidate.entryId }
+                        if (entry != null) {
+                            _activeEntryId.value = entry.id
+                            currentModel = entry.model
+                            providerRepository.instance(entry.providerInstanceId)?.let {
+                                _providerName.value = it.label.ifEmpty { entry.model.provider }
+                            }
+                            persistBinding("""{"type":"entry","entryId":"${entry.id}"}""")
+                        }
+                        if (realChange) _fallbackTrigger.value++
+                        true
+                    }
+                } }),
+            context = AgentConversationRuntime.Context(
+                sanitize = ::sanitizeAgentHistory, snapshot = ::appendRuntimeContextSnapshot,
+                tools = { agentTools }, window = ::effectiveContextWindowTokens,
+                offload = { window, tokens -> offloadContextIfNeeded(window, tokens) },
+                measurement = ::contextMeasurement, measured = ::measureOutboundContextTokens,
+                policy = ::currentContextPolicy, compact = ::awaitCompaction,
+                compacting = { tokens, window ->
+                    appendSystemInfo("Context is filling up ($tokens / $window tokens) — compacting to continue.", "compact")
+                }),
+            wrapUpRequested = { helperWrapUpRequested },
+            steers = { synchronized(pendingSteerMessages) {
+                pendingSteerMessages.toList().also { pendingSteerMessages.clear() }
+            } },
+            presentation = AgentConversationRuntime.Presentation(
+                started = { withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    _messages.value = _messages.value + ChatMessage(
+                        id = assistantId, role = "assistant", content = "", isStreaming = true,
+                        isAwaitingModelResponse = true, thinkingLevel = turnThinkingLevel)
+                    assistantId
+                } },
+                steer = { steer, frame ->
+                    // Durable steer is already committed; display it above the reply it steers.
                     val steerUi = ChatMessage(
                         id = steer.dbMessageId ?: "steer_${System.currentTimeMillis()}",
                         role = "user",
@@ -8136,6 +8065,7 @@ class ChatViewModel(
                     // matter. It belongs where a person's interjection would go:
                     // above the turn that answers it.
                     withContext(Dispatchers.Main) {
+                        conversationJournal.checkBranch()
                         val cur = _messages.value
                         val at = cur.indexOfLast { it.id == assistantId }
                         _messages.value = if (at >= 0) {
@@ -8144,66 +8074,10 @@ class ChatViewModel(
                             cur + steerUi
                         }
                     }
-                    AppLogger.info(TAG, "[subagent] steer delivered count=${steers.size} turn=${turn + 1}/$turnCap")
-                }
-            }
+                    AppLogger.info(TAG, "[subagent] steer delivered turn=${frame.index + 1}/$turnCap")
+                },
 
-            // Context window management: offload large tool outputs in older
-            // messages to disk when the policy threshold for this model's
-            // context window is crossed. Stubs in agentHistory still tell the
-            // model where to read the original content. Mirrors iOS
-            // AIChatViewModel.swift:4549.
-            // [T-anthropic-context-window] Use contextWindowTokens (heuristic-
-            // backed) instead of the raw nullable field, so offload triggers at
-            // the correct fraction for heuristic-only Claude/Gemini models (1M)
-            // rather than never firing when contextWindow is unset.
-            // [T-context-window-live-read] Live read per loop turn — a stale
-            // snapshot inside a long-running agent turn is exactly the iOS
-            // fcc22b66 item-3 bug.
-            // [T-ctx-measure-outbound] System prompt + tool schemas ride on every
-            // request; measure them for this iteration (the helper wrap-up path
-            // drops the tools) so the guards and the calibration pair see the
-            // real fixed share.
-            appendRuntimeContextSnapshot()
-            contextPlanner.updateFixedTokens(
-                loopSystemPrompt,
-                if (helperTurnPolicy.toolsWithdrawn) emptyList() else agentTools,
-            )
-            effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
-                offloadContextIfNeeded(
-                    contextWindow = window,
-                    // [T-ctx-measure-outbound] Not `lastContextTokens`: after an
-                    // in-loop compaction that still describes the old request.
-                    lastContextTokens = measureOutboundContextTokens(),
-                )
-            }
-
-            // [T-android-auto-compact-inloop] In-loop context guard (iOS
-            // f70ac173). checkContextBeforeSend only runs at the SEND entry
-            // point, so a single turn that fans out into many tool iterations
-            // could blow past the thresholds mid-loop. Offload alone can't
-            // recover when the bulk is the model's own text, and the turn would
-            // slam into the provider's context ceiling.
-            //
-            // Runs AFTER offload so it judges the post-offload size.
-            when (contextGate.check(contextMeasurement(), currentContextPolicy(),
-                compact = ::awaitCompaction, measuredAfter = { measureOutboundContextTokens() },
-                compacting = { tokens, window ->
-                    appendSystemInfo("Context is filling up ($tokens / $window tokens) — compacting to continue.", "compact")
-                })) {
-                com.openminis.app.agent.AgentContextGate.Action.PROCEED -> {}
-                com.openminis.app.agent.AgentContextGate.Action.COMPACTED -> {
-                    // The next API call reads the freshly-compacted
-                    // effectiveAgentHistory automatically — compaction already
-                    // re-appends the recent turns, so no resume handoff is
-                    // needed. A compaction iteration is space management, not
-                    // task progress, so it must NOT consume a turn slot:
-                    // decrementing cancels this iteration's advance. The
-                    // MAX_AGENT_TURNS ceiling is never reset, and
-                    // maxInLoopCompactions bounds compact-thrash within a turn,
-                    // so a loop that keeps compacting cannot defeat the runaway
-                    // backstop.
-
+                compacted = {
                     // [T-android-inloop-compact-divider-order / GH#235] Seal the
                     // bubble this run has been writing into and continue in a
                     // FRESH one below the divider.
@@ -8236,6 +8110,7 @@ class ChatViewModel(
                     val sealedId = assistantId
                     val freshAssistantId = "assistant_${System.currentTimeMillis()}"
                     withContext(Dispatchers.Main) {
+                        conversationJournal.checkBranch()
                         // Flush whatever the sealed bubble accumulated and stop
                         // it streaming, so it renders as finished history.
                         updateAssistantMessage(
@@ -8275,14 +8150,14 @@ class ChatViewModel(
                     assistantId = freshAssistantId
                     accumulatedText = ""
                     allToolBlocks.clear()
-                    toolInputChunkRings.clear()
                     AppLogger.info(
                         TAG,
                         "[Compact] in-loop: sealed $sealedId, continuing in $freshAssistantId below the divider",
                     )
-                    return@agentTurn AgentLoopEngine.Action.Next
-                }
-                com.openminis.app.agent.AgentContextGate.Action.STOP -> {
+                    freshAssistantId
+                },
+                contextStopped = { withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
                     // The loop cannot present a modal mid-flight, so stop
                     // safely: user-visible notice + resumable, without the
                     // turn-limit error overwrite.
@@ -8342,13 +8217,36 @@ class ChatViewModel(
                     // post-loop tail must not slap a fake "hit 200 turns" error
                     // on it. finalizeAtTurnLimit is skipped; the notice above is
                     // the user-visible explanation.
-                    return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.CONTEXT)
-                }
-            }
-
-            // Mark where this turn's blocks start in allToolBlocks so we can persist
-            // only the NEW parts from this turn (not the full accumulated history).
-            // Matches iOS's per-turn RawMessage persistence.
+                } },
+                converged = { decision, frame -> withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    decision.hint?.let { hint ->
+                        val resource = when (hint) {
+                            com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_AFTER_REMINDER -> R.string.error_empty_response_after_tool
+                            com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
+                            com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
+                        }
+                        withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
+                    }
+                    when (val action = decision.action) {
+                        AgentLoopEngine.Action.Next -> {
+                            withContext(Dispatchers.Main) { updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks) }
+                            _canResume.value = false
+                        }
+                        is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
+                            withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
+                            markLiveInterruption()
+                            _canResume.value = true
+                        } else if (frame.index == 0) generateSessionTitleIfNeeded()
+                    }
+                } },
+                limitReached = { withContext(Dispatchers.Main) {
+                    conversationJournal.checkBranch()
+                    finalizeAtTurnLimit(assistantId, accumulatedText, allToolBlocks)
+                } }),
+            turnEffects = { frame, reportedContextTokens ->
+            val turn = frame.index
+            // Presentation and retry rollback slice only the current turn's blocks.
             val turnStartBlockIndex = allToolBlocks.size
             val projection = ChatStreamProjection(turn, turnStartBlockIndex, allToolBlocks, runJournal.sessionId,
                 prefix = { accumulatedText }, firstText = {
@@ -8364,31 +8262,22 @@ class ChatViewModel(
                         }
                     }
                 })
-            val turnRuntime = com.openminis.app.agent.AgentTurnRuntime(runJournal, conversationJournal,
-                continuation, replyContent, cancellationCoordinator, contextPlanner, compactionSummarizer,
-                toolInputChunkRings, toolLoopDetector, requestCycle, turn, assistantId, CANCELLED_MARKER, runAttribution)
-
             // Runtime sequences requests, tool dispatch and journal commits; these callbacks project effects.
             var boundaryQueue: List<QueuedPrompt> = emptyList()
-            val turnResult = turnRuntime.execute(
-                request = com.openminis.app.agent.AgentTurnRuntime.Request(
-                    provider = { currentProvider }, historySize = { agentHistory.size },
-                    scripted = {
-                        val scripted = pendingScriptedTurn?.takeUnless { helperTurnPolicy.toolsWithdrawn }
-                        pendingScriptedTurn = null
-                        scripted
-                    }, enhancedCache = { _enhancedCacheEnabled.value },
+            var insertedReply: AgentConversationRuntime.InsertedReply? = null
+            AgentConversationRuntime.TurnEffects(
+                request = AgentConversationRuntime.RequestEffects(
+                    enhancedCache = { _enhancedCacheEnabled.value },
                     configure = { projection.configure(it.streamTextIsMonolithic, it.model.id) },
-                        prepare = {
-                            if (personaReminderIsDue(lastContextTokens)) appendPersonaReminderToHistory(lastContextTokens)
-                            val model = currentProvider.model
-                            com.openminis.app.agent.AgentModelTurn.Input(currentProvider, effectiveAgentHistory(),
-                                resolvedContextWindow(model)?.first ?: model.contextWindowTokens,
-                                loopSystemPrompt, if (helperTurnPolicy.toolsWithdrawn) emptyList() else agentTools,
-                                _thinkingLevel.value, runAttribution)
+                        source = {
+                            if (personaReminderIsDue(runtime.contextTokens)) appendPersonaReminderToHistory(runtime.contextTokens)
+                            val model = runtime.provider.model
+                            AgentConversationRuntime.InputSource(effectiveAgentHistory(),
+                                resolvedContextWindow(model)?.first ?: model.contextWindowTokens, _thinkingLevel.value)
                         }, wireHistory = { auditOutgoingPayload(applyRequestImageBudget(it)) },
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
                         consume = { chunk ->
+                conversationJournal.checkBranch()
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta,
                     is LLMStreamChunk.Text,
@@ -8396,9 +8285,8 @@ class ChatViewModel(
                     is LLMStreamChunk.ToolInputDelta,
                     is LLMStreamChunk.ToolCallComplete -> projection.accept(chunk)
                     is LLMStreamChunk.Usage -> {
-                        val reportedContext = turnRuntime.reportedContext
+                        val reportedContext = reportedContextTokens()
                         if (reportedContext > 0) {
-                            lastContextTokens = reportedContext
                             _lastTurnContextTokens.value = reportedContext
                             // [T-android-context-usage-hint] Mid-loop path: a
                             // turn that runs tools for minutes should not stay
@@ -8435,7 +8323,7 @@ class ChatViewModel(
                     }),
                 recovery = com.openminis.app.agent.AgentTurnRuntime.Recovery(retrying = { actual, retry ->
                 val errDesc = actual.message ?: actual.javaClass.simpleName
-                Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry ${retry.attempt}/${retry.limit} in ${retry.delaySeconds}s: $errDesc")
+                Log.w(TAG, "🔁 Transient error on ${runtime.provider.model.displayName}, retry ${retry.attempt}/${retry.limit} in ${retry.delaySeconds}s: $errDesc")
                 withContext(Dispatchers.Main) {
                     _autoRetryAttempt.value = retry.attempt
                     setTransientInlineError("$errDesc — retrying (${retry.attempt}/${retry.limit})…")
@@ -8462,78 +8350,8 @@ class ChatViewModel(
                     } else AppLogger.warning(TAG, "[OverflowSelfHeal] nothing offloadable — surfacing original error")
                     healed
                 }, adopted = { nextCandidate, reason, isRealModelChange ->
-                        val next = nextCandidate.provider
-                        // [T-android-model-indicator-flash-on-endpoint-retry]
-                        // Same-model recovery is a TRANSPARENT retry, not a real
-                        // model switch. A model group can hold several entries
-                        // for the SAME modelId behind different provider
-                        // instances/endpoints (e.g. deepseek-v4-flash via a dead
-                        // hub.oaifree.com key + via api.deepseek.com). When the
-                        // first 401s, group-fallback moves to the next instance —
-                        // same modelId, different endpoint — which should recover
-                        // silently. Only flash the model capsule when the
-                        // resolved modelId ACTUALLY changes; an endpoint/instance-
-                        // only change must not surface to the UI.
-                        Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
-                        currentProvider = next
-                        runAttribution = modelSnapshotFor(next.model, nextCandidate.entryId)
-                        // [T-fallback-respects-user-switch] The fallback is this
-                        // turn's business; the session binding is the user's. If
-                        // selectEntry swapped the class-level provider while this
-                        // turn ran, keep the user's pick: only the turn-local
-                        // provider moves to `next`, and the class-level write, the
-                        // top-bar/entry updates and persistBinding are all skipped.
-                        val userSwitchedMidTurn = !fallbackMayRebindSession(
-                            this@ChatViewModel.currentProvider, classProviderAtSend,
-                        )
-                        if (userSwitchedMidTurn) {
-                            AppLogger.info(
-                                TAG_STREAM,
-                                "[SwitchModel] fallback to ${next.model.displayName} stays turn-local — " +
-                                    "user switched model mid-turn, binding kept",
-                            )
-                        } else {
-                            // Also update class-level provider so the next sendMessage() starts from here
-                            this@ChatViewModel.currentProvider = next
-                            classProviderAtSend = next
-                            // Update top bar model info + active entry. (For a same-
-                            // model endpoint recovery these are no-ops on the visible
-                            // model name, but still keep activeEntryId / provider name
-                            // in sync with the instance we actually used.)
-                            _modelName.value = currentProvider.model.displayName
-                            // Update activeEntryId so model picker reflects the switch.
-                            // [T-android-fallback-entry-identity] Look the entry up by
-                            // its OWN id, carried on the candidate. The previous
-                            // `find { it.model.id == currentProvider.model.id }` was
-                            // ambiguous: two instances can expose the same model id, so
-                            // it returned whichever entry sits earlier in modelEntries.
-                            // Observed in the field — falling back onto
-                            // `deepseek-v4-flash` served by "DeekSeak" showed the
-                            // provider as "Bailian OpenAI", because Bailian also has a
-                            // `deepseek-v4-flash` entry and happened to be found first.
-                            // That also poisoned activeEntryId and the persisted
-                            // binding, so re-entering the session resumed on the WRONG
-                            // instance.
-                            val newEntry = providerRepository.config.value.modelEntries.find {
-                                it.id == nextCandidate.entryId
-                            }
-                            if (newEntry != null) {
-                                _activeEntryId.value = newEntry.id
-                                currentModel = newEntry.model
-                                val newInstance = providerRepository.instance(newEntry.providerInstanceId)
-                                if (newInstance != null) {
-                                    _providerName.value = newInstance.label.ifEmpty { newEntry.model.provider }
-                                }
-                            }
-                            // Flash ONLY on a genuine model switch — never on a
-                            // transparent same-model endpoint retry.
-                            if (isRealModelChange) _fallbackTrigger.value++
-                            // Persist the fallback model so re-entering the session starts from here
-                            if (newEntry != null) {
-                                persistBinding("""{"type":"entry","entryId":"${newEntry.id}"}""")
-                            }
-                        }
-                        val infoText = providerRecovery.failureTrail.joinToString("\n") + "\n🔄 Switched to ${currentProvider.model.displayName}"
+                        Log.i(TAG, "🔀 $reason, switched to ${nextCandidate.provider.model.displayName} (realModelChange=$isRealModelChange)")
+                        val infoText = runtime.failureTrail.joinToString("\n") + "\n🔄 Switched to ${runtime.provider.model.displayName}"
                         allToolBlocks.removeAll { it.kind == "info" }
                         allToolBlocks.add(0, AssistantBlock(
                             id = "fallback_info_$turn",
@@ -8683,50 +8501,20 @@ class ChatViewModel(
                         }
                         if (handled != null) {
                             assistantId = handled.newAssistantId
-                            scriptedTurnFor(handled.prefill)?.let { pendingScriptedTurn = it }
+                            insertedReply = AgentConversationRuntime.InsertedReply(handled.newAssistantId, scriptedTurnFor(handled.prefill))
                             accumulatedText = ""
                             allToolBlocks.clear()
                             _canResume.value = streamJob?.isCancelled == true
                         }
                         handled != null
-                    }),
+                    }), insertedReply = { insertedReply },
             )
-            if (turnResult is com.openminis.app.agent.AgentTurnRuntime.Result.Converged) {
-                val decision = turnResult.decision
-                decision.hint?.let { hint ->
-                    val resource = when (hint) {
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_AFTER_REMINDER -> R.string.error_empty_response_after_tool
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
-                    }
-                    withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
-                }
-                when (val action = decision.action) {
-                    AgentLoopEngine.Action.Next -> {
-                        withContext(Dispatchers.Main) { updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks) }
-                        _canResume.value = false
-                    }
-                    is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
-                        withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
-                        markLiveInterruption()
-                        _canResume.value = true
-                    } else if (turn == 0) generateSessionTitleIfNeeded()
-                }
-                return@agentTurn decision.action
-            }
-
-            if (turnResult == com.openminis.app.agent.AgentTurnRuntime.Result.DelegationStopped) {
-                AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.DELEGATION_STOPPED)
-            } else AgentLoopEngine.Action.Next
-        }
+        })
         if (outcome is AgentLoopEngine.Outcome.LimitReached) {
             AppLogger.warning(
                 TAG_STREAM,
                 "runAgentLoop EXIT — hit turn cap=$turnCap${if (helperConfig != null) " (helper)" else ""}, finalizing as resumable",
             )
-            withContext(Dispatchers.Main) {
-                finalizeAtTurnLimit(assistantId, accumulatedText, allToolBlocks)
-            }
         } else {
             AppLogger.info(TAG_STREAM, "runAgentLoop EXIT (loop body ended naturally)")
         }
@@ -11224,9 +11012,8 @@ class ChatViewModel(
     }
 
     /**
-     * Resume an interrupted agent loop. Injects a `<system-reminder>` into
-     * agentHistory so the model picks up where it left off, then re-enters
-     * the agent loop in a fresh [streamJob]. Mirrors iOS
+     * Resume an interrupted agent loop in a fresh [streamJob]. The runtime
+     * durably commits any required continuation reminder before dispatch. Mirrors iOS
      * AIChatViewModel.resume().
      *
      * Safe to call only when [canResume] is true and [isStreaming] is false.
@@ -11256,30 +11043,9 @@ class ChatViewModel(
         // behind the input bar.
         _forceScrollToBottom.tryEmit(Unit)
 
-        // If history ends with assistant (Case 2: text-cancel committed a
-        // partial assistant turn), append a continue reminder as a user
-        // message. If it ends with user tool_result (Case 1), it's already
-        // a valid starting point for the next API call — no reminder needed.
-        val historyEndsWithAssistant =
-            agentHistory.lastOrNull()?.role == LLMMessage.Role.ASSISTANT
-        if (historyEndsWithAssistant) {
-            val reminder =
-                "<system-reminder>The user stopped the previous response but now wants to continue. Pick up exactly where you left off.</system-reminder>"
-            val parts = listOf<AgentContentPart>(AgentContentPart.Text(reminder))
-            agentHistory.add(
-                LLMMessage(
-                    role = LLMMessage.Role.USER,
-                    content = reminder,
-                    contentParts = parts,
-                )
-            )
-            viewModelScope.launch(Dispatchers.IO) {
-                val partsJson = """[{"type":"text","value":${escapeJson(reminder)}}]"""
-                chatRepository.appendMessage(activeSessionId, "user", partsJson)
-            }
-        }
-
-        viewModelScope.launch {
+        // Claim the run synchronously; cancellation owns preparation as well as the stream.
+        _isStreaming.value = true
+        launchAgentRun(viewModelScope, "resume", markFailure = false) {
             val baseSystemPrompt = buildSystemPrompt()
             val systemPrompt =
                 if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
@@ -11288,14 +11054,10 @@ class ChatViewModel(
                     else "$prefix\n\n${baseSystemPrompt ?: ""}"
                 } else baseSystemPrompt
 
-            AppLogger.info(TAG_STREAM, "resume _isStreaming=true (sid=$activeSessionId)")
-            _isStreaming.value = true
-            launchAgentRun(this, "resume", markFailure = false) {
-                val strategy = com.openminis.app.data.model.FallbackStrategy.default
-                val fallbacks = buildFallbackProviders(provider)
-                runAgentLoop(provider, systemPrompt, fallbacks, strategy)
-                drainQueuedPrompts(provider, systemPrompt, fallbacks, strategy)
-            }
+            val strategy = com.openminis.app.data.model.FallbackStrategy.default
+            val fallbacks = buildFallbackProviders(provider)
+            runAgentLoop(provider, systemPrompt, fallbacks, strategy, resumePrevious = true)
+            drainQueuedPrompts(provider, systemPrompt, fallbacks, strategy)
         }
     }
 

@@ -43,6 +43,16 @@ internal class AgentConversationJournal(
         history.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = parts, dbMessageId = entity?.id))
     }
 
+    /** Resume instructions must be durable on the captured branch before the next request. */
+    suspend fun prepareResume() {
+        checkBranch()
+        if (history.lastOrNull()?.role != LLMMessage.Role.ASSISTANT) return
+        val note = "<system-reminder>The user stopped the previous response but now wants to continue. Pick up exactly where you left off.</system-reminder>"
+        val parts = listOf<AgentContentPart>(AgentContentPart.Text(note))
+        val input = AgentQueuedUserInput(AgentJournalWriter.assistantParts(parts, emptyMap()), note, parts, emptyList())
+        commitQueued(input) {}
+    }
+
     suspend fun appendSteers(steers: List<String>): LLMMessage? {
         if (steers.isEmpty()) return null
         checkBranch()
