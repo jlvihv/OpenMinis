@@ -580,22 +580,6 @@ class ChatViewModel(
          * Mirrors iOS AIChatViewModel.maxAgentTurns.
          */
         private const val MAX_AGENT_TURNS = 200
-        private const val MIN_MAX_TOKENS = 1024
-        /**
-         * Hard ceiling on max_tokens we ever send to a provider, regardless
-         * of what the model itself claims. Some models advertise 128K+
-         * output windows that in practice produce wandering, low-signal
-         * responses and burn through context budget; cap so a single turn
-         * can't run away. Mirrors iOS AIChatViewModel.globalMaxTokensCeiling.
-         * [T-android-global-max-tokens-128k] Raised 64K → 128K (iOS 8a401ab6):
-         * 64K clipped newer large-output models AND the number-budget thinking
-         * tiers whose budget is carved out of max_tokens (Anthropic legacy
-         * high/xhigh/max, Qwen thinking_budget — DashScope clamps it strictly
-         * below max_completion_tokens). Raising only lifts the upper bound —
-         * the value is still clamped by the model's own maxOutputTokens and
-         * the remaining context window in dynamicMaxTokens().
-         */
-        private const val GLOBAL_MAX_TOKENS_CEILING = 128_000
         /**
          * Sentinel prefix on synthetic tool_result output marking
          * user-cancelled calls. Aligned with iOS
@@ -1331,38 +1315,21 @@ class ChatViewModel(
      * guards no longer read that value at all — it stays as the glow's source —
      * and judge [measureOutboundContextTokens] instead.
      *
-     * [contextCalibrationRatio] — provider count / our estimate of the same
-     *   request; 1.0 until the first report. [contextFixedTokens] — estimated
-     *   system prompt + tool schemas. [lastDispatchEstimate] — estimate of the
-     *   request in flight, paired with its report on arrival.
-     *   [lastCalibratedPair] — (estimate, fixed) of the last paired request,
-     *   written into the turn's usage row so a reopened session re-seeds the
-     *   RATIO rather than a stale raw size.
+     * [contextPlanner] owns calibration and immutable dispatch measurements.
+     * [contextFixedTokens] is the estimated system prompt plus tool schemas.
      */
-    /** Per model: a ratio mostly reflects the provider's tokenizer (see [ContextSizeMeter.ratioFor]). */
-    private val contextCalibrationRatios = mutableMapOf<String, Double>()
-    private var lastLearnedCalibration: Double? = null
-    /** The session the in-memory ratios were learned for (see [seedContextCalibration]). */
-    private var calibrationSessionId: String? = null
+    private val contextPlanner = com.openminis.app.agent.AgentContextPlanner()
     /**
      * [T-ctx-warmup-fit] Per compaction marker: how many leading warm-up
      * messages were dropped to fit. Decided once, then reused, so the request
      * prefix stays stable across turns (see [trimWarmUpToFit]).
      */
     private val historyProjection = com.openminis.app.agent.HistoryProjection()
-    private var contextFixedTokens = 0
-    private var lastDispatchEstimate = 0
-    /** Ratio and calibrated size used for the request in flight ([CtxMeter] actual scores it). */
-    private var lastDispatchRatio = 1.0
+    private val contextFixedTokens get() = contextPlanner.fixedTokens
+    private val lastDispatchRatio get() = contextPlanner.lastDispatchRatio
     /** Set by revertCompact; loadSession logs [CtxMeter] reverted once the reload has measured. */
     @Volatile private var pendingRevertLogMarker: String? = null
-    private var lastDispatchPredicted = 0
-    /** (estimate, fixed, model) of the last paired request, written into the turn's usage row. */
-    private var lastCalibratedPair: Triple<Int, Int, String?>? = null
-    /** Whether this loop already sent once past an extrapolated "over the window" verdict. */
-    private var sentPastExtrapolatedLimitThisLoop = false
-    /** Set when an in-loop compaction left the request no smaller; cleared by the next response. */
-    private var lastInLoopCompactionMadeNoProgress = false
+    private val lastInLoopCompactionMadeNoProgress get() = contextPlanner.compactionMadeNoProgress
 
     /**
      * [T-ctx-measure-outbound] Estimated size of the next request: the
@@ -1371,25 +1338,16 @@ class ChatViewModel(
      * Measured before the request image budget, like the calibration side.
      */
     private fun contextCalibrationRatio(modelId: String? = currentModel?.id): Double =
-        ContextSizeMeter.ratioFor(modelId, contextCalibrationRatios, lastLearnedCalibration)
+        contextPlanner.ratio(modelId)
 
     private fun measureOutboundContextTokens(ratio: Double? = null): Int = contextMeasurement(ratio).measured
 
     /** The measurement with its parts, for the [CtxMeter] logs. */
-    private data class ContextMeasurement(val history: Int, val fixed: Int, val ratio: Double, val source: String, val measured: Int)
-
-    private fun contextMeasurement(override: Double? = null): ContextMeasurement {
-        val history = ContextSizeMeter.estimateTokens(effectiveAgentHistoryUncounted())
-        val model = currentModel?.id
-        val ratio = override ?: contextCalibrationRatio(model)
-        val source = if (override != null) "forced"
-            else ContextSizeMeter.ratioSource(model, contextCalibrationRatios, lastLearnedCalibration)
-        return ContextMeasurement(history, contextFixedTokens, ratio, source,
-            ContextSizeMeter.calibrated(history + contextFixedTokens, ratio))
-    }
+    private fun contextMeasurement(override: Double? = null) =
+        contextPlanner.measure(effectiveAgentHistoryUncounted(), currentModel?.id, override)
 
     /** [CtxMeter] decide — every capacity decision with its inputs, so a field log can replay it. */
-    private fun logContextDecision(site: String, m: ContextMeasurement, threshold: Int, window: Int, result: String) {
+    private fun logContextDecision(site: String, m: com.openminis.app.agent.AgentContextPlanner.Measurement, threshold: Int, window: Int, result: String) {
         AppLogger.info(
             TAG,
             "[CtxMeter] decide site=$site model=${currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
@@ -1405,78 +1363,7 @@ class ChatViewModel(
      */
     private fun ensureContextFixedTokens() {
         if (contextFixedTokens > 0) return
-        contextFixedTokens = ContextSizeMeter.estimateFixedTokens(buildSystemPrompt(), agentTools)
-    }
-
-    /**
-     * [T-android-ctx-overflow-attribute-dispatch] The model the request in
-     * flight went to, and its window. The provider's count or rejection is
-     * evidence about THAT model; the selected one ([currentModel]) can differ
-     * after a group fallback or a mid-turn switch, and scoring the report
-     * against it skews the wrong model's ratio (iOS 08f3feea2).
-     */
-    private var lastDispatchModel: LLMModel? = null
-    private var lastDispatchWindow = 0
-
-    /** Record our estimate of the request being sent; returns its calibrated size. */
-    private fun recordContextDispatch(history: List<LLMMessage>, model: LLMModel? = currentModel): Int {
-        lastDispatchModel = model
-        lastDispatchWindow = resolvedContextWindow(model)?.first ?: 0
-        lastDispatchEstimate = ContextSizeMeter.estimateTokens(history) + contextFixedTokens
-        lastDispatchRatio = contextCalibrationRatio(model?.id)
-        lastDispatchPredicted = ContextSizeMeter.calibrated(lastDispatchEstimate, lastDispatchRatio)
-        return lastDispatchPredicted
-    }
-
-    /** Pair the provider's count with the recorded estimate, for the model that served it. */
-    private fun calibrateContextSize(reportedTokens: Int): Boolean {
-        val sample = ContextSizeMeter.calibrationRatio(reportedTokens, lastDispatchEstimate) ?: return false
-        val model = lastDispatchModel?.id ?: currentModel?.id
-        // [T-ctx-ratio-smoothing] Blend into the model's OWN history only; a
-        // borrowed ratio is not evidence about this model.
-        val own = model?.let { contextCalibrationRatios[it] }
-        val updated = ContextSizeMeter.smoothed(own, sample)
-        if (model != null) contextCalibrationRatios[model] = updated
-        lastLearnedCalibration = updated
-        lastCalibratedPair = Triple(lastDispatchEstimate, contextFixedTokens, model)
-        // [CtxMeter] actual — the prediction made at dispatch vs what the
-        // provider counted; `err` is how wrong this request's decision could be.
-        val err = if (lastDispatchPredicted > 0) (lastDispatchPredicted - reportedTokens) * 100.0 / reportedTokens else 0.0
-        AppLogger.info(
-            TAG,
-            "[CtxMeter] actual model=${model ?: "?"} predicted=$lastDispatchPredicted reported=$reportedTokens " +
-                "err=${"%+.1f".format(err)}% estimate=$lastDispatchEstimate sample=${"%.3f".format(sample)} " +
-                "ratio=${"%.3f".format(lastDispatchRatio)}→${"%.3f".format(updated)}" +
-                if (own == null) " (first own sample)" else "",
-        )
-        return true
-    }
-
-    /**
-     * A provider rejected the request as too long — ground truth that we
-     * under-read it (a borrowed ratio after a model switch, a legacy session,
-     * content the estimator under-reads). Raise this model's ratio so the retry
-     * or next send compacts instead of being rejected again. Never lowers it.
-     */
-    private fun noteContextOverflow(detail: String) {
-        val model = lastDispatchModel?.id ?: currentModel?.id
-        val window = lastDispatchWindow.takeIf { lastDispatchModel != null && it > 0 }
-            ?: effectiveContextWindowTokens() ?: 0
-        val current = contextCalibrationRatio(model)
-        val requested = ContextSizeMeter.requestedTokens(detail)
-        val raised = ContextSizeMeter.ratioAfterOverflow(current, lastDispatchEstimate, requested, window)
-        if (model != null) contextCalibrationRatios[model] = raised
-        lastLearnedCalibration = raised
-        // [T-ctx-valve-rearm] The ratio now rests on the provider's own count,
-        // not an extrapolation, so the uncalibrated send-once is spent: firing
-        // it would re-send the request that was just rejected.
-        sentPastExtrapolatedLimitThisLoop = true
-        AppLogger.warning(
-            TAG,
-            "[CtxMeter] rejected predicted=$lastDispatchPredicted — provider rejected the request as too long — calibration model=${model ?: "?"} " +
-                "${"%.2f".format(current)} → ${"%.2f".format(raised)} (estimated=$lastDispatchEstimate " +
-                "statedTokens=${requested ?: "none"} window=$window); the next attempt will compact",
-        )
+        contextPlanner.updateFixedTokens(buildSystemPrompt(), agentTools)
     }
 
     /**
@@ -1494,35 +1381,7 @@ class ChatViewModel(
      * than the rows', so they win; a different session starts from scratch.
      */
     private fun seedContextCalibration(usageJsons: List<String>): Boolean {
-        val sid = realSessionId.ifEmpty { sessionId }
-        val learned = if (sid.isNotEmpty() && calibrationSessionId == sid) {
-            ContextSizeMeter.CalibrationState(contextCalibrationRatios.toMap(), lastLearnedCalibration, contextFixedTokens)
-        } else {
-            null
-        }
-        // [T-ctx-ratio-smoothing] Replay rows oldest → newest through the same
-        // rule the live path uses, so a reload reproduces the smoothed ratio.
-        val seeded = ContextSizeMeter.replayCalibration(usageJsons.mapNotNull(ContextSizeMeter::calibrationSample))
-        val state = learned?.let { seeded.carryingOver(it) } ?: seeded
-        contextCalibrationRatios.clear()
-        contextCalibrationRatios.putAll(state.ratios)
-        lastLearnedCalibration = state.lastLearned
-        contextFixedTokens = state.fixedTokens
-        lastDispatchEstimate = 0
-        lastDispatchModel = null
-        lastDispatchWindow = 0
-        lastCalibratedPair = null
-        // [T-ctx-valve-spend-survives-retry] The valve's spent state belongs to
-        // the session's evidence like the ratios above: a different session
-        // starts armed, the same session (revert/reload) keeps a rejection's spend.
-        if (learned == null) sentPastExtrapolatedLimitThisLoop = false
-        calibrationSessionId = sid
-        AppLogger.info(
-            TAG,
-            "[CtxMeter] seed session=${sid.take(8)} samples=${seeded.samples} keptInMemory=${learned?.ratios?.size ?: 0} " +
-                "ratios=${state.ratios.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${"%.3f".format(it.value)}" }}",
-        )
-        return seeded.samples > 0 || !learned?.ratios.isNullOrEmpty()
+        return contextPlanner.seed(realSessionId.ifEmpty { sessionId }, usageJsons)
     }
 
     /**
@@ -4639,7 +4498,7 @@ class ChatViewModel(
                 // progress (parity with iOS) and settles like one: still
                 // sendable if it fits, or once on the raw estimate.
                 if (!ok) {
-                    lastInLoopCompactionMadeNoProgress = true
+                    contextPlanner.markCompactionNoProgress()
                     return settleWithoutCompacting(m, window, compactionsSoFar)
                 }
                 // [T-ctx-measure-outbound] The next iteration re-measures the
@@ -4649,7 +4508,7 @@ class ChatViewModel(
                 // recorded is whether this pass actually shrank the request —
                 // one that did not is not retried.
                 val after = measureOutboundContextTokens()
-                lastInLoopCompactionMadeNoProgress = after >= tokens
+                contextPlanner.noteCompaction(tokens, after)
                 AppLogger.info(
                     TAG,
                     "[AutoCompact] mid-loop compact result: measured $tokens → $after" +
@@ -4681,16 +4540,8 @@ class ChatViewModel(
      * rests only on the ratio gets one real request. See
      * [ContextPolicy.inLoopStep], which holds the table and its tests.
      */
-    private fun settleWithoutCompacting(m: ContextMeasurement, window: Int, compactionsSoFar: Int): InLoopContextAction {
-        val step = ContextPolicy.inLoopStep(
-            verdict = ContextPolicy.CheckResult.NEEDS_COMPACT,
-            measured = m.measured,
-            rawTokens = m.history + m.fixed,
-            window = window,
-            canCompact = false,
-            ratio = m.ratio,
-            uncalibratedSendUsed = sentPastExtrapolatedLimitThisLoop,
-        )
+    private fun settleWithoutCompacting(m: com.openminis.app.agent.AgentContextPlanner.Measurement, window: Int, compactionsSoFar: Int): InLoopContextAction {
+        val step = contextPlanner.settle(m, window)
         return when (step) {
             ContextPolicy.InLoopStep.SEND_WITHIN_WINDOW -> {
                 AppLogger.info(
@@ -4702,7 +4553,6 @@ class ChatViewModel(
                 InLoopContextAction.PROCEED
             }
             ContextPolicy.InLoopStep.SEND_UNCALIBRATED_ONCE -> {
-                sentPastExtrapolatedLimitThisLoop = true
                 AppLogger.warning(
                     TAG,
                     "[AutoCompact] calibrated size over the window but the raw estimate fits " +
@@ -8288,49 +8138,14 @@ class ChatViewModel(
     /**
      * Compute max output tokens that fits within the remaining context window.
      * Logic mirrors iOS's dynamicMaxTokens():
-     *   result = min(provider.defaultMaxTokens, max(contextWindow - inputTokens, MIN_MAX_TOKENS))
+     *   result = min(output ceiling, max(contextWindow - inputTokens, 1024))
      *
      * @param provider The current LLM provider (carries defaultMaxTokens).
      * @param lastContextTokens API-reported input token count from the last call (0 = first call).
      */
-    private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int {
-        val model = currentModel ?: return minOf(GLOBAL_MAX_TOKENS_CEILING, provider.defaultMaxOutputTokens)
-        // Ceiling: min(global cap, model.maxOutputTokens-or-provider-default).
-        // The global cap means we never send more than 128K regardless of
-        // what the model claims it can output.
-        val maxOutputCeiling = minOf(GLOBAL_MAX_TOKENS_CEILING, provider.effectiveMaxOutputTokens(model))
-        // Context window: model.contextWindow if known, else the shared
-        // model-id heuristic. [T-anthropic-context-window] Route through
-        // LLMModel.contextWindowTokens so the corrected Claude-1M / Gemini-1M
-        // values apply here too, instead of the stale local "everything 200K"
-        // copy that under-reported modern Claude/Gemini windows.
-        // [T-ctx-user-cap] Route through the resolver so a group cap narrows the
-        // output budget too. This used to read model.contextWindowTokens
-        // directly, so a capped group still sized max_tokens against the
-        // model's full native window — iOS has always folded the cap in here.
-        val contextWindow = effectiveContextWindowTokens()?.takeIf { it > 0 }
-            ?: model.contextWindowTokens
-        if (contextWindow <= 0) return maxOutputCeiling
-        val inputTokens = if (lastContextTokens > 0) lastContextTokens else 0
-        val remaining = contextWindow - inputTokens
-        // [T-ctx-overflow-hard-stop] The input already does not fit; the clamp
-        // below would quietly turn a negative remaining back into MIN_MAX_TOKENS
-        // and send anyway. The guards treat overflow as NEEDS_COMPACT now, so
-        // reaching here means one was bypassed — say so instead of hiding it.
-        if (remaining <= 0) {
-            android.util.Log.w(
-                TAG,
-                "dynamicMaxTokens: input $inputTokens EXCEEDS window $contextWindow " +
-                    "(over by ${inputTokens - contextWindow}) — compaction guard should have fired",
-            )
-        }
-        val clamped = maxOf(remaining, MIN_MAX_TOKENS)
-        val result = minOf(maxOutputCeiling, clamped)
-        if (result < maxOutputCeiling) {
-            android.util.Log.i(TAG, "dynamicMaxTokens: $result (remaining=$remaining, ceiling=$maxOutputCeiling, window=$contextWindow, input=$inputTokens, model=${model.id})")
-        }
-        return result
-    }
+    private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int =
+        contextPlanner.outputBudget(provider, lastContextTokens,
+            resolvedContextWindow(provider.model)?.first ?: provider.model.contextWindowTokens)
 
     // ─── Context Window Offload ──────────────────────────────────────────────
     //
@@ -8999,9 +8814,9 @@ class ChatViewModel(
         // cap is hit, a still-over-threshold history stops the turn rather than
         // compacting forever. Mirrors iOS maxInLoopCompactions.
         var inLoopCompactions = 0
-        lastInLoopCompactionMadeNoProgress = false
+        contextPlanner.beginLoop()
         // [T-ctx-valve-spend-survives-retry] Do NOT re-arm the uncalibrated
-        // send-once here. noteContextOverflow spends it when the provider rejects
+        // send-once here. The planner spends it when the provider rejects
         // a request as too long; when the self-heal finds nothing to offload the
         // rejection ends the loop, and resetting here made Retry fire the valve
         // and re-send the exact request that was just rejected. It is re-armed
@@ -9218,7 +9033,7 @@ class ChatViewModel(
             // drops the tools) so the guards and the calibration pair see the
             // real fixed share.
             appendRuntimeContextSnapshot()
-            contextFixedTokens = ContextSizeMeter.estimateFixedTokens(
+            contextPlanner.updateFixedTokens(
                 loopSystemPrompt,
                 if (helperWrapUpInjected) emptyList() else agentTools,
             )
@@ -9443,6 +9258,7 @@ class ChatViewModel(
             var lastUsage: LLMUsage? = null
             var turnAttribution = runAttribution
             var turnCalibration: Triple<Int, Int, String?>? = null
+            var turnDispatch: com.openminis.app.agent.AgentContextPlanner.Dispatch? = null
             // [T-android-token-usage-output-speed] Wall-clock milliseconds this
             // turn spent streaming, accumulated across every attempt (a
             // retried 5xx streams more than once). Persisted with the turn's
@@ -9509,6 +9325,8 @@ class ChatViewModel(
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
                         duration = { turnStreamMs += it })
                     attempt.collect(create = {
+                    turnDispatch = null
+                    turnCalibration = null
                     // [T-scheduled-tool-prefill] A prefilled turn streams the
                     // calls that were decided ahead of time instead of asking the
                     // provider. Everything downstream of `collect` is the same code a
@@ -9553,23 +9371,28 @@ class ChatViewModel(
                         // (pre-budget, like every measurement) so the provider's count
                         // for it calibrates the meter, and size max_tokens from it.
                         val outboundHistory = effectiveAgentHistory()
-                        val dispatchInputTokens = recordContextDispatch(outboundHistory, currentProvider.model)
+                        val requestTools = if (helperWrapUpInjected) emptyList() else agentTools
+                        val requestModel = currentProvider.model
+                        val plan = contextPlanner.plan(currentProvider, requestModel, outboundHistory,
+                            resolvedContextWindow(requestModel)?.first ?: requestModel.contextWindowTokens,
+                            loopSystemPrompt, requestTools, _thinkingLevel.value)
+                        val dispatch = plan.dispatch
+                        turnDispatch = dispatch
+                        val requestMaxTokens = plan.maxTokens
                         AppLogger.info(
                             TAG,
-                            "[CtxMeter] dispatch model=${currentModel?.id ?: "?"} estimate=$lastDispatchEstimate " +
-                                "ratio=${"%.3f".format(lastDispatchRatio)} predicted=$dispatchInputTokens " +
-                                "maxTokens=${dynamicMaxTokens(currentProvider, dispatchInputTokens)}",
+                            "[CtxMeter] dispatch model=${dispatch.model.id} estimate=${dispatch.estimate} " +
+                                "ratio=${"%.3f".format(dispatch.ratio)} predicted=${dispatch.predicted} maxTokens=$requestMaxTokens",
                         )
                         val requestHistory = auditOutgoingPayload(applyRequestImageBudget(outboundHistory))
-                        val requestTools = if (helperWrapUpInjected) emptyList() else agentTools
-                        val requestThinking = if (currentProvider.model.supportsReasoning == true) _thinkingLevel.value else ThinkingLevel.OFF
+                        val requestThinking = plan.thinking
                         val warmCandidate = CompactionSummarizer.ConversationRequest(currentProvider,
                             com.openminis.app.agent.CachedCompaction.snapshot(requestHistory), loopSystemPrompt,
                             requestTools, requestThinking, runAttribution)
                         turnAttribution = runAttribution
                         currentProvider.streamMessage(
                             requestHistory,
-                            loopSystemPrompt, dynamicMaxTokens(currentProvider, dispatchInputTokens),
+                            loopSystemPrompt, requestMaxTokens,
                             tools = requestTools,
                             // [T-switch-model-thinking-gate] Gate on the provider that
                             // serves THIS turn. selectEntry swaps the class-level
@@ -9905,35 +9728,14 @@ class ChatViewModel(
                         // and publish to _lastTurnContextTokens so the ContextPolicy
                         // gate in [checkContextBeforeSend] can see the latest pressure
                         // without a DB round-trip.
-                        if (chunk.usage.latestContextTokens > 0) {
-                            lastContextTokens = chunk.usage.latestContextTokens
-                        } else if (chunk.usage.inputTokens > 0) {
-                            // Fallback when a provider omits latestContextTokens: inputTokens is
-                            // now fresh-only (cached portion subtracted in the parser), so add the
-                            // cache back to recover the true context size — otherwise a high
-                            // cache-hit turn would under-report context pressure and skip offload.
-                            lastContextTokens = chunk.usage.inputTokens +
-                                (chunk.usage.cacheReadInputTokens ?: 0) +
-                                (chunk.usage.cacheCreationInputTokens ?: 0)
-                        }
-                        if (lastContextTokens > 0) {
-                            _lastTurnContextTokens.value = lastContextTokens
+                        val reportedContext = contextPlanner.reportedContext(chunk.usage)
+                        if (reportedContext > 0) {
+                            lastContextTokens = reportedContext
+                            _lastTurnContextTokens.value = reportedContext
                             // [T-ctx-measure-outbound] Pair the report with our
                             // estimate of the same request; the pair (persisted
                             // with the turn) is what capacity decisions use.
-                            calibrateContextSize(lastContextTokens)
-                            turnCalibration = lastCalibratedPair
-                            lastInLoopCompactionMadeNoProgress = false
-                            // [T-ctx-valve-rearm] An accepted request is fresh
-                            // evidence, so the once-per-evidence uncalibrated
-                            // send is available again. With a smoothed ratio one
-                            // success no longer pulls a too-high ratio all the
-                            // way down; without this the NEXT iteration of the
-                            // same loop could stop as "over the window" right
-                            // after the provider accepted a same-size request.
-                            // A rejection does not re-arm it, so a real
-                            // overflow still stops.
-                            sentPastExtrapolatedLimitThisLoop = false
+                            turnCalibration = contextPlanner.calibrate(turnDispatch, lastContextTokens)
                             // [T-android-context-usage-hint] Mid-loop path: a
                             // turn that runs tools for minutes should not stay
                             // silent until it finishes, so a genuine upward
@@ -10157,7 +9959,7 @@ class ChatViewModel(
                         // offload below heals it, so the next judgement (this
                         // retry's successor, Resume, or the next send) sees the
                         // real size and compacts.
-                        noteContextOverflow(overflowErr?.detail ?: "")
+                        contextPlanner.overflow(turnDispatch, overflowErr?.detail ?: "")
                         val healed = offloadLargestPartForOverflow()
                         if (healed) {
                             AppLogger.warning(
