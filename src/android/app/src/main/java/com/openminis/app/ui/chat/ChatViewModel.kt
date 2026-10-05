@@ -1229,7 +1229,6 @@ class ChatViewModel(
     private val lastDispatchRatio get() = contextPlanner.lastDispatchRatio
     /** Set by revertCompact; loadSession logs [CtxMeter] reverted once the reload has measured. */
     @Volatile private var pendingRevertLogMarker: String? = null
-    private val lastInLoopCompactionMadeNoProgress get() = contextPlanner.compactionMadeNoProgress
 
     /**
      * [T-ctx-measure-outbound] Estimated size of the next request: the
@@ -3011,10 +3010,11 @@ class ChatViewModel(
         anchorIdxOverride: Int? = null,
         allowDuringProcessing: Boolean = false,
         onFinished: ((Boolean) -> Unit)? = null,
-    ) {
+    ): Job? {
         var started = false
         compactAllImpl(anchorIdxOverride, allowDuringProcessing, onFinished) { started = true }
         if (!started) onFinished?.invoke(false)
+        return if (started) compactJob else null
     }
 
     private inline fun compactAllImpl(
@@ -3044,6 +3044,7 @@ class ChatViewModel(
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
+        val compactSessionId = activeSessionId
         val history = agentHistory.toList()
         if (history.isEmpty()) {
             appendSystemInfo("Nothing to compact — the session is empty.", "compact")
@@ -3159,7 +3160,7 @@ class ChatViewModel(
             // compaction that persists its marker and then fails.
             var rollbackMarkerId: String? = null
             var previousMarker: CompactMarkerEntity? = null
-            val priorMarkerBeforeCompact: CompactMarkerEntity? = _cachedLatestMarker
+            val priorMarkerBeforeCompact: CompactMarkerEntity? = prev
             // Distinguishes "we gave up on time" from other failures so the
             // user-facing message can say so and invite a retry.
             var timedOut = false
@@ -3201,6 +3202,7 @@ class ChatViewModel(
                         try {
                             summary = withTimeout(timeoutMs) {
                                 generateCompactSummaryWithSplitting(
+                                    ownerSessionId = compactSessionId,
                                     messages = toCompact,
                                     previousSummary = existing,
                                     depth = 0,
@@ -3225,6 +3227,7 @@ class ChatViewModel(
                             tried.add(next.entryId)
                             val from = currentModel?.displayName ?: "?"
                             withContext(Dispatchers.Main) {
+                                if (activeSessionId != compactSessionId) throw CancellationException("compaction branch changed")
                                 adoptFallbackCandidate(next)
                                 _compactProgress.value = _compactProgress.value
                                     ?.copy(modelName = next.provider.model.displayName)
@@ -3249,7 +3252,7 @@ class ChatViewModel(
                     return@launch
                 }
 
-                val sid = realSessionId.ifEmpty { sessionId }
+                val sid = compactSessionId
                 // v2 marker: lastCompactedMessageId IS the anchor — single
                 // source of truth. The anchor we resolved above is guaranteed
                 // to have a persisted dbMessageId. Legacy fields (firstKept /
@@ -3326,21 +3329,15 @@ class ChatViewModel(
                 // pressing Compact again reported the range as already
                 // compacted. Recording the previous marker lets the catch
                 // below restore the exact prior state.
-                val markerPersisted = runCatching {
+                withContext(NonCancellable + Dispatchers.IO) {
                     chatRepository.dao.insertCompactMarker(marker)
-                }.onFailure {
-                    Log.w(TAG, "Failed to persist compact marker: ${it.message}")
-                }.isSuccess
-                if (markerPersisted) {
                     rollbackMarkerId = marker.id
                     previousMarker = priorMarkerBeforeCompact
                 }
-                _compactSummary.value = summary
-                // Keep the marker in memory so effectiveAgentHistory() can
-                // resolve the boundary on the very next outgoing turn.
-                // Mirrors iOS `cachedLatestMarker = marker`.
-                _cachedLatestMarker = marker
                 withContext(Dispatchers.Main) {
+                    if (activeSessionId != compactSessionId) throw CancellationException("compaction branch changed")
+                    _compactSummary.value = summary
+                    _cachedLatestMarker = marker
                     // Gray out everything in the compacted range; the kept
                     // tail (last N user turns + tool/assistant follow-ups)
                     // stays full opacity. Determined by walking _messages
@@ -3442,7 +3439,7 @@ class ChatViewModel(
             } catch (e: TimeoutCancellationException) {
                 // [T-android-compact-failed-marker-rollback] A timeout is a
                 // failure like any other — the marker must not survive it.
-                rollbackFailedCompactMarker(rollbackMarkerId, previousMarker)
+                rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 // [T-android-compact-runaway] MUST precede the CancellationException
                 // arm — TimeoutCancellationException extends it, so the generic
                 // re-throw would otherwise swallow our own timeout and surface it
@@ -3482,10 +3479,11 @@ class ChatViewModel(
                     )
                 }
             } catch (e: CancellationException) {
+                if (!compactSucceeded) rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 // User-initiated (cancelCompact) or scope teardown. Tell the
                 // user only if they are still around to read it; the `finally`
                 // below releases the lock either way.
-                if (compactJob?.isCancelled == true) {
+                if (activeSessionId == compactSessionId && compactJob?.isCancelled == true) {
                     runCatching {
                         withContext(NonCancellable + Dispatchers.Main) {
                             appendSystemInfo("Compaction cancelled.", "compact")
@@ -3495,7 +3493,7 @@ class ChatViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Compact failed", e)
-                rollbackFailedCompactMarker(rollbackMarkerId, previousMarker)
+                rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
@@ -3560,20 +3558,23 @@ class ChatViewModel(
      * never mask the original compaction error, so it only logs.
      */
     private suspend fun rollbackFailedCompactMarker(
+        ownerSessionId: String,
         markerId: String?,
         previousMarker: CompactMarkerEntity?,
     ) {
         if (markerId == null) return
-        val removed = runCatching { chatRepository.dao.deleteCompactMarker(markerId) }
-            .onFailure { Log.w(TAG, "[Compact] rollback: delete failed: ${it.message}") }
-            .getOrNull() ?: 0
-        _cachedLatestMarker = previousMarker
-        _compactSummary.value = previousMarker?.summary
-        AppLogger.info(
-            TAG,
-            "[Compact] rolled back failed marker ${markerId.take(8)} (rows=$removed) — " +
-                "restored previous=${previousMarker?.id?.take(8) ?: "none"}",
-        )
+        withContext(NonCancellable + Dispatchers.IO) {
+            val removed = runCatching { chatRepository.dao.deleteCompactMarker(markerId) }
+                .onFailure { Log.w(TAG, "[Compact] rollback: delete failed: ${it.message}") }
+                .getOrNull() ?: 0
+            withContext(Dispatchers.Main) {
+                if (activeSessionId == ownerSessionId) {
+                    _cachedLatestMarker = previousMarker
+                    _compactSummary.value = previousMarker?.summary
+                }
+            }
+            AppLogger.info(TAG, "[Compact] rolled back failed marker ${markerId.take(8)} (rows=$removed)")
+        }
     }
 
     /**
@@ -4195,13 +4196,15 @@ class ChatViewModel(
      * the same, or the summary a session carries differs by device.
      */
     private suspend fun generateCompactSummaryWithSplitting(
+        ownerSessionId: String,
         messages: List<LLMMessage>,
         previousSummary: String? = null,
         depth: Int = 0,
     ): String {
         val (provider, journal, attribution) = withContext(Dispatchers.Main) {
+            if (activeSessionId != ownerSessionId) throw CancellationException("compaction branch changed")
             val selected = currentProvider ?: throw IllegalStateException("No LLM provider available for compaction")
-            Triple(selected, com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId),
+            Triple(selected, com.openminis.app.agent.AgentJournalWriter(chatRepository, ownerSessionId),
                 modelSnapshotFor(selected.model, _activeEntryId.value))
         }
         val history = if (compactionSummarizer.canReuse(provider))
@@ -4353,151 +4356,6 @@ class ChatViewModel(
     }
 
     /**
-     * [T-android-auto-compact-inloop] What the in-loop context guard decided.
-     */
-    private enum class InLoopContextAction {
-        /** Under threshold — issue the next API call as normal. */
-        PROCEED,
-
-        /** History was compacted in place; re-run the iteration. */
-        COMPACTED,
-
-        /** Cannot recover — stop the turn safely and let the user resume. */
-        STOP,
-    }
-
-    /**
-     * [T-android-auto-compact-inloop] Max in-loop compactions per runAgentLoop.
-     * Bounds compact-thrash within a single turn; the MAX_AGENT_TURNS ceiling is
-     * never reset by compaction, so this is a second, tighter backstop.
-     */
-    private val maxInLoopCompactions = 3
-
-    /**
-     * [T-android-auto-compact-inloop] Re-evaluate [ContextPolicy] between agent
-     * iterations and act on it (iOS f70ac173).
-     *
-     * Why this exists: [checkContextBeforeSend] only runs at the SEND entry
-     * point. A single turn that fans out into many tool iterations can cross the
-     * compact/exhausted thresholds mid-loop, and offload alone cannot recover
-     * when the bulk is the model's own text — the turn then slams into the
-     * provider's context ceiling.
-     *
-     * Blocks until the compaction attempt settles, because the next API call
-     * must read the freshly-compacted history.
-     */
-    private suspend fun inLoopContextCheck(compactionsSoFar: Int): InLoopContextAction {
-        // [T-ctx-measure-outbound] Judge the request this iteration will send.
-        // The provider's count for the previous one is stale the moment a
-        // compaction or offload changes the history, and the one-shot "stale"
-        // flag that used to cover that only existed on this path.
-        val m = contextMeasurement()
-        val tokens = m.measured
-        if (tokens <= 0) return InLoopContextAction.PROCEED
-        // [T-ctx-user-cap] Same resolution as the pre-send check.
-        val (policy, window) = currentContextPolicy() ?: return InLoopContextAction.PROCEED
-        val verdict = policy.check(tokens, window)
-        logContextDecision("in-loop", m, policy.compactThreshold, window, verdict.name)
-        return when (verdict) {
-            ContextPolicy.CheckResult.OK -> InLoopContextAction.PROCEED
-
-            ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                val canCompact = compactionsSoFar < maxInLoopCompactions && !lastInLoopCompactionMadeNoProgress
-                if (!canCompact) return settleWithoutCompacting(m, window, compactionsSoFar)
-                // NOTE: deliberately NOT gated on AutoCompactPrefs. That flag
-                // governs the SEND-time decision (compact silently vs. ask
-                // first) — mid-loop there is nobody to ask, and the alternative
-                // to compacting is aborting the user's turn outright. iOS makes
-                // the same call: its in-loop branch
-                // (AIChatViewModel.swift:4739) never consults
-                // autoCompactEnabled either.
-                AppLogger.info(
-                    TAG,
-                    "[AutoCompact] mid-loop compact #${compactionsSoFar + 1}: $tokens / $window tokens " +
-                        "(autoCompactPref=${com.openminis.app.data.AutoCompactPrefs.isEnabled()}, not a gate here)",
-                )
-                appendSystemInfo(
-                    text = "Context is filling up ($tokens / $window tokens) — compacting to continue.",
-                    iconKind = "compact",
-                )
-                val ok = awaitCompaction()
-                // [T-ctx-measure-outbound] A failed compaction counts as no
-                // progress (parity with iOS) and settles like one: still
-                // sendable if it fits, or once on the raw estimate.
-                if (!ok) {
-                    contextPlanner.markCompactionNoProgress()
-                    return settleWithoutCompacting(m, window, compactionsSoFar)
-                }
-                // [T-ctx-measure-outbound] The next iteration re-measures the
-                // compacted history, so there is no stale number to guard
-                // against (this used to need `lastTurnContextTokensStale`: two
-                // compactions 3s apart logging an identical 66358). What is
-                // recorded is whether this pass actually shrank the request —
-                // one that did not is not retried.
-                val after = measureOutboundContextTokens()
-                contextPlanner.noteCompaction(tokens, after)
-                AppLogger.info(
-                    TAG,
-                    "[AutoCompact] mid-loop compact result: measured $tokens → $after" +
-                        if (lastInLoopCompactionMadeNoProgress) " (no progress — will not retry)" else "",
-                )
-                InLoopContextAction.COMPACTED
-            }
-
-            // EXHAUSTED is only ever returned by `exhaustedOnly` tiers — windows
-            // under 64K, where ContextPolicy sets compactThreshold = 0 precisely
-            // BECAUSE the window is too small for auto-compact to pay for itself
-            // (the summary plus re-appended recent turns would eat the headroom
-            // it just freed). Attempting a "rescue" compaction here would
-            // contradict the policy, so stop and let the user decide.
-            ContextPolicy.CheckResult.EXHAUSTED -> {
-                AppLogger.warning(
-                    TAG,
-                    "[AutoCompact] exhausted on a no-auto-compact tier ($tokens / $window) — stopping",
-                )
-                InLoopContextAction.STOP
-            }
-        }
-    }
-
-    /**
-     * Compaction can do no more for this request (budget spent, no progress, or
-     * it failed). Above the compact THRESHOLD is still sendable — that line
-     * sits below the window by design — and an over-the-window verdict that
-     * rests only on the ratio gets one real request. See
-     * [ContextPolicy.inLoopStep], which holds the table and its tests.
-     */
-    private fun settleWithoutCompacting(m: com.openminis.app.agent.AgentContextPlanner.Measurement, window: Int, compactionsSoFar: Int): InLoopContextAction {
-        val step = contextPlanner.settle(m, window)
-        return when (step) {
-            ContextPolicy.InLoopStep.SEND_WITHIN_WINDOW -> {
-                AppLogger.info(
-                    TAG,
-                    "[AutoCompact] above threshold after $compactionsSoFar compaction(s) " +
-                        "(noProgress=$lastInLoopCompactionMadeNoProgress) but within the window " +
-                        "(${m.measured} / $window) — sending",
-                )
-                InLoopContextAction.PROCEED
-            }
-            ContextPolicy.InLoopStep.SEND_UNCALIBRATED_ONCE -> {
-                AppLogger.warning(
-                    TAG,
-                    "[AutoCompact] calibrated size over the window but the raw estimate fits " +
-                        "(${m.history + m.fixed} / $window, ratio=${"%.2f".format(m.ratio)}) — sending once for the provider to decide",
-                )
-                InLoopContextAction.PROCEED
-            }
-            else -> {
-                AppLogger.warning(
-                    TAG,
-                    "[AutoCompact] still over the window after $compactionsSoFar compaction(s) — stopping",
-                )
-                InLoopContextAction.STOP
-            }
-        }
-    }
-
-    /**
      * [T-android-auto-compact-inloop] Run [compactAll] with the in-loop flag and
      * suspend until it settles. Returns whether it actually compacted.
      *
@@ -4506,16 +4364,8 @@ class ChatViewModel(
      * pre-compaction history and the guard would fire again immediately.
      */
     private suspend fun awaitCompaction(): Boolean =
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            var resumed = false
-            compactAll(allowDuringProcessing = true) { ok ->
-                // compactAll guarantees exactly one callback, but guard anyway:
-                // resuming a continuation twice throws.
-                if (!resumed) {
-                    resumed = true
-                    if (cont.isActive) cont.resume(ok) { _, _, _ -> }
-                }
-            }
+        com.openminis.app.agent.AgentCompactionAwait.run { finished ->
+            compactAll(allowDuringProcessing = true, onFinished = finished)
         }
 
     /**
@@ -8614,8 +8464,7 @@ class ChatViewModel(
         // compacted during THIS runAgentLoop. Bounds compact-thrash: once the
         // cap is hit, a still-over-threshold history stops the turn rather than
         // compacting forever. Mirrors iOS maxInLoopCompactions.
-        var inLoopCompactions = 0
-        contextPlanner.beginLoop()
+        val contextGate = com.openminis.app.agent.AgentContextGate(contextPlanner, conversationJournal::checkBranch)
         // [T-ctx-valve-spend-survives-retry] Do NOT re-arm the uncalibrated
         // send-once here. The planner spends it when the provider rejects
         // a request as too long; when the self-heal finds nothing to offload the
@@ -8775,9 +8624,13 @@ class ChatViewModel(
             // slam into the provider's context ceiling.
             //
             // Runs AFTER offload so it judges the post-offload size.
-            when (inLoopContextCheck(inLoopCompactions)) {
-                InLoopContextAction.PROCEED -> {}
-                InLoopContextAction.COMPACTED -> {
+            when (contextGate.check(contextMeasurement(), currentContextPolicy(),
+                compact = ::awaitCompaction, measuredAfter = { measureOutboundContextTokens() },
+                compacting = { tokens, window ->
+                    appendSystemInfo("Context is filling up ($tokens / $window tokens) — compacting to continue.", "compact")
+                })) {
+                com.openminis.app.agent.AgentContextGate.Action.PROCEED -> {}
+                com.openminis.app.agent.AgentContextGate.Action.COMPACTED -> {
                     // The next API call reads the freshly-compacted
                     // effectiveAgentHistory automatically — compaction already
                     // re-appends the recent turns, so no resume handoff is
@@ -8788,7 +8641,6 @@ class ChatViewModel(
                     // maxInLoopCompactions bounds compact-thrash within a turn,
                     // so a loop that keeps compacting cannot defeat the runaway
                     // backstop.
-                    inLoopCompactions++
 
                     // [T-android-inloop-compact-divider-order / GH#235] Seal the
                     // bubble this run has been writing into and continue in a
@@ -8868,7 +8720,7 @@ class ChatViewModel(
                     )
                     return@agentTurn AgentLoopEngine.Action.Next
                 }
-                InLoopContextAction.STOP -> {
+                com.openminis.app.agent.AgentContextGate.Action.STOP -> {
                     // The loop cannot present a modal mid-flight, so stop
                     // safely: user-visible notice + resumable, without the
                     // turn-limit error overwrite.
