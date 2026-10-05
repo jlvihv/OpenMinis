@@ -13,10 +13,12 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
     private val history: MutableList<LLMMessage>, private val currentSession: () -> String,
     private val decode: (MessageEntity) -> LLMMessage?, private val subagents: AgentSubagentJournal) {
     sealed interface Target {
-        data class User(val rowIds: Set<String>) : Target
+        data class User(val rowIds: Set<String>, val keepAnchor: Boolean = true) : Target
         data class Tool(val id: String) : Target
     }
-    suspend fun prepare(target: Target, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit) {
+    suspend fun prepare(target: Target, replacement: AgentQueuedUserInput? = null,
+        accepted: (MessageEntity) -> Unit = {}, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit) {
+        require(replacement == null || target is Target.User && !target.keepAnchor) { "Replacement requires a user edit target" }
         currentCoroutineContext().ensureActive()
         checkBranch()
         val rows = repository.loadMessages(session)
@@ -33,7 +35,7 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
         require(matches.size == 1) { "The selected rewind anchor is missing or ambiguous; no history was changed" }
         val (index, partIndex) = matches.single()
         val anchor = rows[index]
-        val keep = rows.take(index + if (target is Target.User) 1 else 0).mapTo(mutableSetOf()) { it.id }
+        val keep = rows.take(index + if (target is Target.User && target.keepAnchor) 1 else 0).mapTo(mutableSetOf()) { it.id }
         val changedParts = mutableMapOf<String, String>()
         if (target is Target.Tool && partIndex > 0) {
             val source = JSONArray(anchor.partsJson)
@@ -69,10 +71,14 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
         withContext(NonCancellable + Dispatchers.IO) {
             subagents.rewind { retire ->
                 checkBranch()
-                repository.dao.applyRuntimeRewind(session, rows, keep, changedParts, receipts,
-                    RequestUsageRecord.parts(RequestUsageRecord.Purpose.CONVERSATION), invalidMarkers)
+                val prepared = replacement?.let { repository.rewindReplacement(session, it.partsJson) }
+                val inserted = repository.dao.applyRuntimeRewind(session, rows, keep, changedParts, receipts,
+                    RequestUsageRecord.parts(RequestUsageRecord.Purpose.CONVERSATION), invalidMarkers,
+                    prepared?.first, prepared?.second)
                 val remaining = repository.loadMessages(session)
-                val rebuilt = remaining.mapNotNull(decode)
+                val rebuilt = remaining.mapNotNull { row ->
+                    if (inserted != null && row.id == inserted.id) replacement!!.message(row.id) else decode(row)
+                }
                 val marker = repository.dao.latestCompactMarker(session)
                 withContext(NonCancellable + Dispatchers.Main) {
                     checkBranch()
@@ -96,6 +102,7 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
                     history.clear()
                     history.addAll(rebuilt)
                     published(remaining, marker)
+                    if (inserted != null) accepted(inserted)
                 }
             }
         }

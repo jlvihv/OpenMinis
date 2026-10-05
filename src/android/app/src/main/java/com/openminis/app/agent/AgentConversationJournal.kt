@@ -51,6 +51,22 @@ internal class AgentConversationJournal(
         }
     }
 
+    suspend fun commitContextSnapshot(facts: RuntimeContextSnapshot.Facts, effectiveHistory: List<LLMMessage>) {
+        coroutineContext.ensureActive()
+        checkBranch()
+        val text = facts.render()
+        if (!RuntimeContextSnapshot.changed(effectiveHistory, text)) return
+        withContext(NonCancellable + Dispatchers.IO) {
+            checkBranch()
+            val row = writer.user(RuntimeContextSnapshot.encode(text))
+            withContext(NonCancellable + Dispatchers.Main) {
+                checkBranch()
+                history.add(RuntimeContextSnapshot.message(text, row.id))
+            }
+        }
+        coroutineContext.ensureActive()
+    }
+
     /** Resume instructions must be durable on the captured branch before the next request. */
     suspend fun prepareResume() {
         checkBranch()

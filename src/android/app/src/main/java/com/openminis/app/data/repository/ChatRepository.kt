@@ -557,6 +557,12 @@ class ChatRepository(internal val dao: ChatDao) {
      * snapshot exists to fix, only scoped to one row instead of the whole
      * session.
      */
+    internal fun rewindReplacement(sessionId: String, partsJson: String): Pair<MessageEntity, String?> {
+        val capped = if (partsJson.length > MAX_MESSAGE_PARTS_JSON_LENGTH) buildTruncatedPartsJson(partsJson) else partsJson
+        return MessageEntity(id = UUID.randomUUID().toString(), sessionId = sessionId, role = "user",
+            partsJson = capped, createdAt = System.currentTimeMillis(), sortOrder = 0) to extractTextPreview(capped)
+    }
+
     suspend fun appendMessage(
         sessionId: String,
         role: String,

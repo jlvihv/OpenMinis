@@ -45,7 +45,8 @@ internal class AgentConversationRuntime<T>(
     )
     data class Context(
         val sanitize: () -> Unit,
-        val snapshot: suspend () -> Unit,
+        val snapshotFacts: suspend () -> RuntimeContextSnapshot.Facts,
+        val effectiveHistory: () -> List<LLMMessage>,
         val tools: () -> List<AgentToolDefinition>,
         val window: () -> Int?,
         val offload: suspend (Int, Int) -> Unit,
@@ -142,7 +143,9 @@ internal class AgentConversationRuntime<T>(
                 }
             }
             conversation.checkBranch()
-            context.snapshot()
+            val snapshotFacts = context.snapshotFacts()
+            conversation.checkBranch()
+            conversation.commitContextSnapshot(snapshotFacts, context.effectiveHistory())
             conversation.checkBranch()
             planner.updateFixedTokens(systemPrompt, if (toolsWithdrawn) emptyList() else context.tools())
             context.window()?.takeIf { it > 0 }?.let { context.offload(it, context.measured()) }

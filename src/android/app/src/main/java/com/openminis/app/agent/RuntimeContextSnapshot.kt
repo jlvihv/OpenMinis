@@ -8,6 +8,9 @@ import org.json.JSONObject
 /** Durable, append-only runtime facts; user messages cannot masquerade as owned snapshots. */
 internal object RuntimeContextSnapshot {
     const val TYPE = "runtime-context"
+    data class Facts(val date: String, val timezone: String, val language: String, val modelCount: Int) {
+        fun render(): String = RuntimeContextSnapshot.render(date, timezone, language, modelCount)
+    }
     fun render(date: String, timezone: String, language: String, modelCount: Int): String =
         "<system-reminder>\nCurrent runtime context (supersedes earlier runtime-context snapshots):\n" +
             "- Current date: $date ($timezone)\n- Device language: $language\n" +

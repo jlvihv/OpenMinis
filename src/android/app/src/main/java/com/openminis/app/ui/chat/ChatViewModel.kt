@@ -5423,61 +5423,23 @@ class ChatViewModel(
         _editingMessageId.value = null
     }
 
-    /**
-     * T187: drop the message at [messageId] *and* every later message
-     * (in UI, in agentHistory, and on disk) so the new sendMessage()
-     * call below this can persist the edited text as a fresh user
-     * turn at the same position. Reuses the cutoff-search machinery
-     * from retryFromMessage but offsets by `entity.sortOrder` (not
-     * +1) — retry preserves the original turn, edit replaces it.
-     */
-    private suspend fun truncateBeforeEdit(messageId: String) {
-        val messages = _messages.value
-        val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
-
-        // [T-android-bubble-anchor-drain] Remove from the FIRST bubble of a
-        // merged queue batch: the edit removes the batch's shared row, so its
-        // sibling bubbles must go with it.
-        val cutFrom = BubbleRowLocator.groupSpan(messages, index).first
-        val deletedMessages = messages.subList(cutFrom, messages.size).toList()
-        // [T-android-uimessages-sublist-cme] Defensive: without `.toList()` this
-        // stores a live subList VIEW as `_messages.value`.
-        //
-        // Reproduced on device with this `.toList()` reverted (Pixel 4a): the
-        // truncation ran (8 messages → 4) and a further message was sent, and it
-        // did NOT crash — the next `+` copies the view into a plain ArrayList
-        // before anything can invalidate it. So this line is hardening, not the
-        // proven cause of the reported CME. See the long note on `uiMessages`.
-        // (`deletedMessages` above already copies; this line did not.)
-        val kept = messages.subList(0, cutFrom).toList()
-        _messages.value = kept
-        retainStreamFlushStates(kept.mapTo(mutableSetOf()) { it.id })
-        val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
-        // [T-android-bubble-anchor] Edit = delete from here + an ordinary
-        // send, so the edited row itself goes: cut AT it. Found by id, not by
-        // counting visible user rows. Counting could run off the end (an
-        // image-only turn earlier in the chat is a bubble with no text part),
-        // leave the pre-edit row in place, and send the edited text after it,
-        // so the model still read the old message. See BubbleRowLocator.
-        val located = BubbleRowLocator.locateUserRow(messages, index, chatRepository.loadMessages(sid))
-        logBubbleAnchor("edit", messageId, located)
-        val cutoffSortOrder = BubbleRowLocator.cutoffFor(located, keepBubble = false)
-        if (cutoffSortOrder >= 0) {
-            chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+    private suspend fun commitEditedUser(messageId: String, owner: String,
+        input: com.openminis.app.agent.AgentQueuedUserInput, accepted: (MessageEntity) -> Unit) {
+        val snapshot = _messages.value
+        val index = snapshot.indexOfFirst { it.id == messageId && it.role == "user" }
+        require(index >= 0) { "The edited message is no longer on this branch" }
+        val message = snapshot[index]
+        val cutFrom = BubbleRowLocator.groupSpan(snapshot, index).first
+        val target = com.openminis.app.agent.AgentRewindJournal.Target.User(
+            (message.sourceDbIds + message.id).toSet(), keepAnchor = false)
+        com.openminis.app.agent.AgentRewindJournal(chatRepository, owner, agentHistory,
+            { activeSessionId }, { it.toLLMMessage() }, subagentJournal).prepare(target, input, accepted) { _, marker ->
+            _messages.value = snapshot.take(cutFrom).map { if (marker == null) it.copy(isCompactedHistory = false) else it }
+            _cachedLatestMarker = marker
+            _compactSummary.value = marker?.summary
+            retainStreamFlushStates(_messages.value.mapTo(mutableSetOf()) { it.id })
+            toolLoopDetector.reset()
         }
-        agentHistory.clear()
-        toolLoopDetector.reset()
-        val remaining = chatRepository.loadMessages(sid)
-        for (entity in remaining) {
-            // [T-android-error-persist-current-turn] Carriers never reach the model.
-            if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
-            entity.toLLMMessage()?.let(agentHistory::add)
-        }
-        AppLogger.info(
-            TAG_STREAM,
-            "✏️ truncateBeforeEdit cutoffSortOrder=$cutoffSortOrder remaining=${remaining.size}"
-        )
     }
 
     /**
@@ -6146,10 +6108,6 @@ class ChatViewModel(
         }, prepare = {
             val activeSessionId = sendTarget
             checkSendBranch(activeSessionId)
-            if (editingId != null) {
-                truncateBeforeEdit(editingId)
-            }
-
             val prepared = prepareUserAttachments(currentAttachments, activeSessionId)
 
             // [T-android-paste-mediaref] Fold `[Pasted#N]` markers out to disk
@@ -6197,8 +6155,8 @@ class ChatViewModel(
             val journal = com.openminis.app.agent.AgentConversationJournal(
                 com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId), agentHistory,
                 currentSession = { this@ChatViewModel.activeSessionId })
-            journal.commitQueued(com.openminis.app.agent.AgentQueuedUserInput(userPartsJson, modelBody,
-                userContentParts, imageParts)) { persistedUser ->
+            val input = com.openminis.app.agent.AgentQueuedUserInput(userPartsJson, modelBody, userContentParts, imageParts)
+            val accepted: (MessageEntity) -> Unit = { persistedUser ->
                 if (pasted != null) {
                     // Safe to clear now: the content is on disk and the parts JSON
                     // below references it, so nothing depends on the buffer any more.
@@ -6228,6 +6186,8 @@ class ChatViewModel(
                 )
                 _messages.value = _messages.value + userMsg
             }
+            if (editingId != null) commitEditedUser(editingId, activeSessionId, input, accepted)
+            else journal.commitQueued(input, accepted = accepted)
 
             checkSendBranch(activeSessionId)
             provider = providerPreparation.prepare(provider, sendEntry, activeSessionId) { expected, refreshed ->
@@ -7111,7 +7071,8 @@ class ChatViewModel(
                     }
                 } }),
             context = AgentConversationRuntime.Context(
-                sanitize = ::sanitizeAgentHistory, snapshot = ::appendRuntimeContextSnapshot,
+                sanitize = ::sanitizeAgentHistory, snapshotFacts = ::runtimeContextFacts,
+                effectiveHistory = ::effectiveAgentHistory,
                 tools = { agentTools }, window = ::effectiveContextWindowTokens,
                 offload = { window, tokens -> offloadContextIfNeeded(window, tokens) },
                 measurement = ::contextMeasurement, measured = ::measureOutboundContextTokens,
@@ -7877,21 +7838,14 @@ class ChatViewModel(
         }
     }
 
-    private suspend fun appendRuntimeContextSnapshot() {
-        val text = com.openminis.app.agent.RuntimeContextSnapshot.render(
+    private suspend fun runtimeContextFacts(): com.openminis.app.agent.RuntimeContextSnapshot.Facts =
+        com.openminis.app.agent.RuntimeContextSnapshot.Facts(
             java.time.LocalDate.now().toString(), java.util.TimeZone.getDefault().id,
             context.resources.configuration.locales[0].toLanguageTag(),
-            try { providerRepository.resolvedAgentLoopEntries().size } catch (_: Exception) { 0 },
+            try { providerRepository.resolvedAgentLoopEntries().size }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { 0 },
         )
-        if (!com.openminis.app.agent.RuntimeContextSnapshot.changed(effectiveAgentHistory(), text)) return
-        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        // Keep the small journal commit and memory publication together on cancellation.
-        withContext(NonCancellable + Dispatchers.IO) {
-            val row = chatRepository.appendMessage(activeSessionId, "user", com.openminis.app.agent.RuntimeContextSnapshot.encode(text))
-            agentHistory.add(com.openminis.app.agent.RuntimeContextSnapshot.message(text, row.id))
-        }
-        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-    }
 
     // ─── Tool execution methods ───────────
 

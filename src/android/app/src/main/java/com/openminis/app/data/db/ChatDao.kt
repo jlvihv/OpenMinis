@@ -319,7 +319,8 @@ interface ChatDao {
 
     @Transaction
     suspend fun applyRuntimeRewind(sessionId: String, expected: List<MessageEntity>, keep: Set<String>,
-        changed: Map<String, String>, receipts: Map<String, String>, conversationReceipt: String, invalidMarkers: List<String>) {
+        changed: Map<String, String>, receipts: Map<String, String>, conversationReceipt: String, invalidMarkers: List<String>,
+        replacement: MessageEntity? = null, replacementPreview: String? = null): MessageEntity? {
         val current = loadMessages(sessionId)
         check(current == expected) { "History changed while the rewind was being prepared" }
         current.forEach { row ->
@@ -329,6 +330,13 @@ interface ChatDao {
             } ?: deleteRewindRow(sessionId, row.id)
         }
         invalidMarkers.forEach { deleteCompactMarker(it) }
+        return replacement?.let { row ->
+            check(row.sessionId == sessionId && row.role == "user")
+            val stored = insertJournalMessage(row)
+            if (replacementPreview != null) updateLastMessage(sessionId, replacementPreview, row.createdAt)
+            else touchSession(sessionId, row.createdAt)
+            stored
+        }
     }
 
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
