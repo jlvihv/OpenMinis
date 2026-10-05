@@ -28,7 +28,8 @@ internal class AgentTurnJournal(
 
     val stopRequested: Boolean get() = synchronized(state) { requested }
     data class StopView(val bubbleId: String, val pendingIds: Set<String>, val resumable: Boolean)
-    data class Commit(val sessionId: String, val messages: List<LLMMessage>)
+    data class Commit(val sessionId: String, val bubbleId: String,
+        val messages: List<LLMMessage>, val assistantRow: MessageEntity?)
 
     fun requestStop(): StopView = synchronized(state) {
         requested = true
@@ -101,7 +102,7 @@ internal class AgentTurnJournal(
                 synchronized(state) { resultsCommitted = true }
                 additions.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = results, dbMessageId = row?.id))
             }
-            Commit(sessionId, additions)
+            Commit(sessionId, bubbleId, additions, synchronized(state) { assistantRow })
         }
     }
 }

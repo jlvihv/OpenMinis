@@ -529,8 +529,6 @@ class ChatViewModel(
             return null
         }
         // [T-android-stream-flush-dualpath] Newline fast-path thresholds (iOS parity).
-        private const val NEWLINE_FLUSH_MIN_CHARS = 50
-        private const val NEWLINE_FLUSH_MAX_LEN = 5_000
         // [T-android-larky-longsession-followup] see uiMessages / hasOlderMessages.
         /** Tail window size used by [uiMessages] when a session exceeds it. */
         const val INITIAL_VISIBLE_MESSAGE_CAP: Int = 200
@@ -793,65 +791,16 @@ class ChatViewModel(
      * The map is keyed by the assistant message id; absent ⇒ no live
      * stream (turn either hasn't started or has already flushed).
      */
-    private val _streamingById = MutableStateFlow<Map<String, StreamingDelta>>(emptyMap())
-    val streamingById: StateFlow<Map<String, StreamingDelta>> = _streamingById.asStateFlow()
+    private val messagePublication = ChatMessagePublication(viewModelScope, _messages,
+        currentSession = { activeSessionId }, mergeOverrides = ::mergeDelegateOverrides)
+    private val _streamingById get() = messagePublication.streaming
+    val streamingById: StateFlow<Map<String, StreamingDelta>> get() = messagePublication.streaming
 
-    /**
-     * [T-android-stream-flush-dualpath] Per-message streaming-flush state for
-     * the dual-path throttle in [updateAssistantMessage]. Keyed by messageId so
-     * the throttle accumulator survives the high-frequency token calls (the
-     * earlier per-fragment produceState version reset every fragment rebuild and
-     * so never actually throttled — diagnostics showed every tick flushing).
-     * Mirrors iOS AIChatViewModel+SSEStream's lastTextDeltaFlush/…Length.
-     */
-    private class StreamFlushState {
-        var lastFlushMs: Long = 0L
-        var lastFlushedLen: Int = 0
-        var trailingJob: Job? = null
-        // [T-android-stream-flush-review] Freshest suppressed delta. Updated on
-        // EVERY throttled tick so the trailing job publishes the latest content
-        // (not the stale value captured when the job was first scheduled) — a
-        // burst of sub-throttle deltas followed by a pause would otherwise leave
-        // the side channel several deltas behind.
-        var pendingContent: String? = null
-        var pendingBlocks: List<AssistantBlock> = emptyList()
-        var pendingAwaiting: Boolean = false
-    }
-    private val streamFlushStates = HashMap<String, StreamFlushState>()
 
-    /**
-     * [T-android-stream-flush-review] Cancel a message's pending trailing flush
-     * and drop its throttle accumulator. Call from EVERY stream-termination
-     * path (natural end, cancel, turn-limit, retry-truncate, clearChat) so a
-     * trailing coroutine — which runs on viewModelScope, NOT streamJob, and is
-     * therefore NOT cancelled by streamJob.cancel() — can't fire after the
-     * side channel was drained and re-revive a stale "thinking" overlay row.
-     */
-    private fun clearStreamFlushState(id: String) {
-        streamFlushStates.remove(id)?.trailingJob?.cancel()
-    }
-    private fun clearAllStreamFlushStates() {
-        streamFlushStates.values.forEach { it.trailingJob?.cancel() }
-        streamFlushStates.clear()
-    }
-    /** Cancel + drop flush states for any message id NOT in [keptIds] (retry/truncate). */
-    private fun retainStreamFlushStates(keptIds: Set<String>) {
-        val drop = streamFlushStates.keys.filter { it !in keptIds }
-        for (id in drop) streamFlushStates.remove(id)?.trailingJob?.cancel()
-    }
-
-    // Dual-path flush thresholds — ported from iOS. Time tiers scale with total
-    // length; the newline fast-path flushes immediately on a line break once
-    // enough new chars have accumulated, gated to short docs so dense
-    // box-drawing streams don't pin the flush rate to the per-token cadence.
-    private fun streamFlushThrottleMs(len: Int): Long = when {
-        len < 500 -> 200L
-        len < 2_000 -> 300L
-        len < 32_000 -> 500L
-        len < 64_000 -> 1_000L
-        len < 128_000 -> 1_500L
-        else -> 2_000L
-    }
+    // Publication owns delayed jobs and live slots together; these adapters only route lifecycle events.
+    private fun clearStreamFlushState(id: String) = messagePublication.discard(id)
+    private fun clearAllStreamFlushStates() = messagePublication.clear()
+    private fun retainStreamFlushStates(keptIds: Set<String>) = messagePublication.retain(keptIds)
 
     /**
      * Composer draft. Owned by VM so it survives navigation (e.g. push EnvVars
@@ -1712,6 +1661,9 @@ class ChatViewModel(
                     val committed = cancellationCoordinator.finish()
                     if (committed != null) withContext(NonCancellable + Dispatchers.Main) {
                         if (activeSessionId == committed.sessionId) {
+                            committed.assistantRow?.let {
+                                messagePublication.stamp(committed.sessionId, committed.bubbleId, it)
+                            }
                             committed.messages.forEach { message ->
                                 if (agentHistory.none { it.dbMessageId != null && it.dbMessageId == message.dbMessageId }) {
                                     val pending = if (message.role == LLMMessage.Role.ASSISTANT)
@@ -6091,7 +6043,6 @@ class ChatViewModel(
         // [T-android-stream-flush-review] also cancel pending trailing flushes
         // so none re-adds an orphan side-channel entry after the wipe.
         clearAllStreamFlushStates()
-        _streamingById.value = emptyMap()
         // Memory state — match iOS clearChat() field list one-for-one.
         _messages.value = emptyList()
         agentHistory.clear()
@@ -6420,9 +6371,6 @@ class ChatViewModel(
                 }
                 val keptIds = _messages.value.mapTo(mutableSetOf()) { it.id }
                 retainStreamFlushStates(keptIds)
-                if (_streamingById.value.isNotEmpty()) {
-                    _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-                }
 
                 // Rebuild agentHistory from the trimmed DB state.
                 agentHistory.clear()
@@ -6495,9 +6443,6 @@ class ChatViewModel(
         // messages we just truncated so they can't resurface later.
         val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
         retainStreamFlushStates(keptIds)
-        if (_streamingById.value.isNotEmpty()) {
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-        }
 
         // T145: claim the streaming flag SYNCHRONOUSLY so a rapid second tap
         // (or any concurrent send/retry attempt) is rejected by the entry
@@ -6599,9 +6544,6 @@ class ChatViewModel(
         // resurface into a row that no longer exists.
         val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
         retainStreamFlushStates(keptIds)
-        if (_streamingById.value.isNotEmpty()) {
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-        }
 
         val sid = activeSessionId ?: return
         viewModelScope.launch {
@@ -6906,11 +6848,7 @@ class ChatViewModel(
         // (`deletedMessages` above already copies; this line did not.)
         val kept = messages.subList(0, cutFrom).toList()
         _messages.value = kept
-        if (_streamingById.value.isNotEmpty()) {
-            val keptIds = kept.mapTo(mutableSetOf()) { it.id }
-            retainStreamFlushStates(keptIds)
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-        }
+        retainStreamFlushStates(kept.mapTo(mutableSetOf()) { it.id })
         val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
         // [T-android-bubble-anchor] Edit = delete from here + an ordinary
         // send, so the edited row itself goes: cut AT it. Found by id, not by
@@ -9106,9 +9044,6 @@ class ChatViewModel(
                         )
                     }
                     clearStreamFlushState(sealedId)
-                    if (_streamingById.value.containsKey(sealedId)) {
-                        _streamingById.value = _streamingById.value - sealedId
-                    }
                     // Same loop-scope reset the queued-prompt swap performs, so
                     // the new bubble starts empty and buildTurnParts slices only
                     // the new turn's blocks.
@@ -9158,9 +9093,6 @@ class ChatViewModel(
                         // mergeStreamingOverlay would then force isStreaming=true
                         // again with no further writer left to clear it.
                         clearStreamFlushState(assistantId)
-                        if (_streamingById.value.containsKey(assistantId)) {
-                            _streamingById.value = _streamingById.value - assistantId
-                        }
                     }
                     // No persistAssistantTurn here: this guard runs BEFORE the
                     // turn body, so nothing new has been produced yet and the
@@ -10544,9 +10476,6 @@ class ChatViewModel(
         // [T-android-stream-flush-review] Cancel the trailing flush too, so it
         // can't re-add this orphan entry after we drop it on the error path.
         clearStreamFlushState(assistantId)
-        if (_streamingById.value.containsKey(assistantId)) {
-            _streamingById.value = _streamingById.value - assistantId
-        }
         // [T-agent-wrapup-turn] Name the cap that applied: a helper stops at
         // helperConfig.maxTurns, not the chat's MAX_AGENT_TURNS.
         val cap = helperConfig?.maxTurns ?: MAX_AGENT_TURNS
@@ -11840,238 +11769,19 @@ class ChatViewModel(
         _messages.value = _messages.value.map { m ->
             if (m.role != "assistant") m else patch(m.toolBlocks)?.let { m.copy(toolBlocks = it) } ?: m
         }
-        val overlay = _streamingById.value
-        if (overlay.isNotEmpty()) {
-            var changed = false
-            val next = overlay.mapValues { (_, d) -> patch(d.toolBlocks)?.let { changed = true; d.copy(toolBlocks = it) } ?: d }
-            if (changed) _streamingById.value = next
-        }
+        messagePublication.patch(::patch)
     }
 
     internal fun clearDelegateOverride(toolId: String) { delegateBlockOverrides.remove(toolId) }
 
-    private fun updateAssistantMessage(
-        id: String,
-        content: String,
-        isStreaming: Boolean,
-        toolBlocksIn: List<AssistantBlock>,
-        isAwaitingModelResponse: Boolean = false,
-    ) {
-        val toolBlocks = mergeDelegateOverrides(toolBlocksIn)
-        // T-streaming-side-channel: during a live turn, write high-frequency
-        // fields into [_streamingById] instead of mutating the canonical
-        // message list. This keeps the `messages` StateFlow reference stable
-        // across the turn so ChatScreen's top-level reads
-        // (`messages.any/.associate/.isNotEmpty/.lastOrNull`) don't trigger
-        // a full recompose of the 8980-line composable on every token.
-        //
-        // On stream end (isStreaming=false), drain the accumulated delta
-        // back into the canonical message in a single `_messages` emit, then
-        // clear the side-channel entry so post-turn reads (history rebuild,
-        // persist, agent loop) see the canonical truth.
-        if (isStreaming) {
-            val toolBlocksImmutable = toolBlocks.toList()
+    private fun updateAssistantMessage(id: String, content: String, isStreaming: Boolean,
+        toolBlocksIn: List<AssistantBlock>, isAwaitingModelResponse: Boolean = false) =
+        messagePublication.update(id, content, isStreaming, toolBlocksIn, isAwaitingModelResponse)
 
-            // [T-android-stream-flush-dualpath] Dual-path flush at the
-            // message-accumulation layer (NOT per-fragment, which never
-            // throttled). Decide whether to publish this delta now:
-            //   • structural change (toolBlocks count / awaiting flag) →
-            //     publish immediately — these drive tool-bubble UI and must
-            //     never be coalesced away or the bubble state stalls.
-            //   • else time-path: enough ms since last publish for this length.
-            //   • else newline fast-path: a line break in the newly-streamed
-            //     chunk + ≥50 new chars, gated to short docs (iOS parity).
-            // When none fire, stash the latest as a trailing publish so the
-            // final chunk before a pause still lands; a fresh delta cancels
-            // and replaces it.
-            val st = streamFlushStates.getOrPut(id) {
-                StreamFlushState().also { it.lastFlushedLen = 0 }
-            }
-            val prev = _streamingById.value[id]
-            // [T-android-stream-flush-review] Structural change also covers an
-            // in-place tool-block STATUS flip (running → success), not just a
-            // count change — otherwise a spinner→checkmark could lag up to one
-            // throttle tier. Compare a cheap (kind,status) fingerprint.
-            val toolStatusChanged = prev != null &&
-                prev.toolBlocks.size == toolBlocksImmutable.size &&
-                toolBlocksImmutable.indices.any { i ->
-                    prev.toolBlocks[i].toolStatus != toolBlocksImmutable[i].toolStatus
-                }
-            val structuralChange = prev == null ||
-                prev.toolBlocks.size != toolBlocksImmutable.size ||
-                prev.isAwaitingModelResponse != isAwaitingModelResponse ||
-                toolStatusChanged
-            val now = System.currentTimeMillis()
-            val elapsed = now - st.lastFlushMs
-            val throttle = streamFlushThrottleMs(content.length)
-            val newChunk = if (content.length > st.lastFlushedLen) {
-                content.substring(st.lastFlushedLen.coerceAtMost(content.length))
-            } else ""
-            val unflushed = content.length - st.lastFlushedLen
-            val newlineFlush = content.length < NEWLINE_FLUSH_MAX_LEN &&
-                newChunk.contains('\n') &&
-                unflushed >= NEWLINE_FLUSH_MIN_CHARS
+    internal fun effectiveContent(id: String): String? =
+        _streamingById.value[id]?.content ?: _messages.value.firstOrNull { it.id == id }?.content
 
-            fun publish(text: String, blocks: List<AssistantBlock>, awaiting: Boolean) {
-                _streamingById.value = _streamingById.value + (
-                    id to StreamingDelta(
-                        content = text,
-                        toolBlocks = blocks,
-                        isAwaitingModelResponse = awaiting,
-                    )
-                )
-                st.lastFlushMs = System.currentTimeMillis()
-                st.lastFlushedLen = text.length
-            }
-
-            if (structuralChange || elapsed >= throttle || newlineFlush) {
-                st.trailingJob?.cancel()
-                st.trailingJob = null
-                st.pendingContent = null
-                publish(content, toolBlocksImmutable, isAwaitingModelResponse)
-            } else {
-                // Throttled: always record this delta as the freshest pending
-                // value, so whenever the trailing job fires it publishes the
-                // latest text — not whatever was captured when it was first
-                // scheduled (review #2). Schedule the job only once.
-                st.pendingContent = content
-                st.pendingBlocks = toolBlocksImmutable
-                st.pendingAwaiting = isAwaitingModelResponse
-                if (st.trailingJob == null) {
-                    val wait = (throttle - elapsed).coerceAtLeast(16L)
-                    st.trailingJob = viewModelScope.launch {
-                        kotlinx.coroutines.delay(wait)
-                        val pc = st.pendingContent
-                        if (pc != null) {
-                            publish(pc, st.pendingBlocks, st.pendingAwaiting)
-                            st.pendingContent = null
-                        }
-                        st.trailingJob = null
-                    }
-                }
-            }
-            // [T-android-timeout-while-running] If a transient banner
-            // (`message.error`) is still on the canonical assistant message
-            // when a fresh streaming event arrives, the banner is stale —
-            // the model is producing again, by construction the prior
-            // transient timeout / retry / fallback has been resolved.
-            // Clear it in the same mutation. setTransientInlineError /
-            // setInlineError are the only paths that write `error`; the
-            // terminal path (setInlineError) sets isStreaming=false on the
-            // same message in the same emit, so it cannot reach this
-            // branch and the clear is safe.
-            //
-            // Field report (0.10): user saw a red "timeout / retry" banner
-            // glued to the bottom of the conversation while the agent
-            // continued running (LM Studio tool loop on 30/30, "Minis is
-            // thinking" indicator). Caused by (a) the fallback-switch branch in
-            // runAgentLoop not calling clearInlineError(), and (b) the
-            // streaming-side-channel writing every subsequent delta into
-            // _streamingById without ever touching _messages where
-            // `error` lives. (a) is fixed at the fallback site; (b) is
-            // fixed here defensively so any future write-path that forgets
-            // to clear can't strand a stale banner across the rest of
-            // the turn.
-            val canonical = _messages.value
-            val canonicalIdx = canonical.indexOfLast { it.id == id }
-            if (canonicalIdx >= 0 && canonical[canonicalIdx].error != null) {
-                val updated = canonical.toMutableList()
-                updated[canonicalIdx] = canonical[canonicalIdx].copy(error = null)
-                _messages.value = updated
-            }
-            return
-        }
-        // [T-android-stream-flush-dualpath] Stream end → cancel any pending
-        // trailing flush and drop the throttle accumulator for this message;
-        // the canonical drain below publishes the final, complete text.
-        clearStreamFlushState(id)
-        // Stream end → sync delta into canonical message + clear side-channel.
-        val current = _messages.value
-        val idx = current.indexOfLast { it.id == id }
-        if (idx < 0) {
-            // The message itself is gone (e.g. clearChat raced ahead) —
-            // just clear any leftover stream delta and bail.
-            if (_streamingById.value.containsKey(id)) {
-                _streamingById.value = _streamingById.value - id
-            }
-            return
-        }
-        val updated = current.toMutableList()
-        updated[idx] = current[idx].copy(
-            content = content,
-            isStreaming = false,
-            toolBlocks = toolBlocks.toList(),
-            isAwaitingModelResponse = isAwaitingModelResponse,
-        )
-        _messages.value = updated
-        if (_streamingById.value.containsKey(id)) {
-            _streamingById.value = _streamingById.value - id
-        }
-    }
-
-    /**
-     * Read a message's content + toolBlocks honoring any active streaming
-     * delta. Use this from non-render code that needs the "current" view of
-     * a message during a live turn (e.g. agent history builders, persistence
-     * snapshots) without forcing the render layer to consult the delta map.
-     */
-    internal fun effectiveContent(id: String): String? {
-        val delta = _streamingById.value[id]
-        if (delta != null) return delta.content
-        return _messages.value.firstOrNull { it.id == id }?.content
-    }
-
-    /**
-     * Force-drain any outstanding streaming delta for [id] back into the
-     * canonical message and clear the side-channel slot. Called from turn
-     * exit paths (cancel / error / retry / resume / clearChat) so the
-     * canonical message reflects all accumulated content even if the last
-     * [updateAssistantMessage] call had isStreaming=true.
-     */
-    private fun flushStreamingDelta(id: String) {
-        val delta = _streamingById.value[id] ?: return
-        val current = _messages.value
-        val idx = current.indexOfLast { it.id == id }
-        if (idx >= 0) {
-            val updated = current.toMutableList()
-            updated[idx] = current[idx].copy(
-                content = delta.content,
-                isStreaming = false,
-                toolBlocks = delta.toolBlocks,
-                isAwaitingModelResponse = delta.isAwaitingModelResponse,
-            )
-            _messages.value = updated
-        }
-        // [T-android-stream-flush-review] Cancel the pending trailing flush
-        // BEFORE clearing the side channel — otherwise its viewModelScope
-        // coroutine (not cancelled by streamJob.cancel) fires later and
-        // re-adds the orphan side-channel entry, reviving a stale "thinking"
-        // row after the turn was stopped/drained.
-        clearStreamFlushState(id)
-        _streamingById.value = _streamingById.value - id
-    }
-
-    /** Drain ALL outstanding streaming deltas (called on global resets). */
-    private fun flushAllStreamingDeltas() {
-        clearAllStreamFlushStates()
-        val pending = _streamingById.value
-        if (pending.isEmpty()) return
-        val current = _messages.value.toMutableList()
-        var changed = false
-        for ((id, delta) in pending) {
-            val idx = current.indexOfLast { it.id == id }
-            if (idx < 0) continue
-            current[idx] = current[idx].copy(
-                content = delta.content,
-                isStreaming = false,
-                toolBlocks = delta.toolBlocks,
-                isAwaitingModelResponse = delta.isAwaitingModelResponse,
-            )
-            changed = true
-        }
-        if (changed) _messages.value = current
-        _streamingById.value = emptyMap()
-    }
+    private fun flushAllStreamingDeltas() = messagePublication.flushAll()
 
     private fun journalMetadata(toolBlockMeta: Map<String, AssistantBlock>) = toolBlockMeta.mapValues { (_, block) ->
         com.openminis.app.agent.AgentJournalWriter.ToolPresentation(block.toolTitle,
@@ -12101,51 +11811,8 @@ class ChatViewModel(
             com.openminis.app.agent.AgentJournalWriter.Receipt(usage, streamMs, attribution, calibration),
             reasoningContent, journalMetadata(toolBlockMeta)) ?: return null
 
-        // [T-android-usage-capsule-live] Stamp the usage capsule's data onto
-        // the LIVE bubble, not just the DB row.
-        //
-        // `ChatMessage.tokenUsage` / `completedAt` were only ever populated by
-        // `toChatMessages()` — the DB-load path — so a freshly streamed reply
-        // had `tokenUsage == null`, `buildFlatChatItems` emitted no
-        // AssistantUsage row for it, and tapping blank space in the reply did
-        // nothing. Leaving and re-entering the session ran loadSession(),
-        // which parsed the row from the DB, and only then did the capsule
-        // appear. That was the reported symptom exactly: "刚 streaming 完的
-        // 没有，重新进入会话后就又有了".
-        //
-        // Derived from the persisted entity — `ChatTokenUsage.parse(entity.
-        // tokenUsage)` + `entity.createdAt` — precisely as the load path does
-        // (toChatMessages), so the live bubble and a reloaded one cannot
-        // disagree. Each tool turn overwrites the previous stamp, which is the
-        // same "merged bubble reports the LAST turn's usage" rule the load
-        // path's merge step applies.
-        //
-        // Setting this while the bubble is still streaming (the tool-turn
-        // path) is harmless: the flat build also gates on `!isStreaming`, so
-        // the row stays hidden until the final turn flips streaming off, and
-        // then appears with the last turn's numbers already in place.
-        if (uiAssistantId != null) {
-            val stampedUsage = ChatTokenUsage.parse(entity.tokenUsage)
-            withContext(Dispatchers.Main) {
-                if (activeSessionId != journal.sessionId) return@withContext
-                var hit = false
-                // [T-android-usage-capsule-live-reload] A turn with no usage
-                // (provider sent none) must not wipe the capsule an earlier tool
-                // turn of this same bubble already stamped. The reload path's
-                // merge keeps `msg.tokenUsage ?: prev.tokenUsage`; the live path
-                // used to assign a possibly-null value, so the capsule vanished
-                // live and came back after a reload. Same rule on both paths now.
-                _messages.value = _messages.value.map { m ->
-                    if (m.id == uiAssistantId) { hit = true; m.copy(tokenUsage = stampedUsage ?: m.tokenUsage, completedAt = entity.createdAt) } else m
-                }
-                // One line per turn. `hit=false` means the bubble id was not in
-                // the list — the exact silent failure this fix exists to end.
-                AppLogger.info(
-                    TAG_STREAM,
-                    "[UsageCapsule] live stamp ui=${uiAssistantId.take(20)} hit=$hit " +
-                        "ctx=${stampedUsage?.latestContextTokens ?: -1} db=${entity.id.take(8)}",
-                )
-            }
+        if (uiAssistantId != null) withContext(Dispatchers.Main) {
+            messagePublication.stamp(journal.sessionId, uiAssistantId, entity)
         }
         return entity.id
     }
