@@ -1597,6 +1597,7 @@ class ChatViewModel(
             // request and the enum can never advertise a name the resolver
             // would reject.
             rosterNames = providerRepository.subAgents.map { it.name },
+            rosterSection = subAgentRosterSection(),
         )
 
     private fun subagentParent(toolId: String = "", prior: Int = 0): com.openminis.app.agent.AgentSubagentRuntime.Parent {
@@ -1702,7 +1703,7 @@ class ChatViewModel(
      * Empty for a helper (depth 1: a sub agent cannot delegate, so naming the
      * roster to it is pure cost) and when the Agents switch is off.
      */
-    private fun subAgentRosterPromptSection(): String {
+    private fun subAgentRosterSection(): String {
         if (isHelper) return ""
         if (!com.openminis.app.tools.AgentToolSwitch.AGENTS.isEnabled(context)) return ""
         return com.openminis.app.agent.jobs.HelperRunner.subAgentRosterSection(
@@ -6334,19 +6335,9 @@ class ChatViewModel(
         }
             ?: (com.openminis.app.agent.SystemPromptBuilder.identitySection(context) +
                 "\n\n" + com.openminis.app.agent.UserProfileStore.promptFragment(context))
-        // Depth is one: helpers never get delegation. The same gate controls
-        // the roster, tool bullet and redirects from neighboring CLI commands.
-        val delegationOffered = !isHelper &&
-            com.openminis.app.agent.jobs.AgentSettings.isEnabled(context)
-        val delegationBullets = "\n" +
-            com.openminis.app.agent.jobs.HelperRunner.systemPromptBullet(delegationOffered) +
-            subAgentRosterPromptSection()
-        val base = com.openminis.app.agent.AndroidSystemPrompt.build(
-            identitySection = identitySection,
-            browserEnabled = browserToolEnabled,
-            delegationBullets = delegationBullets,
-            delegationOffered = delegationOffered,
-        )
+        // The browser, shell and delegation facts now ride their own tool schemas;
+        // the system prompt keeps only rules that belong to no single tool.
+        val base = com.openminis.app.agent.AndroidSystemPrompt.build(identitySection = identitySection)
 
         // Append optional capability fragments after the stable base.
         // [T-android-skill-scan-parity] No disk access here — this runs on the

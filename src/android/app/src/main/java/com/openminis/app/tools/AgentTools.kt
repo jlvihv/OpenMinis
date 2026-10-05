@@ -27,6 +27,9 @@ object AgentTools {
         // would fail to resolve. Empty falls back to the built-in's name so the
         // enum is never an empty list (which some providers reject).
         rosterNames: List<String> = listOf(SubAgentDefinition.BUILT_IN_NAME),
+        // Roster descriptions ride the subagent schema: they describe that tool's `agent`
+        // parameter, so they belong there rather than in the system prompt.
+        rosterSection: String = "",
     ): List<AgentToolDefinition> = buildList {
         add(ReadTool.definition())
         add(BashTool.definition())
@@ -34,7 +37,7 @@ object AgentTools {
         add(WriteTool.definition())
         if (browserEnabled) add(BrowserTool.definition())
         if (!isHelper && delegateEnabled) {
-            add(SubagentTool.definition(rosterNames))
+            add(SubagentTool.definition(rosterNames, rosterSection))
         }
     }
 

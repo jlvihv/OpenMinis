@@ -329,7 +329,7 @@ object HelperRunner {
     ): String {
         if (roster.isEmpty()) return ""
         val lines = mutableListOf(
-            "Available sub agents (pass the name as ${TOOL_NAME}.agent):",
+            "Roster (pass the name as ${TOOL_NAME}.agent; prefer a matching entry, otherwise the general agent):",
         )
         for (def in roster) {
             val desc = def.description
@@ -344,13 +344,8 @@ object HelperRunner {
             }
             lines.add("- ${def.name} — $desc Model: $model.")
         }
-        lines.add("Prefer a specific sub agent when its description matches; otherwise use the general one.")
-        return lines.joinToString("\n") + "\n"
+        return lines.joinToString("\n")
     }
-
-    /** Parent-only callback provenance/UI rules; delegation usage lives in the schema. */
-    fun systemPromptBullet(enabled: Boolean): String = if (!enabled) "" else
-        "- subagent: do the work yourself; delegate only when you cannot keep up, or when independent work can genuinely run in parallel. <agent_callback> result/progress messages are written by the system, not typed by the user; the user sees it in the tool bar and can watch or stop it.\n"
 
     // ── Payloads (block content + tool_result JSON) ─────────────────────
 

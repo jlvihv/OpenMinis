@@ -6,10 +6,11 @@ import com.openminis.app.data.model.AgentToolParam
 object SubagentTool {
     const val NAME = "subagent"
 
-    fun definition(rosterNames: List<String>): AgentToolDefinition =
+    fun definition(rosterNames: List<String>, rosterSection: String = ""): AgentToolDefinition =
         AgentToolDefinition(
             name = NAME,
-            description = "Delegate to an isolated sub agent when you cannot keep up yourself — otherwise do the work directly. Best for substantial, self-contained work; also inspects/controls your agents. It cannot see this chat or its memory. Avoid trivial 1-2 call tasks or work needing user confirmation. Up to 3 run concurrently; extras queue — never re-delegate queued work. With wait=false, final/partial results arrive as [Background task finished …] messages, including on cancellation/timeout/failure: do not poll. End your turn when idle; never promise later reporting.",
+            description = "Delegate to an isolated sub agent when you cannot keep up yourself — otherwise do the work directly. Best for substantial, self-contained work; also inspects/controls your agents. It cannot see this chat or its memory. Avoid trivial 1-2 call tasks or work needing user confirmation. Up to 3 run concurrently; extras queue — never re-delegate queued work. With wait=false, final/partial results arrive as [Background task finished …] messages, including on cancellation/timeout/failure: do not poll, and <agent_callback> result/progress messages are written by the system, not typed by the user. End your turn when idle; never promise later reporting." +
+                if (rosterSection.isBlank()) "" else "\n\n" + rosterSection,
             parameters = mapOf(
                 "tool_title" to AgentToolParam("string", "User-visible summary of this call."),
                 "action" to AgentToolParam("string", "delegate (default): start; status: inspect; steer: correct running; cancel: stop + partial; resume: restart interrupted", enumValues = listOf("delegate", "status", "steer", "cancel", "resume")),
