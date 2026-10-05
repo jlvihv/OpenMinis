@@ -6,7 +6,7 @@ import org.json.JSONObject
 /** One normalized accounting format for conversation and auxiliary model requests. */
 object RequestUsageRecord {
     const val TYPE = "request-usage"
-    enum class Purpose(val wireName: String) { CONVERSATION("conversation"), COMPACTION("compaction") }
+    enum class Purpose(val wireName: String) { CONVERSATION("conversation"), COMPACTION("compaction"), TITLE("title"), GROUP_SUGGEST("group-suggest") }
 
     fun parts(purpose: Purpose): String = JSONArray().put(JSONObject()
         .put("type", TYPE).put("value", JSONObject().put("purpose", purpose.wireName))).toString()

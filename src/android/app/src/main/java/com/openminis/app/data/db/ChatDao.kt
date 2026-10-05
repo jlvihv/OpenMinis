@@ -110,6 +110,12 @@ interface ChatDao {
     @Query("UPDATE sessions SET title = :title, category = COALESCE(:category, category), updated_at = :updatedAt WHERE id = :id")
     suspend fun updateSessionTitleAndCategory(id: String, title: String, category: String?, updatedAt: Long)
 
+    /** A delayed generated title cannot replace a newer rename/category edit. */
+    @Query("UPDATE sessions SET title = :title, category = COALESCE(:category, category), updated_at = :updatedAt " +
+        "WHERE id = :id AND title IS :expectedTitle AND category IS :expectedCategory")
+    suspend fun compareAndSetSessionTitle(id: String, expectedTitle: String?, expectedCategory: String?,
+        title: String, category: String?, updatedAt: Long): Int
+
     @Query("UPDATE sessions SET updated_at = :updatedAt WHERE id = :id")
     suspend fun touchSession(id: String, updatedAt: Long)
 

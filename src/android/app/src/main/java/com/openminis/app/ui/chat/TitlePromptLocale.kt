@@ -14,7 +14,7 @@ import java.util.Locale
  * do NOT need to prepend it themselves.
  */
 internal const val TITLE_GEN_SYSTEM_PROMPT: String =
-    "You generate concise titles for conversations. You MUST respond with a single valid JSON object: {\"title\": \"...\", \"category\": \"...\"}. No other text."
+    com.openminis.app.agent.AgentTitleRuntime.SYSTEM_PROMPT
 
 /**
  * Build the bilingual language directive appended to the title-generation

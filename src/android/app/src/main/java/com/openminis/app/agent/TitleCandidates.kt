@@ -1,4 +1,4 @@
-package com.openminis.app.ui.chat
+package com.openminis.app.agent
 
 import android.content.Context
 import android.util.Log
@@ -221,7 +221,8 @@ internal object TitleCandidates {
                     apiKey = fresh
                 }
             } catch (e: Exception) {
-                Log.w("TitleGen", "OAuth refresh failed for ${entry.model.id}: ${e.message}")
+                if (e is kotlinx.coroutines.CancellationException && isRealCancellation(e)) throw e
+                Log.w("TitleGen", "OAuth refresh failed for ${entry.model.id}: ${e.javaClass.simpleName}")
             }
         }
         return try {
