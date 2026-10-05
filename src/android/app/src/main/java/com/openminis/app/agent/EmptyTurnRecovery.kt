@@ -1,4 +1,4 @@
-package com.openminis.app.ui.chat
+package com.openminis.app.agent
 
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage

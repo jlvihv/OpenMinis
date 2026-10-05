@@ -96,6 +96,10 @@ internal class AgentModelTurn(
         }, completed = completed)
     }
 
+    suspend fun commitAssistant(metadata: Map<String, AgentJournalWriter.ToolPresentation>) =
+        journal.assistant(content.parts(), AgentJournalWriter.Receipt(usage, streamMs, attribution, calibration),
+            content.reasoningContent(), metadata)
+
     fun noteOverflow(detail: String) { planner.overflow(dispatch, detail) }
 
     private fun receipt() { journal.recordReceipt(AgentJournalWriter.Receipt(usage, streamMs, attribution, calibration)) }

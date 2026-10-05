@@ -8533,6 +8533,8 @@ class ChatViewModel(
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
     ) {
         val runJournal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
+        val conversationJournal = com.openminis.app.agent.AgentConversationJournal(runJournal, agentHistory) { activeSessionId }
+        val continuation = com.openminis.app.agent.AgentTurnContinuation(agentHistory, runJournal)
         var runAttribution = modelSnapshotFor(provider.model, _activeEntryId.value)
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
         // [T-android-mem-probe-trust] Send-path context shape. The existing
@@ -8674,12 +8676,12 @@ class ChatViewModel(
         // runAgentLoop so it can never loop; if the reminder round is also empty
         // we surface a real error instead of a silent blank bubble. Mirrors iOS
         // AIChatViewModel.didInjectEmptyToolReminderThisRun.
-        var didInjectEmptyToolReminder = false
+
         // [T-android-scheduled-resume-nudge] Set when a scheduled fire was
         // inserted at a tool gap of THIS loop. If the model then answers it and
         // stops while the interrupted task is unfinished, one hidden resume
         // nudge is sent (iOS c9131e862 scheduledResumeNudgeOwed).
-        var scheduledResumeNudgeOwed = false
+
         // [T-android-readaloud-stop-stale] One-shot per REPLY (not per turn):
         // the first text delta stops any Read Aloud still playing from the
         // previous reply. Scoped outside the turn loop so a tool-loop reply
@@ -9311,35 +9313,11 @@ class ChatViewModel(
             // and gets persisted into agentHistory below.
             val turnText = turnContent.visibleText()
             val toolCalls = turnContent.calls
-            val toolCallSignatures = turnContent.thoughtSignatures
             // Accumulate text across turns
             accumulatedText += turnText
 
-            // Build assistant contentParts for history
-            val assistantParts = mutableListOf<AgentContentPart>()
-            if (turnText.isNotEmpty()) {
-                assistantParts.add(AgentContentPart.Text(turnText))
-            }
-            for ((id, name, args) in toolCalls) {
-                // [T-android-gemini3-thoughtsig / #179] Attach the captured Gemini
-                // 3.x signature so it round-trips through persistence and replay.
-                assistantParts.add(AgentContentPart.ToolUse(id, name, args, thoughtSignature = toolCallSignatures[id]))
-            }
-
-            // Prefer the opaque blob from LLMStreamChunk.ReasoningContent when the
-            // provider emitted one — that path preserves empty strings (DeepSeek V4
-            // `reasoning_content: ""` on non-thinking turns). Fall back to the
-            // ThinkingDelta concatenation only when no blob arrived; in that case
-            // an empty buffer becomes null (no field to round-trip).
-            val turnReasoningContent = turnContent.reasoningContent()
             val turnFinishReason = turnContent.finishReason
-
-            agentHistory.add(LLMMessage(
-                role = LLMMessage.Role.ASSISTANT,
-                content = turnText,
-                contentParts = assistantParts,
-                reasoningContent = turnReasoningContent,
-            ))
+            conversationJournal.appendAssistant(turnContent)
 
             // T321: empty-turn diagnostic — fires when GPT-5.5 (or any other
             // provider) returns a turn with no visible text AND no tool calls.
@@ -9360,10 +9338,11 @@ class ChatViewModel(
                 withContext(Dispatchers.Main) {
                     updateAssistantMessage(assistantId, accumulatedText, false, allToolBlocks)
                 }
-                val turnParts = turnContent.parts()
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                persistAssistantTurn(turnJournal, modelTurn.attribution, modelTurn.calibration, turnParts, modelTurn.usage,
-                    turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = modelTurn.streamMs)
+                val entity = conversationJournal.commitAssistant(modelTurn, journalMetadata(blockMeta))
+                if (entity != null) withContext(Dispatchers.Main) {
+                    messagePublication.stamp(runJournal.sessionId, assistantId, entity)
+                }
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
                 // reply and no tool blocks — the user just sees a blank bubble.
@@ -9374,197 +9353,30 @@ class ChatViewModel(
                 val hasVisibleContent = accumulatedText.isNotBlank() ||
                     allToolBlocks.any { it.kind == "tool_use" || (it.kind == "text" && it.content.isNotBlank()) }
 
-                // [T-android-silent-stream-drop] A turn's stopReason comes ONLY
-                // from the SSE terminal event, which always carries a concrete
-                // reason. A null therefore means the stream closed WITHOUT one —
-                // the connection dropped mid-flight (a mid-flight throw would
-                // have gone down the fallback/retry path instead, not here).
-                //
-                // Previously null was folded into `finishedCleanly`, so a
-                // PARTIAL reply — bytes arrived, then the socket died — was
-                // persisted silently as if complete. The reply just stopped with
-                // no error and no way to retry: the "断流" reports. Mirrors iOS
-                // d6604021.
-                // Only the PARTIAL case is handled here. An EMPTY turn with a null
-                // stopReason keeps falling through to the empty-turn handling
-                // below (system-reminder retry, then the empty-response hint),
-                // which already covers it well — re-routing it here would lose
-                // that recovery.
-                if (turnFinishReason == null && hasVisibleContent) {
-                    AppLogger.warning(
-                        TAG_STREAM,
-                        "stream closed without a finish reason after ${accumulatedText.length} chars — " +
-                            "surfacing as an interrupted reply (turn=$turn)",
-                    )
-                    withContext(Dispatchers.Main) {
-                        setInlineError(
-                            context.getString(R.string.chat_error_stream_dropped_partial),
-                        )
+                val decision = continuation.converged(hasVisibleContent, turnFinishReason,
+                    effectiveContextWindowTokens(), modelTurn.usage?.latestContextTokens ?: 0,
+                    _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER },
+                    ChatMessage.SCHEDULED_RESUME_NUDGE_TEXT, helperConfig != null, turn, turnCap, pendingSteerMessages.size)
+                decision.hint?.let { hint ->
+                    val resource = when (hint) {
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_AFTER_REMINDER -> R.string.error_empty_response_after_tool
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
                     }
-                    // [T-android-group-pause-badge-restamp] A LIVE interruption just
-                    // happened: this is a real entry into the paused state, so the
-                    // badge's 24h freshness stamp must be refreshed. Cancel any
-                    // unconsumed re-detection mark left by a prior load so it cannot
-                    // suppress the re-stamp here.
-                    markLiveInterruption()
-                    _canResume.value = true
-                    // Deliberate stop, not the runaway ceiling — keep the
-                    // post-loop tail from adding a fake turn-limit error.
-                    return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.INTERRUPTED)
+                    withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
                 }
-
-                // A null stopReason reaching here means an EMPTY turn, which the
-                // empty-turn path below is designed to recover; treat it as
-                // "clean" for that purpose exactly as before.
-                // [T-android-empty-turn-stopreason] Gate the empty-turn path on
-                // BOTH "nothing visible" and a terminal stop reason. `length`
-                // (truncated) never enters here; `tool_calls` / `tool_use` with
-                // no call DOES ([T-android-tooluse-stop-no-calls]) — see
-                // EmptyTurnRecovery.shouldClassifyAsEmptyTurn for the
-                // reasoning-only / interleaved-thinking rationale (iOS parity).
-                val isEmptyTurn = EmptyTurnRecovery.shouldClassifyAsEmptyTurn(
-                    hasText = hasVisibleContent,
-                    hasToolCall = false, // this block is inside `if (toolCalls.isEmpty())`
-                    stopReason = turnFinishReason,
-                )
-                if (isEmptyTurn) {
-                    // [T-android-empty-after-toolresult-reminder] Special case: the
-                    // server returned an empty turn right after a tool result. The
-                    // model owes a follow-up (next tool call or a final answer) but
-                    // stalled — the user sees a blank bubble with no explanation.
-                    // Inject a one-shot <system-reminder> into that tool result and
-                    // retry ONE round. The guard fires at most once per run, so it
-                    // can never loop; the SECOND empty falls through to the error
-                    // hint below. Mirrors iOS AIChatViewModel.swift empty-after-
-                    // tool-result path.
-                    //
-                    // The empty assistant turn was just appended (above) — drop it
-                    // so the tool result is the last message and the model gets a
-                    // clean "continue from here" prompt on the retry.
-                    // [T-android-empty-turn-reminder-any-tail] Recover from ANY
-                    // empty turn, not only one that follows a tool_result. See
-                    // EmptyTurnRecovery for the rationale and the measured
-                    // callback-tail failure rate. The loop owns the once-per-run
-                    // guard and the mutation; the object owns the decision.
-                    when (val plan = EmptyTurnRecovery.plan(agentHistory, didInjectEmptyToolReminder)) {
-                        is EmptyTurnRecovery.Plan.NudgeExistingPart -> {
-                            didInjectEmptyToolReminder = true
-                            AppLogger.warning(TAG_STREAM, "empty turn — nudging tail part (isToolResult=${plan.isToolResult}) and retrying one round (turn=$turn)")
-                            // Drop the empty assistant turn we just appended.
-                            agentHistory.removeAt(agentHistory.size - 1)
-                            val tail = agentHistory[plan.tailIndex]
-                            val newParts = tail.contentParts.toMutableList()
-                            newParts[plan.partIndex] = when (val part = newParts[plan.partIndex]) {
-                                is AgentContentPart.ToolResult -> part.copy(content = part.content + EmptyTurnRecovery.REMINDER)
-                                is AgentContentPart.Text -> AgentContentPart.Text(part.text + EmptyTurnRecovery.REMINDER)
-                                else -> part
-                            }
-                            agentHistory[plan.tailIndex] = tail.copy(contentParts = newParts)
-                            return@agentTurn AgentLoopEngine.Action.Next
-                        }
-                        is EmptyTurnRecovery.Plan.AppendStandalone -> {
-                            didInjectEmptyToolReminder = true
-                            AppLogger.warning(TAG_STREAM, "empty turn (user tail, no appendable part) — appending standalone <system-reminder> and retrying (turn=$turn)")
-                            agentHistory.removeAt(agentHistory.size - 1)
-                            agentHistory.add(
-                                LLMMessage(
-                                    role = LLMMessage.Role.USER,
-                                    content = EmptyTurnRecovery.REMINDER,
-                                    contentParts = listOf(AgentContentPart.Text(EmptyTurnRecovery.REMINDER)),
-                                ),
-                            )
-                            return@agentTurn AgentLoopEngine.Action.Next
-                        }
-                        is EmptyTurnRecovery.Plan.GiveUp -> {
-                            // No user turn to nudge, or the guard already fired
-                            // this run — fall through to the error hint below.
-                        }
+                when (val action = decision.action) {
+                    AgentLoopEngine.Action.Next -> {
+                        withContext(Dispatchers.Main) { updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks) }
+                        _canResume.value = false
                     }
-                    val window = effectiveContextWindowTokens()
-                    val usedCtx = modelTurn.usage?.latestContextTokens ?: 0
-                    val contextNearFull = window != null && window > 0 && usedCtx > 0 &&
-                        usedCtx.toDouble() / window.toDouble() > 0.70
-                    val hint = when {
-                        // Reminder already fired and the retry was ALSO empty — this
-                        // is a genuine stall, not a transient blank. Point the user
-                        // at retry/switch explicitly.
-                        didInjectEmptyToolReminder ->
-                            context.getString(R.string.error_empty_response_after_tool)
-                        contextNearFull ->
-                            context.getString(R.string.error_empty_response_context_large)
-                        else ->
-                            context.getString(R.string.error_empty_response_generic)
-                    }
-                    withContext(Dispatchers.Main) { setInlineError(hint) }
+                    is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
+                        withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
+                        markLiveInterruption()
+                        _canResume.value = true
+                    } else if (turn == 0) generateSessionTitleIfNeeded()
                 }
-                // [T-android-scheduled-resume-nudge] A scheduled fire was inserted
-                // at a tool gap of this loop, the model has answered it and
-                // stopped cleanly — possibly without resuming the task the fire
-                // interrupted. Send ONE hidden <system-reminder> user turn and
-                // keep going in the same bubble; the model stops for real if the
-                // task was in fact complete. Once per insertion. Not when a user
-                // prompt is waiting: the drain after the loop hands the turn to
-                // the user's own message, which decides instead (iOS clears the
-                // flag when user prompts are injected at turn end).
-                val cleanStop = turnFinishReason == "stop" || turnFinishReason == "end_turn"
-                val userPromptWaiting = _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER }
-                if (scheduledResumeNudgeOwed && !isEmptyTurn && cleanStop && !userPromptWaiting) {
-                    scheduledResumeNudgeOwed = false
-                    val nudge = ChatMessage.SCHEDULED_RESUME_NUDGE_TEXT
-                    agentHistory.add(
-                        LLMMessage(
-                            role = LLMMessage.Role.USER,
-                            content = nudge,
-                            contentParts = listOf(AgentContentPart.Text(nudge)),
-                        ),
-                    )
-                    // Persisted like resume()'s stop-continue reminder, so a
-                    // reload keeps user/assistant alternation; rows starting
-                    // with <system-reminder> never get a bubble.
-                    runJournal.reminder(nudge)
-                    withContext(Dispatchers.Main) {
-                        updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
-                    }
-                    AppLogger.info(
-                        TAG_STREAM,
-                        "⏰[ScheduledPreempt] model stopped after an inserted scheduled fire — sent the one-shot resume nudge (turn=$turn)",
-                    )
-                    return@agentTurn AgentLoopEngine.Action.Next
-                }
-                // [T-subagent-steer-continues-loop] Port of iOS 671a12ce2. A
-                // course correction that arrived while this turn was converging
-                // keeps the loop alive for one more turn.
-                //
-                // Steers are read at the TOP of an iteration, so one is only
-                // delivered if another iteration happens. A child writing its
-                // final answer is streaming, so enqueueSteer does not nudge it,
-                // and a turn with no tool calls ends right here — the
-                // correction stayed queued until the job finished and
-                // drainMissedSteers reported it as missed: the parent was told
-                // the sub agent never saw it, and the instruction had no effect.
-                //
-                // HelperRunner.shouldContinueForSteer holds the conditions
-                // (not on the last round, not after an empty turn).
-                if (com.openminis.app.agent.jobs.HelperRunner.shouldContinueForSteer(
-                        isHelper = helperConfig != null,
-                        isEmptyTurn = isEmptyTurn,
-                        turn = turn,
-                        turnCap = turnCap,
-                        pendingSteers = pendingSteerMessages.size,
-                    )
-                ) {
-                    AppLogger.info(TAG, "[subagent] steer arrived at loop end — continuing for another turn (turn=${turn + 1}/$turnCap)")
-                    // The no-tool-call path above already marked the bubble
-                    // finished; the next turn streams into the same bubble.
-                    withContext(Dispatchers.Main) {
-                        updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
-                    }
-                    _canResume.value = false
-                    return@agentTurn AgentLoopEngine.Action.Next
-                }
-                // Auto-title after first exchange
-                if (turn == 0) generateSessionTitleIfNeeded()
-                return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.COMPLETED)
+                return@agentTurn decision.action
             }
             AppLogger.info(TAG_STREAM, "runAgentLoop turn=$turn dispatching ${toolCalls.size} tool call(s), continuing")
 
@@ -9684,32 +9496,12 @@ class ChatViewModel(
                 )
             }
 
-            // Persist the assistant+tools turn (with full input JSON and thinking).
-            // Capture the persisted DB id so we can back-fill agentHistory's last
-            // assistant entry — compact-marker boundary resolution depends on it.
-            val turnParts = turnContent.parts()
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-            val assistantDbId = persistAssistantTurn(turnJournal, modelTurn.attribution, modelTurn.calibration, turnParts, modelTurn.usage,
-                turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = modelTurn.streamMs)
-            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
-            if (assistantDbId != null) {
-                val lastIdx = agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
-                if (lastIdx >= 0) {
-                    agentHistory[lastIdx] = agentHistory[lastIdx].copy(dbMessageId = assistantDbId)
-                }
+            val entity = conversationJournal.commitAssistant(modelTurn, journalMetadata(blockMeta))
+            if (entity != null) withContext(Dispatchers.Main) {
+                messagePublication.stamp(runJournal.sessionId, assistantId, entity)
             }
-
-            // Persist tool results as user-role message (mirrors iOS)
-            val toolResultDbId = turnJournal.toolResults(resultParts)?.id
-            if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
-
-            // Add tool results to history
-            agentHistory.add(LLMMessage(
-                role = LLMMessage.Role.USER,
-                content = "",
-                contentParts = resultParts,
-                dbMessageId = toolResultDbId,
-            ))
+            conversationJournal.commitResults(turnJournal, resultParts)
 
             // Auto-title after first exchange (mirrors iOS generateSessionTitleIfNeeded)
             if (turn == 0) {
@@ -9825,7 +9617,7 @@ class ChatViewModel(
                     // [T-android-scheduled-resume-nudge] Owed only after a
                     // scheduled insert; a user follow-up decides for itself
                     // what happens to the interrupted task.
-                    scheduledResumeNudgeOwed = scheduledFire != null
+                    continuation.promptInserted(scheduledFire != null)
                     // Switch loop-scope state to the new bubble. Subsequent
                     // iterations populate `handled.newAssistantId` and slice
                     // `allToolBlocks` from the freshly-zeroed start index
@@ -11187,35 +10979,6 @@ class ChatViewModel(
     private fun journalMetadata(toolBlockMeta: Map<String, AssistantBlock>) = toolBlockMeta.mapValues { (_, block) ->
         com.openminis.app.agent.AgentJournalWriter.ToolPresentation(block.toolTitle,
             block.browserURL.orEmpty(), block.imageFilePath.orEmpty())
-    }
-
-    private suspend fun persistAssistantTurn(
-        journal: com.openminis.app.agent.AgentTurnJournal,
-        attribution: com.openminis.app.data.model.ModelAttributionSnapshot,
-        calibration: Triple<Int, Int, String?>?,
-        parts: List<AgentContentPart>,
-        usage: LLMUsage?,
-        reasoningContent: String? = null,
-        toolBlockMeta: Map<String, AssistantBlock> = emptyMap(),
-        // [T-android-usage-capsule-live] The UI bubble this turn belongs to,
-        // so the persisted usage can be stamped onto it right away. Null keeps
-        // the DB-only behaviour for callers that have no bubble.
-        uiAssistantId: String? = null,
-        // [T-android-token-usage-output-speed] Wall-clock ms this turn spent
-        // streaming. Written into the usage row as `streamMs` so Output Speed
-        // is recomputed from the DB like every other figure in the sheet. 0 =
-        // "not measured", which is also what every row written before this
-        // change reads as — hence a NEW key rather than a changed one.
-        streamMs: Long = 0L,
-    ): String? {
-        val entity = journal.assistant(parts,
-            com.openminis.app.agent.AgentJournalWriter.Receipt(usage, streamMs, attribution, calibration),
-            reasoningContent, journalMetadata(toolBlockMeta)) ?: return null
-
-        if (uiAssistantId != null) withContext(Dispatchers.Main) {
-            messagePublication.stamp(journal.sessionId, uiAssistantId, entity)
-        }
-        return entity.id
     }
 
     private fun buildSystemPrompt(): String? {
