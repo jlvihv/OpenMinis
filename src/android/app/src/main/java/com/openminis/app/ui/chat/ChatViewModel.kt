@@ -3045,85 +3045,23 @@ class ChatViewModel(
             return
         }
         val compactSessionId = activeSessionId
-        val history = agentHistory.toList()
-        if (history.isEmpty()) {
-            appendSystemInfo("Nothing to compact — the session is empty.", "compact")
-            return
-        }
-        // ─── v2 unified anchor model ───────────────────────────────────
-        //
-        // anchor = last active agentHistory entry. The compacted range is
-        // `[prev marker anchor + 1, anchor]` (or `[0, anchor]` if no prev),
-        // so each compact "extends" the latest summary forward to cover all
-        // new turns. effectiveAgentHistory then re-injects the LAST N
-        // user-text turns LEADING UP TO the anchor as fresh context, so the
-        // model still sees recent verbatim content alongside the summary.
-        //
-        // Mirrors iOS post-Phase-v2: anchor = last active message, no
-        // "auto-keep tail" baked into the compacted range — that's a
-        // read-side decoration done by effectiveAgentHistory.
-        //
-        // anchor must be a persisted entry (have a non-null dbMessageId).
-        // The strict iOS check also requires id ∈ rawMessages DB, but DAO
-        // is suspend and we'd have to relocate range calculation into the
-        // launch below. As a compromise we do the dbMessageId-non-empty
-        // pre-check here (catches most stale-id cases at this stage), and
-        // do the rawDbIds-membership check inside the launch before the
-        // marker is written. Mirrors iOS AIChatViewModel+Compaction.swift:
-        // 644-657 "walk back through agentHistory looking for dbMessageId
-        // AND allRaw.contains" — split across two phases to honor suspend
-        // boundaries.
-        val anchorIdx: Int = if (anchorIdxOverride != null) {
-            // compactBefore() supplied a specific anchor — walk back from
-            // there to the closest entry with a dbMessageId (mirrors the
-            // tail-walk-back logic but bounded to [0..override]).
-            var i = anchorIdxOverride.coerceIn(0, history.lastIndex)
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
-        } else {
-            // compactAll() — walk back from the tail to the closest
-            // persisted entry. iOS compactAll calls compactBefore with the
-            // last active UI message; we go through agentHistory directly
-            // since Android's agentHistory and UI list are tighter-coupled.
-            var i = history.lastIndex
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
-        }
-        if (anchorIdx < 0) {
-            appendSystemInfo("Cannot compact: no persisted messages yet.", "compact")
-            return
-        }
-
-        // Slice to compact = (prev marker's anchor + 1) … anchorIdx inclusive.
-        // For v2 prev markers, lastCompactedMessageId IS the prev anchor —
-        // start at prevIdx + 1. For v1 prev markers, firstKeptMessageId points
-        // at "first kept" — start AT prevIdx (it was exclusive on right edge).
-        val prev = _cachedLatestMarker
-        val effectiveStartIdx: Int = if (prev == null) {
-            0
-        } else {
-            val prevAnchorOrFirstKept: String? = if (prev.version >= 2) {
-                prev.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
-            } else {
-                prev.firstKeptMessageId?.takeIf { it.isNotEmpty() }
-                    ?: prev.boundaryMessageId?.takeIf { it.isNotEmpty() }
+        val preparation = com.openminis.app.agent.AgentCompactionJournal.prepare(
+            agentHistory, _cachedLatestMarker, anchorIdxOverride)
+        val plan = when (preparation) {
+            is com.openminis.app.agent.AgentCompactionJournal.Preparation.Ready -> preparation.plan
+            is com.openminis.app.agent.AgentCompactionJournal.Preparation.Rejected -> {
+                val text = when (preparation.reason) {
+                    com.openminis.app.agent.AgentCompactionJournal.Rejection.EMPTY -> "Nothing to compact — the session is empty."
+                    com.openminis.app.agent.AgentCompactionJournal.Rejection.NO_PERSISTED_ANCHOR -> "Cannot compact: no persisted messages yet."
+                    com.openminis.app.agent.AgentCompactionJournal.Rejection.ALREADY_COMPACTED -> "Already compacted up to this point."
+                }
+                appendSystemInfo(text, "compact")
+                return
             }
-            val prevIdx = prevAnchorOrFirstKept?.let { id ->
-                history.indexOfFirst { it.dbMessageId == id }
-            } ?: -1
-            if (prevIdx < 0) 0   // prev anchor not in current history — restart from top
-            else if (prev.version >= 2) prevIdx + 1
-            else prevIdx
         }
-        if (effectiveStartIdx > anchorIdx) {
-            appendSystemInfo("Already compacted up to this point.", "compact")
-            return
-        }
-        val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
-        if (toCompact.isEmpty()) {
-            appendSystemInfo("Nothing to compact.", "compact")
-            return
-        }
+        val compactionJournal = com.openminis.app.agent.AgentCompactionJournal(
+            chatRepository, compactSessionId, plan) { activeSessionId }
+        val toCompact = plan.messages
         // Past every precondition — from here the launch below owns the
         // onFinished callback.
         markStarted()
@@ -3156,11 +3094,6 @@ class ChatViewModel(
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
             var compactSucceeded = false
-            // [T-android-compact-failed-marker-rollback] Undo state for a
-            // compaction that persists its marker and then fails.
-            var rollbackMarkerId: String? = null
-            var previousMarker: CompactMarkerEntity? = null
-            val priorMarkerBeforeCompact: CompactMarkerEntity? = prev
             // Distinguishes "we gave up on time" from other failures so the
             // user-facing message can say so and invite a retry.
             var timedOut = false
@@ -3252,91 +3185,9 @@ class ChatViewModel(
                     return@launch
                 }
 
-                val sid = compactSessionId
-                // v2 marker: lastCompactedMessageId IS the anchor — single
-                // source of truth. The anchor we resolved above is guaranteed
-                // to have a persisted dbMessageId. Legacy fields (firstKept /
-                // boundary / sortOrder) stay null/MAX so a downgraded reader
-                // sees "everything compacted, nothing kept" as a graceful
-                // fallback rather than a stale boundary.
-                // Re-resolve anchor: now that we're inside an IO coroutine
-                // we can read the messages DB to verify the dbMessageId is
-                // actually persisted, not just set on the in-memory
-                // LLMMessage. iOS does this belt-and-suspenders check
-                // (AIChatViewModel+Compaction.swift:644-657). Walk back from
-                // the original anchorIdx until we find an entry whose id is
-                // both non-empty AND present in rawDbIds.
-                val rawDbIds: Set<String> = try {
-                    chatRepository.dao.loadMessages(sid).map { it.id }.toSet()
-                } catch (e: Exception) {
-                    Log.w(TAG, "[Compact] loadMessages for raw-id verify failed: ${e.message}")
-                    emptySet()
-                }
-                val verifiedAnchorIdx: Int = if (rawDbIds.isEmpty()) {
-                    // DB read failed; trust the in-memory walk-back result.
-                    anchorIdx
-                } else {
-                    var i = anchorIdx
-                    while (i >= 0) {
-                        val id = history[i].dbMessageId
-                        if (!id.isNullOrEmpty() && id in rawDbIds) break
-                        i -= 1
-                    }
-                    i
-                }
-                if (verifiedAnchorIdx < 0) {
-                    Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compact failed: could not anchor to a persisted message.", "compact")
-                    }
-                    return@launch
-                }
-                if (verifiedAnchorIdx != anchorIdx) {
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] anchor walked back from idx=$anchorIdx to idx=$verifiedAnchorIdx " +
-                            "(closest with id in rawDbIds). Unsynced tail entries will fall on the active side of the divider.",
-                    )
-                }
-                val lastCompactedDbId = history[verifiedAnchorIdx].dbMessageId
-                    ?: run {
-                        Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo("Compact failed: anchor message id unavailable.", "compact")
-                        }
-                        return@launch
-                    }
-                val marker = CompactMarkerEntity(
-                    id = java.util.UUID.randomUUID().toString(),
-                    sessionId = sid,
-                    summary = summary,
-                    firstKeptSortOrder = Int.MAX_VALUE,   // legacy field; v2 ignores
-                    compactedCount = toCompact.size,
-                    createdAt = System.currentTimeMillis(),
-                    uiBoundarySortOrder = null,
-                    boundaryMessageId = null,
-                    firstKeptMessageId = null,
-                    lastCompactedMessageId = lastCompactedDbId,
-                    version = 2,
-                )
-                // [T-android-compact-failed-marker-rollback] Remember what to
-                // undo. The marker is persisted HERE, but `compactSucceeded`
-                // is only set at the end of the block — everything in between
-                // (the main-thread UI rebuild, the cutoff scan) can still
-                // throw. When it did, the user was told "Compaction failed"
-                // while a "compacted to here" marker stayed in the DB: the
-                // next reload grayed the range and the divider reappeared, so
-                // pressing Compact again reported the range as already
-                // compacted. Recording the previous marker lets the catch
-                // below restore the exact prior state.
-                withContext(NonCancellable + Dispatchers.IO) {
-                    chatRepository.dao.insertCompactMarker(marker)
-                    rollbackMarkerId = marker.id
-                    previousMarker = priorMarkerBeforeCompact
-                }
-                withContext(Dispatchers.Main) {
-                    if (activeSessionId != compactSessionId) throw CancellationException("compaction branch changed")
-                    _compactSummary.value = summary
+                compactionJournal.commit(summary, publish = { marker ->
+                    val lastCompactedDbId = requireNotNull(marker.lastCompactedMessageId)
+                    _compactSummary.value = marker.summary
                     _cachedLatestMarker = marker
                     // Gray out everything in the compacted range; the kept
                     // tail (last N user turns + tool/assistant follow-ups)
@@ -3434,12 +3285,11 @@ class ChatViewModel(
                             "(history entries: ${toCompact.size}) inserted at row $dividerAt " +
                             "of ${withDivider.size} (cutoffIdx=$cutoffIdx)",
                     )
-                }
-                compactSucceeded = true
+                }, restored = { previous ->
+                    _cachedLatestMarker = previous
+                    _compactSummary.value = previous?.summary
+                })
             } catch (e: TimeoutCancellationException) {
-                // [T-android-compact-failed-marker-rollback] A timeout is a
-                // failure like any other — the marker must not survive it.
-                rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 // [T-android-compact-runaway] MUST precede the CancellationException
                 // arm — TimeoutCancellationException extends it, so the generic
                 // re-throw would otherwise swallow our own timeout and surface it
@@ -3479,11 +3329,10 @@ class ChatViewModel(
                     )
                 }
             } catch (e: CancellationException) {
-                if (!compactSucceeded) rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 // User-initiated (cancelCompact) or scope teardown. Tell the
                 // user only if they are still around to read it; the `finally`
                 // below releases the lock either way.
-                if (activeSessionId == compactSessionId && compactJob?.isCancelled == true) {
+                if (compactionJournal.committed == null && activeSessionId == compactSessionId && compactJob?.isCancelled == true) {
                     runCatching {
                         withContext(NonCancellable + Dispatchers.Main) {
                             appendSystemInfo("Compaction cancelled.", "compact")
@@ -3493,7 +3342,6 @@ class ChatViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Compact failed", e)
-                rollbackFailedCompactMarker(compactSessionId, rollbackMarkerId, previousMarker)
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
@@ -3501,6 +3349,7 @@ class ChatViewModel(
                     )
                 }
             } finally {
+                compactSucceeded = compactionJournal.committed != null
                 _isCompacting.value = false
                 _compactProgress.value = null
                 AppLogger.info(
@@ -3537,43 +3386,6 @@ class ChatViewModel(
                 AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
                 resumeQueueAfterCancel()
             }
-        }
-    }
-
-    /**
-     * [T-android-compact-failed-marker-rollback] Undo a compact marker that was
-     * persisted by an attempt which then failed.
-     *
-     * `compactAllImpl` writes the `CompactMarkerEntity` before it rebuilds the
-     * UI and sets `compactSucceeded`, so a throw in between left the DB
-     * claiming a compaction the user was told had FAILED. On the next reload
-     * that marker grayed the range and re-inserted the divider, and pressing
-     * Compact again reported the messages as already compacted — the reported
-     * "retry 后再点 compact 误显示已 compact 到此处".
-     *
-     * Restores the in-memory cache to the marker that was current BEFORE this
-     * attempt (usually null), so `effectiveAgentHistory()` keeps sending the
-     * full history rather than silently folding turns away behind a summary
-     * that was never produced. Best-effort by design: a failed rollback must
-     * never mask the original compaction error, so it only logs.
-     */
-    private suspend fun rollbackFailedCompactMarker(
-        ownerSessionId: String,
-        markerId: String?,
-        previousMarker: CompactMarkerEntity?,
-    ) {
-        if (markerId == null) return
-        withContext(NonCancellable + Dispatchers.IO) {
-            val removed = runCatching { chatRepository.dao.deleteCompactMarker(markerId) }
-                .onFailure { Log.w(TAG, "[Compact] rollback: delete failed: ${it.message}") }
-                .getOrNull() ?: 0
-            withContext(Dispatchers.Main) {
-                if (activeSessionId == ownerSessionId) {
-                    _cachedLatestMarker = previousMarker
-                    _compactSummary.value = previousMarker?.summary
-                }
-            }
-            AppLogger.info(TAG, "[Compact] rolled back failed marker ${markerId.take(8)} (rows=$removed)")
         }
     }
 
