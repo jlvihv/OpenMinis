@@ -9,7 +9,7 @@ internal class AgentCompactionRevert(private val repository: ChatRepository,
     private val coordinator: AgentRunCoordinator, private val subagents: AgentSubagentJournal,
     private val currentSession: () -> String) {
     fun launch(scope: CoroutineScope, session: String, expected: CompactMarkerEntity,
-        failed: (Exception) -> Unit, publish: (CompactMarkerEntity?) -> Unit,
+        failed: suspend (Exception) -> Unit, publish: (CompactMarkerEntity?) -> Unit,
         reload: suspend () -> Unit): Job = coordinator.mutate(scope, failed) {
         currentCoroutineContext().ensureActive()
         checkBranch(session)

@@ -345,6 +345,13 @@ interface ChatDao {
         }
     }
 
+    @Transaction
+    suspend fun clearRuntimeHistory(sessionId: String, updatedAt: Long) {
+        deleteMessages(sessionId)
+        deleteCompactMarkers(sessionId)
+        updateLastMessage(sessionId, null, updatedAt)
+    }
+
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
     suspend fun deleteMessages(sessionId: String)
 
@@ -461,6 +468,9 @@ interface ChatDao {
     // (clear-on-retry via sourceDbIds).
     @Query("UPDATE messages SET error_info = :errorInfo WHERE id = :messageId")
     suspend fun updateMessageErrorInfo(messageId: String, errorInfo: String?)
+
+    @Query("UPDATE messages SET error_info = NULL WHERE session_id = :sessionId AND role = 'assistant' AND id IN (:rowIds)")
+    suspend fun clearRuntimeErrors(sessionId: String, rowIds: Set<String>)
 
     /**
      * [T-error-persist-android] Stamp the error sticker onto the LAST assistant

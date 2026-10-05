@@ -7,6 +7,30 @@ import com.openminis.app.provider.ToolPairing
 
 /** Final model-input pairing repair. The durable journal is never modified. */
 internal object ToolHistorySanitizer {
+    /** At dispatch there are no in-flight calls; repair adjacent pairing without changing live history. */
+    fun forRequest(history: List<LLMMessage>, sessionId: String): List<LLMMessage> {
+        val paired = history.toMutableList()
+        var i = 0
+        while (i < paired.size) {
+            val message = paired[i]
+            if (message.role != LLMMessage.Role.ASSISTANT) { i++; continue }
+            val calls = message.contentParts.filterIsInstance<AgentContentPart.ToolUse>()
+            val next = paired.getOrNull(i + 1)
+            val ids = next?.takeIf { it.role == LLMMessage.Role.USER }?.contentParts
+                ?.filterIsInstance<AgentContentPart.ToolResult>()?.map { ToolPairing.key(it.id) }?.toSet().orEmpty()
+            val missing = calls.filter { ToolPairing.key(it.id) !in ids }.map {
+                AgentContentPart.ToolResult(it.id, it.name, "Tool execution was interrupted by an unexpected error.", isError = true)
+            }
+            if (missing.isNotEmpty()) {
+                if (next?.role == LLMMessage.Role.USER && next.contentParts.any { it is AgentContentPart.ToolResult })
+                    paired[i + 1] = next.copy(contentParts = next.contentParts + missing)
+                else paired.add(i + 1, LLMMessage(LLMMessage.Role.USER, "", contentParts = missing))
+            }
+            i++
+        }
+        return repair(paired, sessionId)
+    }
+
     fun repair(history: List<LLMMessage>, sessionId: String): List<LLMMessage> {
         val uses = history.flatMap { it.contentParts }.filterIsInstance<AgentContentPart.ToolUse>()
             .map { ToolPairing.key(it.id) }.toSet()

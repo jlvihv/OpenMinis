@@ -29,6 +29,7 @@ internal class AgentConversationRuntime<T>(
     scripted: ScriptedToolTurn?,
     private val resumePrevious: Boolean = false,
     subagentResults: AgentSubagentJournal? = null,
+    private val personaReminder: AgentPersonaReminder = AgentPersonaReminder(),
 ) {
     data class Selection<T>(val provider: LLMProvider, val candidates: List<T>, val strategy: FallbackStrategy,
         val entryId: String?, val attribution: ModelAttributionSnapshot)
@@ -44,7 +45,6 @@ internal class AgentConversationRuntime<T>(
         val bindFallback: suspend (LLMProvider?, T, Boolean) -> Boolean,
     )
     data class Context(
-        val sanitize: () -> Unit,
         val snapshotFacts: suspend () -> RuntimeContextSnapshot.Facts,
         val effectiveHistory: () -> List<LLMMessage>,
         val tools: () -> List<AgentToolDefinition>,
@@ -133,7 +133,6 @@ internal class AgentConversationRuntime<T>(
                 AppLogger.info("AgentConversationRuntime", "[SwitchModel] $from → ${provider.model.displayName} turn=${frame.index + 1}")
             }
             conversation.checkBranch()
-            context.sanitize()
             helperPolicy.beforeTurn(frame, wrapUpRequested())
             if (helper) {
                 val pending = steers()
@@ -174,9 +173,11 @@ internal class AgentConversationRuntime<T>(
                     }, enhancedCache = request.enhancedCache, configure = request.configure,
                     prepare = {
                         conversation.checkBranch()
+                        personaReminder.ensure(contextTokens, context.effectiveHistory(), conversation)
+                        conversation.checkBranch()
                         val source = request.source()
                         conversation.checkBranch()
-                        AgentModelTurn.Input(provider, source.history, source.window, systemPrompt,
+                        AgentModelTurn.Input(provider, ToolHistorySanitizer.forRequest(source.history, writer.sessionId), source.window, systemPrompt,
                             if (toolsWithdrawn) emptyList() else context.tools(), source.thinking, attribution)
                     }, wireHistory = { history ->
                         conversation.checkBranch()

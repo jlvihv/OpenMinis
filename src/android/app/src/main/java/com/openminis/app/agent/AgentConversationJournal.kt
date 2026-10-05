@@ -67,6 +67,13 @@ internal class AgentConversationJournal(
         coroutineContext.ensureActive()
     }
 
+    suspend fun commitOwnedReminder(text: String) {
+        coroutineContext.ensureActive()
+        checkBranch()
+        val parts = listOf<AgentContentPart>(AgentContentPart.Text(text))
+        commitQueued(AgentQueuedUserInput(AgentJournalWriter.assistantParts(parts, emptyMap()), text, parts, emptyList())) {}
+    }
+
     /** Resume instructions must be durable on the captured branch before the next request. */
     suspend fun prepareResume() {
         checkBranch()

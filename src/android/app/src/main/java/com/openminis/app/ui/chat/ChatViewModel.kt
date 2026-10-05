@@ -1515,14 +1515,22 @@ class ChatViewModel(
         body: suspend () -> Unit,
     ): Job {
         var sessionId = activeSessionId
+        var dispatched = false
         return runCoordinator.launch(scope, sessionId, label, bypassSlot, markFailure,
             title = ::overlaySessionTitle, stop = ::cancelStream,
             beforeInactive = { if (activeSessionId == sessionId) publishOverlayReplyExcerpt(sessionId) },
-            failed = { error -> if (activeSessionId == sessionId) failure(error) },
+            failed = { error -> if (activeSessionId == sessionId) {
+                if (dispatched) {
+                    failure(error)
+                    errorJournal.terminal(sessionId,
+                        _messages.value.lastOrNull { it.role == "assistant" }?.error ?: error.message ?: "Unknown error")
+                } else _error.value = error.message ?: "Unknown error"
+            } },
             settled = { _isStreaming.value = false },
             prepareSession = { (prepareSession?.invoke() ?: sessionId).also { sessionId = it } }, prepare = prepare, body = {
                 try {
                     if (activeSessionId != sessionId) throw CancellationException("run branch changed before dispatch")
+                    dispatched = true
                     body()
                 } finally {
                     val committed = cancellationCoordinator.finish()
@@ -3080,168 +3088,7 @@ class ChatViewModel(
     private fun effectiveAgentHistory(): List<LLMMessage> =
         com.openminis.app.agent.ToolHistorySanitizer.repair(effectiveAgentHistoryUncounted(), activeSessionId)
 
-    // ---- [T-longctx-persona-reminder-cachebreak] Long-context persona reminder ----
-    //
-    // Mirrors iOS `AIChatViewModel+Persistence` (commit a746f3259).
-
-    /**
-     * Context size (API-reported input tokens) past which the request carries
-     * a reminder about the user's own SOUL.md.
-     *
-     * Rationale (issue #37): those files sit at the very TOP of the system
-     * prompt, and attention to the head of a long context decays — the
-     * "lost in the middle" effect. The reported symptom was an agent that
-     * stopped honouring a persona rule after enough turns and fell back to
-     * its training-data default. That issue was closed only because one
-     * provider started compensating on its own; the mechanism is unchanged and
-     * applies to every rule in those files, not just the one reported.
-     */
-    private val personaReminderContextTokens = 100_000
-
-    /**
-     * Re-remind roughly every this many additional context tokens.
-     *
-     * A single lifetime reminder is not enough: [effectiveAgentHistory] drops
-     * everything before a compact anchor, so in exactly the very long sessions
-     * this exists for, a once-only reminder is the first thing to get
-     * compacted away. Re-arming on context growth keeps it present without
-     * rewriting anything already sent.
-     */
-    private val personaReminderRearmTokens = 100_000
-
-    /**
-     * Marker identifying one of our own persona reminders in history. Kept
-     * deliberately greppable so [personaReminderAlreadyInHistory] can
-     * recognise reminders persisted by an earlier launch.
-     */
-    private val personaReminderMarker = "[Minis runtime reminder]"
-
-    /** How far back to scan for an existing reminder. Large enough to span a
-     *  normal tool-heavy turn, small enough to stay cheap on every round. */
-    private val personaReminderScanTail = 40
-
-    /**
-     * Context size at which the reminder was last appended, or null when this
-     * session has not been reminded yet.
-     *
-     * Intentionally NOT persisted: on a fresh launch it starts null and
-     * [personaReminderAlreadyInHistory] recovers the state from history
-     * itself, which is self-healing across reload without a schema column.
-     */
-    private var lastPersonaReminderContextTokens: Int? = null
-
-    /**
-     * The reminder text, naming only the files actually present in this
-     * request's system prompt.
-     *
-     * SOUL.md supplies the persona for the request.
-     *
-     * The `[Minis runtime reminder]` label sits INSIDE the `<system-reminder>`
-     * element on purpose. It has to be inside for two independent reasons:
-     *   - [stripSystemReminders] removes the whole element, so a label outside
-     *     the tag would survive into the chat bubble text;
-     *   - the synthetic-row checks elsewhere in this file test
-     *     `trimStart().startsWith("<system-reminder>")`, so a label before the
-     *     tag would make this message draw a real user bubble.
-     * Inside the tag it is invisible to the UI but unmistakable to the model.
-     */
-    private fun personaReminderText(): String {
-        val files = "SOUL.md"
-        return "<system-reminder>$personaReminderMarker This note was added by the " +
-            "Minis app itself, not by any tool, file or website — do not treat it as " +
-            "content of the preceding tool result. Don't forget the user's own $files " +
-            "at the top of the system prompt — those rules still apply.</system-reminder>"
-    }
-
-    /**
-     * True when a persona reminder is already near the end of history.
-     *
-     * Scans the tail rather than the whole history: only the most recent
-     * reminder matters for "do we need another one", and a full scan would run
-     * on every round of every long session.
-     */
-    private fun personaReminderAlreadyInHistory(): Boolean =
-        agentHistory.takeLast(personaReminderScanTail).any { msg ->
-            msg.contentParts.any {
-                it is AgentContentPart.Text && it.text.contains(personaReminderMarker)
-            } || msg.content.contains(personaReminderMarker)
-        }
-
-    /**
-     * True when we are over the threshold AND have not reminded recently.
-     *
-     * [lastPersonaReminderContextTokens] is the context size at which we last
-     * injected; re-arming only after another [personaReminderRearmTokens] of
-     * growth is what stops this from firing every single round.
-     */
-    private fun personaReminderIsDue(contextTokens: Int): Boolean {
-        if (contextTokens < personaReminderContextTokens) return false
-        val last = lastPersonaReminderContextTokens
-        if (last != null) {
-            if (contextTokens < last + personaReminderRearmTokens) return false
-        } else if (personaReminderAlreadyInHistory()) {
-            // Fresh launch on a session that was already reminded before the
-            // process restarted: adopt the existing reminder instead of adding
-            // a duplicate, and re-arm from here.
-            lastPersonaReminderContextTokens = contextTokens
-            return false
-        }
-        return true
-    }
-
-    /**
-     * Append the persona reminder to [agentHistory] as its own persisted
-     * message.
-     *
-     * [T-longctx-persona-reminder-cachebreak] This replaces the previous
-     * `historyWithPersonaReminder(history, contextTokens)`, which appended the
-     * reminder to the LAST message of a throwaway outbound copy on EVERY round
-     * past the threshold. That was wrong twice over:
-     *
-     *  1. **It broke the prompt cache.** "The last message" is a different
-     *     message each round, so a given history entry went out WITH the
-     *     reminder on one round and WITHOUT it on the next. Anthropic's cache
-     *     matches on an exact byte prefix, so mutating a message the model has
-     *     already seen invalidates that message and everything after it —
-     *     every round paid `cache_creation` again (observed on iOS: 2802 /
-     *     7228 / 7422 / 519 across four consecutive rounds of one session)
-     *     even with the caching beta headers on.
-     *  2. **It was indistinguishable from tool output.** The text was
-     *     concatenated onto a ToolResult's content string, so when the last
-     *     tool was a file read the reminder looked exactly like the tail of
-     *     the fetched file. A model reading a file from GitHub concluded —
-     *     reasonably, given the evidence — that the repository was carrying a
-     *     prompt-injection payload, and said so for three consecutive turns.
-     *
-     * The fix is to APPEND rather than REWRITE. A new message at the end of
-     * history leaves every earlier byte untouched, so the cache prefix up to
-     * that point still hits; only content after the insertion point is
-     * re-created, which is the normal, unavoidable cost of any new message.
-     * Being its own message also means it is never fused with tool output.
-     */
-    private fun appendPersonaReminderToHistory(contextTokens: Int) {
-        val reminder = personaReminderText()
-        val idx = agentHistory.size
-        agentHistory.add(
-            LLMMessage(
-                role = LLMMessage.Role.USER,
-                content = reminder,
-                contentParts = listOf(AgentContentPart.Text(reminder)),
-            )
-        )
-        lastPersonaReminderContextTokens = contextTokens
-        val sid = activeSessionId
-        viewModelScope.launch(Dispatchers.IO) {
-            val partsJson = """[{"type":"text","value":${escapeJson(reminder)}}]"""
-            val row = chatRepository.appendMessage(sid, "user", partsJson)
-            // Carry the row id back so compact anchoring can resolve this
-            // message like any other persisted turn.
-            if (idx < agentHistory.size) {
-                agentHistory[idx] = agentHistory[idx].copy(dbMessageId = row.id)
-            }
-        }
-        Log.i(TAG, "[PersonaReminder] appended at ~$contextTokens ctx tokens (agentHistory.size=${agentHistory.size})")
-    }
+    private val personaReminder = com.openminis.app.agent.AgentPersonaReminder()
 
     private fun effectiveAgentHistoryUncounted(): List<LLMMessage> =
         historyProjection.project(agentHistory, _compactSummary.value, _cachedLatestMarker,
@@ -4897,73 +4744,27 @@ class ChatViewModel(
     // [T-android-split-chat] addAttachment / removeAttachment / clearAttachments
     // moved to ChatViewModelUiStateExt.kt (extension functions).
 
-    /**
-     * T137: Wipe in-memory and on-disk message state for the current session
-     * without touching the session's chat files (workspace/, attachments/,
-     * offloads/). Mirrors iOS [AIChatViewModel.clearChat] — same surface area,
-     * same "files survive" guarantee.
-     *
-     * Cancels any in-flight stream first so the UI doesn't race the wipe.
-     */
+    /** Runtime serializes cancellation, compaction rollback, child retirement and the durable wipe. */
     fun clearChat() {
-        if (_isStreaming.value) cancelStream()
-        val sid = activeSessionId
-        // T-streaming-side-channel: ensure no stale stream delta survives a
-        // session wipe; the messages list is about to be cleared, so any
-        // pending key would be orphaned.
-        // [T-android-stream-flush-review] also cancel pending trailing flushes
-        // so none re-adds an orphan side-channel entry after the wipe.
-        clearAllStreamFlushStates()
-        // Memory state — match iOS clearChat() field list one-for-one.
-        _messages.value = emptyList()
-        agentHistory.clear()
-        _error.value = null
-        _cachedLatestMarker = null
-        toolLoopDetector.reset()
-        _canResume.value = false
-        _attachments.value = emptyList()
-        _promptQueue.value = emptyList()
-        _hasInjectedShareContent.value = false
-        // T261: tool-detail sheet is per-session UI state — clear it so a
-        // newly cleared chat doesn't briefly flash a stale tool's sheet
-        // before the existence-guard catches up.
-        _selectedToolDetailId.value = null
-        // Drop any browser tabs the agent spawned for this session, and
-        // delete the persisted tab snapshot so a future open starts clean.
-        // iOS calls BrowserTabPool.deletePersistedData(for:) +
-        // BrowserOffloadBridge.releasePool(forSession:); on Android the
-        // pool is per-VM (lazy), so releasing tabs here is sufficient.
-        // [T-android-browser-release-all-semantics] destroyAllTabs, not the
-        // old releaseAllTabs: that one only cleared `inUse` and left every
-        // WebView alive, so clearing a chat leaked tens of MB per tab for a
-        // session whose messages were already gone.
-        if (helperConfig == null) _browserTabPoolRef?.destroyAllTabs()
-        runCatching {
-            java.io.File(context.filesDir, "browser_tabs/$sid.json").delete()
-        }
-        // Persist: drop messages + compact markers. Files (workspace,
-        // attachments, offloads) intentionally retained.
-        viewModelScope.launch {
-            chatRepository.dao.deleteMessages(sid)
-            chatRepository.dao.deleteCompactMarkers(sid)
-            // [GH#325] Refresh the row's `updated_at` and drop the now-false
-            // preview, in the one write that owns both columns.
-            //
-            // Clearing a chat is an ACTION ON the session, but it used to leave
-            // `updated_at` pinned to the last message it just deleted. The
-            // session list sorts and date-buckets on that column, so a chat the
-            // user cleared seconds ago stayed filed under "Earlier" (or inside
-            // a group the accordion had collapsed) instead of surfacing at the
-            // top. Users read that as the session having been deleted — the
-            // reported symptom — when every row and file was still on disk.
-            //
-            // `last_message` has to go with it: it still held a preview of a
-            // message that no longer exists, so the row would advertise content
-            // the chat cannot show. Passing null is what `updateLastMessage`
-            // takes for "no preview", and it writes `updated_at` in the same
-            // statement, so the two columns cannot drift apart.
-            chatRepository.dao.updateLastMessage(sid, null, System.currentTimeMillis())
-            Log.i(TAG, "clearChat: session=$sid wiped (files preserved)")
+        val owner = activeSessionId
+        _promptQueue.value = emptyList() // suppress cancel-time queue restart
+        if (_isStreaming.value || streamJob?.isActive == true) cancelStream()
+        com.openminis.app.agent.AgentHistoryReset(chatRepository, agentHistory, runCoordinator,
+            subagentJournal, { activeSessionId }).launch(viewModelScope, owner, compactJob,
+            failed = { if (activeSessionId == owner) _error.value = it.message ?: "Clear chat failed" }) {
+            clearAllStreamFlushStates()
+            _messages.value = emptyList()
+            _error.value = null
+            _cachedLatestMarker = null
+            _compactSummary.value = null
+            toolLoopDetector.reset()
+            _canResume.value = false
+            _attachments.value = emptyList()
+            _hasInjectedShareContent.value = false
+            _selectedToolDetailId.value = null
+            if (helperConfig == null) _browserTabPoolRef?.destroyAllTabs()
+            runCatching { java.io.File(context.filesDir, "browser_tabs/$owner.json").delete() }
+            AppLogger.info(TAG, "clearChat: session=$owner wiped (files preserved)")
         }
     }
 
@@ -5714,7 +5515,7 @@ class ChatViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop (queued-drain) error", e)
-                setInlineError(e.message ?: "Unknown error")
+                reportTurnError(e.message ?: "Unknown error")
                 break
             }
         }
@@ -6084,25 +5885,6 @@ class ChatViewModel(
                 isAwaitingModelResponse = false,
             )
             _messages.value = msgs
-            // [T-error-persist-android] Persist the terminal error so the inline
-            // error + Retry button survive a session reload. The in-memory bubble
-            // id differs from the persisted row id, so the row is found in the DB.
-            //
-            // [T-android-error-persist-current-turn] GH#263: the row must belong
-            // to the CURRENT turn. Targeting "the session's last assistant row"
-            // stamped the previous turn's good reply whenever this turn failed
-            // before persisting any output. persistTurnError stamps this turn's
-            // newest assistant row, or inserts an empty carrier row when the
-            // turn has none. Clears still use updateLastAssistantError(null).
-            val sid = realSessionId.ifEmpty { sessionId }
-            if (sid.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        val write = chatRepository.persistTurnError(sid, safeError)
-                        AppLogger.info(TAG, "[ErrorPersist] sid=${sid.take(8)} $write")
-                    } catch (e: Exception) { Log.w(TAG, "persist error_info failed: ${e.message}") }
-                }
-            }
         } else {
             // No assistant message yet — fall back to top-level error
             _error.value = safeError
@@ -6132,40 +5914,14 @@ class ChatViewModel(
         if (msg.error == null) return
         msgs[lastAssistantIdx] = msg.copy(error = null)
         _messages.value = msgs
-        // [T-error-persist-android] Clear the persisted sticker too, so a
-        // recovered turn doesn't resurrect the error banner on the next reload.
-        // Clear by the message's source DB rows when known (the in-memory bubble
-        // maps to one or more persisted rows via sourceDbIds); fall back to the
-        // last-assistant-row update otherwise.
-        val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isNotEmpty()) {
-            val dbIds = msg.sourceDbIds
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    if (dbIds.isNotEmpty()) {
-                        dbIds.forEach { chatRepository.updateMessageErrorInfo(it, null) }
-                    } else {
-                        chatRepository.updateLastAssistantError(sid, null)
-                    }
-                } catch (e: Exception) { Log.w(TAG, "clear error_info failed: ${e.message}") }
-            }
-        }
     }
 
-    /**
-     * [T-error-persist-android] Fire-and-forget: clear the persisted error
-     * sticker on the session's last assistant row. Called from the resume / retry
-     * entrypoints that drop the in-memory error but don't go through
-     * [clearInlineError], so a recovered turn can't merge-resurrect the old
-     * banner on the next reload. No-op when there's no session/row yet.
-     */
-    private fun clearPersistedLastAssistantError() {
-        val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try { chatRepository.updateLastAssistantError(sid, null) }
-            catch (e: Exception) { Log.w(TAG, "clear error_info (persisted) failed: ${e.message}") }
-        }
+    private val errorJournal by lazy { com.openminis.app.agent.AgentErrorJournal(chatRepository) { activeSessionId } }
+
+    private suspend fun reportTurnError(errorText: String) {
+        val owner = activeSessionId
+        setInlineError(errorText)
+        errorJournal.terminal(owner, _messages.value.lastOrNull { it.role == "assistant" }?.error ?: errorText)
     }
 
     /** Retry preserves completed tool cards; the runtime retires only the exact failed response.
@@ -6205,95 +5961,6 @@ class ChatViewModel(
             val fallbacks = buildFallbackProviders(provider)
             runAgentLoop(provider, prompt, fallbacks, strategy)
             drainQueuedPrompts(provider, prompt, fallbacks, strategy)
-        }
-    }
-
-    /**
-     * Unwrap exceptions thrown inside callbackFlow.
-     * callbackFlow wraps internal throws into CancellationException(cause=original).
-     * This extracts the original LLMError if present.
-     */
-    /**
-     * Sanitize agentHistory before each API call to ensure tool_use/tool_result pairing.
-     * Mirrors iOS AIChatViewModel pre-API validation.
-     *
-     * Ensures: every assistant message with tool_use is immediately followed by a user
-     * message containing the matching tool_result(s). Handles:
-     * - Duplicate tool IDs across messages (from provider fallback/retry)
-     * - Orphaned tool_use without any tool_result
-     * - Orphaned tool_result without matching tool_use
-     * - Assistant text after tool_use in the same message (Anthropic rejects this)
-     */
-    private fun sanitizeAgentHistory() {
-        // Walk through history sequentially, checking each assistant message.
-        // For each assistant message with tool_use blocks, verify the NEXT message
-        // is a user message with matching tool_result blocks. If not, inject them.
-        var i = 0
-        while (i < agentHistory.size) {
-            val msg = agentHistory[i]
-            if (msg.role != LLMMessage.Role.ASSISTANT) { i++; continue }
-
-            val toolUses = msg.contentParts.filterIsInstance<AgentContentPart.ToolUse>()
-            if (toolUses.isEmpty()) { i++; continue }
-
-            // [T-android-responses-tool-id-normalize] Keys, not raw ids -
-            // see ToolHistorySanitizer. On raw ids a call stored "call|fc"
-            // whose result carried the bare call id got a fake "interrupted"
-            // result here, and its REAL result was then deleted as an orphan.
-            val toolUseIds = toolUses.map { com.openminis.app.provider.ToolPairing.key(it.id) }.toSet()
-
-            // Check next message for matching tool_results
-            val next = agentHistory.getOrNull(i + 1)
-            val nextResultIds = next?.contentParts
-                ?.filterIsInstance<AgentContentPart.ToolResult>()
-                ?.map { com.openminis.app.provider.ToolPairing.key(it.id) }?.toSet() ?: emptySet()
-
-            val missingIds = toolUseIds - nextResultIds
-            if (missingIds.isEmpty()) { i++; continue }
-
-            // Some tool_uses have no matching tool_result in the next message.
-            // If next message is a user message, add the missing results to it.
-            // Otherwise, inject a new user message with placeholder results.
-            val placeholders = toolUses.filter { com.openminis.app.provider.ToolPairing.key(it.id) in missingIds }.map { use ->
-                AgentContentPart.ToolResult(
-                    id = use.id, name = use.name,
-                    content = "Tool execution was interrupted by an unexpected error.",
-                    isError = true,
-                )
-            }
-            Log.w(TAG, "sanitize: injecting ${placeholders.size} placeholder tool_result(s) after history[$i]")
-
-            if (next != null && next.role == LLMMessage.Role.USER &&
-                next.contentParts.any { it is AgentContentPart.ToolResult }) {
-                // Append missing results to the existing user message
-                agentHistory[i + 1] = next.copy(
-                    contentParts = next.contentParts + placeholders
-                )
-            } else {
-                // Insert a new user message with just the placeholder results
-                agentHistory.add(i + 1, LLMMessage(
-                    role = LLMMessage.Role.USER, content = "",
-                    contentParts = placeholders,
-                ))
-            }
-            i++
-        }
-
-        // Remove orphaned tool_results (result IDs not found in any tool_use)
-        val allToolUseIds = agentHistory.flatMap { it.contentParts }
-            .filterIsInstance<AgentContentPart.ToolUse>().map { com.openminis.app.provider.ToolPairing.key(it.id) }.toSet()
-        val iter = agentHistory.listIterator()
-        while (iter.hasNext()) {
-            val msg = iter.next()
-            if (msg.role != LLMMessage.Role.USER) continue
-            val cleaned = msg.contentParts.filter { part ->
-                part !is AgentContentPart.ToolResult || com.openminis.app.provider.ToolPairing.key(part.id) in allToolUseIds
-            }
-            if (cleaned.isEmpty() && msg.content.isBlank()) {
-                iter.remove()
-            } else if (cleaned.size < msg.contentParts.size) {
-                iter.set(msg.copy(contentParts = cleaned))
-            }
         }
     }
 
@@ -6865,7 +6532,7 @@ class ChatViewModel(
         val runtime = AgentConversationRuntime(runJournal, agentHistory, { activeSessionId }, initialSelection,
             systemPrompt, turnCap, helperConfig != null, contextPlanner, cancellationCoordinator,
             compactionSummarizer, toolLoopDetector, TOOL_INPUT_CHUNK_RING_MAX, CANCELLED_MARKER, scriptedTurnFor(prefill), resumePrevious,
-            subagentResults = subagentJournal)
+            subagentResults = subagentJournal, personaReminder = personaReminder)
         val conversationJournal = runtime.conversation
 
 
@@ -6921,7 +6588,7 @@ class ChatViewModel(
                     }
                 } }),
             context = AgentConversationRuntime.Context(
-                sanitize = ::sanitizeAgentHistory, snapshotFacts = ::runtimeContextFacts,
+                snapshotFacts = ::runtimeContextFacts,
                 effectiveHistory = ::effectiveAgentHistory,
                 tools = { agentTools }, window = ::effectiveContextWindowTokens,
                 offload = { window, tokens -> offloadContextIfNeeded(window, tokens) },
@@ -7118,7 +6785,7 @@ class ChatViewModel(
                             com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
                             com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
                         }
-                        withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
+                        withContext(Dispatchers.Main) { reportTurnError(context.getString(resource)) }
                     }
                     when (val action = decision.action) {
                         AgentLoopEngine.Action.Next -> {
@@ -7126,7 +6793,7 @@ class ChatViewModel(
                             _canResume.value = false
                         }
                         is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
-                            withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
+                            withContext(Dispatchers.Main) { reportTurnError(context.getString(R.string.chat_error_stream_dropped_partial)) }
                             markLiveInterruption()
                             _canResume.value = true
                         } else if (frame.index == 0) generateSessionTitleIfNeeded()
@@ -7162,7 +6829,6 @@ class ChatViewModel(
                     enhancedCache = { _enhancedCacheEnabled.value },
                     configure = { projection.configure(it.streamTextIsMonolithic, it.model.id) },
                         source = {
-                            if (personaReminderIsDue(runtime.contextTokens)) appendPersonaReminderToHistory(runtime.contextTokens)
                             val model = runtime.provider.model
                             AgentConversationRuntime.InputSource(effectiveAgentHistory(),
                                 resolvedContextWindow(model)?.first ?: model.contextWindowTokens, _thinkingLevel.value)
@@ -7419,7 +7085,7 @@ class ChatViewModel(
      * we stopped, and arms canResume so the user can continue from here.
      * Mirrors iOS AIChatViewModel.swift:4922-4929 pattern (canResume + error).
      */
-    private fun finalizeAtTurnLimit(
+    private suspend fun finalizeAtTurnLimit(
         assistantId: String,
         text: String,
         blocks: List<AssistantBlock>,
@@ -7443,7 +7109,7 @@ class ChatViewModel(
         // [T-agent-wrapup-turn] Name the cap that applied: a helper stops at
         // helperConfig.maxTurns, not the chat's MAX_AGENT_TURNS.
         val cap = helperConfig?.maxTurns ?: MAX_AGENT_TURNS
-        setInlineError(
+        reportTurnError(
             if (helperConfig != null)
                 "The agent stopped after its $cap tool rounds without a final answer."
             else
@@ -8419,7 +8085,9 @@ class ChatViewModel(
         // setInlineError (which persisted an error sticker on the last assistant
         // row). Clear it now so a successful resume doesn't merge-resurrect the
         // turn-limit banner on the next reload.
-        clearPersistedLastAssistantError()
+        val resumeOwner = activeSessionId
+        val resumeRows = _messages.value.lastOrNull { it.role == "assistant" }?.sourceDbIds.orEmpty().toSet()
+        clearInlineError()
         AppLogger.info(TAG, "▶️ resume: continuing partial assistant message (no new header emitted)")
         // [T-android-tool-autoscroll] Start-of-turn snap. The thinking
         // placeholder is the only visible delta until the model's first
@@ -8430,7 +8098,9 @@ class ChatViewModel(
 
         // Claim the run synchronously; cancellation owns preparation as well as the stream.
         _isStreaming.value = true
-        launchAgentRun(viewModelScope, "resume", markFailure = false) {
+        launchAgentRun(viewModelScope, "resume", markFailure = false, prepare = {
+            errorJournal.clear(resumeOwner, resumeRows)
+        }) {
             val baseSystemPrompt = buildSystemPrompt()
             val systemPrompt =
                 if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {

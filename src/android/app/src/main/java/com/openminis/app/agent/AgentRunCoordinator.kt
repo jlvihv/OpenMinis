@@ -12,7 +12,7 @@ internal class AgentRunCoordinator {
     private var mutation: Job? = null
     val mutating: Boolean get() = job === mutation && job?.isCompleted == false
 
-    fun mutate(scope: CoroutineScope, failed: (Exception) -> Unit, body: suspend () -> Unit): Job {
+    fun mutate(scope: CoroutineScope, failed: suspend (Exception) -> Unit, body: suspend () -> Unit): Job {
         val previous = job
         val launched = scope.launch(Dispatchers.Main, start = CoroutineStart.LAZY) {
             try {
@@ -36,7 +36,7 @@ internal class AgentRunCoordinator {
 
     fun launch(scope: CoroutineScope, sessionId: String, label: String, bypassSlot: Boolean,
         markFailure: Boolean, title: () -> String?, stop: () -> Unit, beforeInactive: () -> Unit,
-        failed: (Exception) -> Unit, settled: () -> Unit,
+        failed: suspend (Exception) -> Unit, settled: () -> Unit,
         prepareSession: suspend () -> String = { sessionId }, prepare: suspend () -> Unit = {},
         body: suspend () -> Unit): Job {
         val previous = job
@@ -72,7 +72,7 @@ internal class AgentRunCoordinator {
 
     private suspend fun run(sessionId: String, label: String, bypassSlot: Boolean, markFailure: Boolean,
         title: () -> String?, stop: () -> Unit, beforeInactive: () -> Unit,
-        failed: (Exception) -> Unit, body: suspend () -> Unit) {
+        failed: suspend (Exception) -> Unit, body: suspend () -> Unit) {
         AppLogger.info(TAG, "$label run ENTER sid=$sessionId")
         var lease: SessionConcurrencyManager.Lease? = null
         var active = false

@@ -17,7 +17,7 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
         data class Tool(val id: String) : Target
     }
     fun delete(scope: CoroutineScope, coordinator: AgentRunCoordinator, target: Target.User,
-        failed: (Exception) -> Unit, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit): Job =
+        failed: suspend (Exception) -> Unit, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit): Job =
         coordinator.mutate(scope, failed) {
             checkBranch()
             prepare(target, published = published)
