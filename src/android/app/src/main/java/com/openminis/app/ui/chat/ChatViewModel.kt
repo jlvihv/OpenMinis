@@ -25,7 +25,6 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Extension
 import com.openminis.app.data.BPETokenizer
 import com.openminis.app.data.ContextOffload
-import com.openminis.app.data.ContextOverflowGuard
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.data.ContextSizeMeter
 import com.openminis.app.data.model.SessionTokenStats
@@ -82,7 +81,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -8054,18 +8052,6 @@ class ChatViewModel(
         return e
     }
 
-    /**
-     * Compute max output tokens that fits within the remaining context window.
-     * Logic mirrors iOS's dynamicMaxTokens():
-     *   result = min(output ceiling, max(contextWindow - inputTokens, 1024))
-     *
-     * @param provider The current LLM provider (carries defaultMaxTokens).
-     * @param lastContextTokens API-reported input token count from the last call (0 = first call).
-     */
-    private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int =
-        contextPlanner.outputBudget(provider, lastContextTokens,
-            resolvedContextWindow(provider.model)?.first ?: provider.model.contextWindowTokens)
-
     // ─── Context Window Offload ──────────────────────────────────────────────
     //
     // Mirrors iOS `AIChatViewModel.swift`:
@@ -8650,11 +8636,8 @@ class ChatViewModel(
             fallbackProviders, fallbackStrategy, _activeEntryId.value,
             identity = { it.entryId }, candidates = ::buildFallbackProviders,
         )
-        // [T-android-context-overflow-selfheal] (GH#352) One self-heal per run.
-        // The heal offloads the single biggest part; if the request still
-        // overflows after that, retrying the same move would just strip the
-        // conversation part by part, so the error surfaces instead.
-        var hasAttemptedOverflowSelfHeal = false
+        val requestCycle = com.openminis.app.agent.AgentRequestCycle(providerRecovery,
+            provider = { currentProvider }, entryId = { _activeEntryId.value }, candidateProvider = { it.provider })
 
         // Add placeholder assistant message (once). Mark as awaiting so the
         // "Minis is thinking" indicator shows during the initial request gap
@@ -9092,21 +9075,10 @@ class ChatViewModel(
                         }
                     }
                 })
-            var lastUsage: LLMUsage? = null
-            var turnAttribution = runAttribution
-            var turnCalibration: Triple<Int, Int, String?>? = null
-            var turnDispatch: com.openminis.app.agent.AgentContextPlanner.Dispatch? = null
-            // [T-android-token-usage-output-speed] Wall-clock milliseconds this
-            // turn spent streaming, accumulated across every attempt (a
-            // retried 5xx streams more than once). Persisted with the turn's
-            // usage row so Output Speed survives an app restart, like every
-            // other figure in the Token Usage sheet — unlike iOS, which keeps
-            // its equivalent in memory and loses it when the VM goes away.
-            var turnStreamMs = 0L
-            val maxTokens = dynamicMaxTokens(provider, lastContextTokens)
             val turnContent = com.openminis.app.agent.AgentTurnContent()
             val turnJournal = cancellationCoordinator.begin(runJournal, turnContent, assistantId, CANCELLED_MARKER)
-            turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(null, 0, turnAttribution, null))
+            val modelTurn = com.openminis.app.agent.AgentModelTurn(runJournal.sessionId, turn,
+                contextPlanner, compactionSummarizer, turnContent, toolInputChunkRings, turnJournal, runAttribution)
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
             // Some upstream OpenAI-compatible gateways occasionally emit
@@ -9131,10 +9103,7 @@ class ChatViewModel(
             // Stream the response — with auto-retry on transient errors, then fallback.
             // callbackFlow wraps throws into CancellationException(cause=LLMError),
             // so we catch at collect level and unwrap.
-            var collectDone = false
-            val requestRecovery = com.openminis.app.agent.AgentRequestRecovery()
-            while (!collectDone) {
-                try {
+            requestCycle.run(attempt = {
                     // [T-android-enhanced-cache] Stamp the per-turn Enhanced
                     // Cache flag onto the active provider here — the single
                     // choke point every turn passes through, regardless of how
@@ -9155,93 +9124,19 @@ class ChatViewModel(
                     // below the provider (DNS/TCP/TLS/read), which no existing
                     // log covers. `firstChunkSeen` is flipped in the collector.
                     projection.configure(currentProvider.streamTextIsMonolithic, currentProvider.model.id)
-                    val attempt = com.openminis.app.agent.AgentStreamAttempt(runJournal.sessionId, turn,
-                        currentProvider.javaClass.simpleName, agentHistory.size, turnContent, toolInputChunkRings,
-                        currentProvider.streamTextIsMonolithic,
-                        firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
-                        duration = { turnStreamMs += it; turnJournal.recordDuration(turnStreamMs) })
-                    attempt.collect(create = {
-                    turnDispatch = null
-                    turnCalibration = null
-                    // [T-scheduled-tool-prefill] A prefilled turn streams the
-                    // calls that were decided ahead of time instead of asking the
-                    // provider. Everything downstream of `collect` is the same code a
-                    // model-emitted call runs through: the tool card, dispatch,
-                    // persistence as tool_use + tool_result rows, agentHistory. The
-                    // request-side bookkeeping below (persona reminder, context meter,
-                    // payload audit) describes a request that is not made, so it is
-                    // skipped. Consumed here, on the first attempt, so a retry of this
-                    // turn could never replay it (the scripted stream cannot fail).
                     val scriptedTurn = pendingScriptedTurn?.takeUnless { helperWrapUpInjected }
                     pendingScriptedTurn = null
-                    val turnChunks: kotlinx.coroutines.flow.Flow<LLMStreamChunk> = if (scriptedTurn != null) {
-                        AppLogger.info(
-                            TAG_STREAM,
-                            "[ScheduledPrefill] turn=$turn streaming ${scriptedTurn.calls.size} prefilled tool call(s) " +
-                                "[${scriptedTurn.calls.joinToString { it.toolName + ":" + it.id }}] in place of a model request",
-                        )
-                        kotlinx.coroutines.flow.flowOf(*scriptedTurn.asStreamChunks().toTypedArray())
-                    } else {
-                        // Route through effectiveAgentHistory() so a populated
-                        // [_compactSummary] is prepended as a `<context-summary>`
-                        // user message. Falls through to the raw agentHistory when
-                        // no compact has happened, so the common path stays zero-copy.
-                        // [T-longctx-persona-reminder-cachebreak] Past ~100k
-                        // tokens, remind the model that the user's SOUL.md
-                        // rules at the head of the system prompt still
-                        // apply (issue #37).
-                        //
-                        // This used to rewrite the outbound copy's LAST message on
-                        // every round, which broke the prompt cache (the "last
-                        // message" differs each round, so already-cached history
-                        // kept changing) and fused the reminder onto ToolResult
-                        // content (a file read looked like it carried an injected
-                        // tag). Now it is APPENDED to agentHistory as its own
-                        // persisted message, at most once per
-                        // [personaReminderRearmTokens] of context growth — earlier
-                        // bytes are never touched, so the cache prefix still hits.
-                        if (personaReminderIsDue(lastContextTokens)) {
-                            appendPersonaReminderToHistory(lastContextTokens)
-                        }
-                        // [T-ctx-measure-outbound] Record our estimate of THIS request
-                        // (pre-budget, like every measurement) so the provider's count
-                        // for it calibrates the meter, and size max_tokens from it.
-                        val outboundHistory = effectiveAgentHistory()
-                        val requestTools = if (helperWrapUpInjected) emptyList() else agentTools
-                        val requestModel = currentProvider.model
-                        val plan = contextPlanner.plan(currentProvider, requestModel, outboundHistory,
-                            resolvedContextWindow(requestModel)?.first ?: requestModel.contextWindowTokens,
-                            loopSystemPrompt, requestTools, _thinkingLevel.value)
-                        val dispatch = plan.dispatch
-                        turnDispatch = dispatch
-                        val requestMaxTokens = plan.maxTokens
-                        AppLogger.info(
-                            TAG,
-                            "[CtxMeter] dispatch model=${dispatch.model.id} estimate=${dispatch.estimate} " +
-                                "ratio=${"%.3f".format(dispatch.ratio)} predicted=${dispatch.predicted} maxTokens=$requestMaxTokens",
-                        )
-                        val requestHistory = auditOutgoingPayload(applyRequestImageBudget(outboundHistory))
-                        val requestThinking = plan.thinking
-                        val warmCandidate = CompactionSummarizer.ConversationRequest(currentProvider,
-                            com.openminis.app.agent.CachedCompaction.snapshot(requestHistory), loopSystemPrompt,
-                            requestTools, requestThinking, runAttribution)
-                        turnAttribution = runAttribution
-                        currentProvider.streamMessage(
-                            requestHistory,
-                            loopSystemPrompt, requestMaxTokens,
-                            tools = requestTools,
-                            // [T-switch-model-thinking-gate] Gate on the provider that
-                            // serves THIS turn. selectEntry swaps the class-level
-                            // currentModel mid-turn while the turn keeps its local
-                            // provider, so reading the class-level model would send the
-                            // NEW model's reasoning decision to the OLD model.
-                            thinkingLevel = requestThinking,
-                        ).onEach { chunk ->
-                            if (chunk is LLMStreamChunk.Usage && chunk.usage.latestContextTokens > 0) compactionSummarizer.remember(warmCandidate)
-                        }
-                    }
-                    turnChunks
-                    }, consume = { chunk ->
+                    modelTurn.collect(currentProvider, scriptedTurn, agentHistory.size,
+                        prepare = {
+                            if (personaReminderIsDue(lastContextTokens)) appendPersonaReminderToHistory(lastContextTokens)
+                            val model = currentProvider.model
+                            com.openminis.app.agent.AgentModelTurn.Input(currentProvider, effectiveAgentHistory(),
+                                resolvedContextWindow(model)?.first ?: model.contextWindowTokens,
+                                loopSystemPrompt, if (helperWrapUpInjected) emptyList() else agentTools,
+                                _thinkingLevel.value, runAttribution)
+                        }, wireHistory = { auditOutgoingPayload(applyRequestImageBudget(it)) },
+                        firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
+                        consume = { chunk ->
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta,
                     is LLMStreamChunk.Text,
@@ -9249,23 +9144,10 @@ class ChatViewModel(
                     is LLMStreamChunk.ToolInputDelta,
                     is LLMStreamChunk.ToolCallComplete -> projection.accept(chunk)
                     is LLMStreamChunk.Usage -> {
-                        lastUsage = chunk.usage
-                        turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(
-                            chunk.usage, turnStreamMs, turnAttribution, null))
-                        // Update context token count for next turn's dynamicMaxTokens()
-                        // and publish to _lastTurnContextTokens so the ContextPolicy
-                        // gate in [checkContextBeforeSend] can see the latest pressure
-                        // without a DB round-trip.
-                        val reportedContext = contextPlanner.reportedContext(chunk.usage)
+                        val reportedContext = modelTurn.reportedContext
                         if (reportedContext > 0) {
                             lastContextTokens = reportedContext
                             _lastTurnContextTokens.value = reportedContext
-                            // [T-ctx-measure-outbound] Pair the report with our
-                            // estimate of the same request; the pair (persisted
-                            // with the turn) is what capacity decisions use.
-                            turnCalibration = contextPlanner.calibrate(turnDispatch, lastContextTokens)
-                            turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(
-                                chunk.usage, turnStreamMs, turnAttribution, turnCalibration))
                             // [T-android-context-usage-hint] Mid-loop path: a
                             // turn that runs tools for minutes should not stay
                             // silent until it finishes, so a genuine upward
@@ -9298,212 +9180,39 @@ class ChatViewModel(
                     // accumulated text-deltas, so we must not leave the last
                     // 0-50ms worth on the floor.
                     projection.finish()
-                    collectDone = true
-                    // [T-android-fallback-chain-refill] A turn that streamed
-                    // cleanly ends the failure streak: whatever was wrong with
-                    // the members we skipped may well have passed, and holding
-                    // them out for the rest of a long tool run is what left
-                    // later turns with no candidates at all. Keep the CURRENT
-                    // entry in the set so an immediate re-failure still moves
-                    // off it rather than retrying the same model first.
-                    providerRecovery.succeeded(_activeEntryId.value)
-                    // Stream completed without error — clear any lingering retry UI state.
-                    if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
-                        _autoRetryAttempt.value = 0
-                        _autoRetryCountdown.value = 0
-                    }
                     })
-                } catch (e: Exception) {
-                    if (e is CancellationException && e.cause == null) throw e  // real job cancellation
-                    val actual = unwrapFlowException(e)
-                    val isRateLimit = actual is com.openminis.app.data.model.LLMError.RateLimited
-                    // [T-android-503-fallback] A confirmed HTTP 5xx, taken from
-                    // the structured status the provider mappers now attach.
-                    //
-                    // This used to be `ProviderError && detail matches [5][0-9]{2}`,
-                    // which was wrong in both directions. It missed the common
-                    // case: every provider maps 500/502/503/504/529 to
-                    // TransientError, so an ordinary 503 (including the
-                    // `no_available_workers` / circuit-breaker-open bodies users
-                    // reported) was never 5xx here — under the `default` strategy
-                    // it exhausted the same-model retries and then threw instead
-                    // of moving to the next model in the group, contradicting the
-                    // group setting's own description. And it over-matched: the
-                    // unanchored regex read any three digits starting with 5,
-                    // so a "5000 tokens" message counted as a server error.
-                    //
-                    // Deliberately NOT `actual is TransientError`: local failures
-                    // (dead network, TTFB timeout, empty stream) map to
-                    // TransientError with no status, and switching models cannot
-                    // help those.
-                    val is5xx = (actual as? com.openminis.app.data.model.LLMError)
-                        ?.isHttpServerError == true
-                    // Auto-retry on transient network/5xx/transient errors on the SAME provider
-                    // before considering a fallback (mirrors iOS streamWithAutoRetry).
-                    // Rate limits are provider-level signals that should trigger fallback immediately,
-                    // not retry on the same provider.
-                    // [T-android-503-fallback] Retry membership is unchanged by
-                    // the is5xx rewrite above. It stays keyed on the error CLASS
-                    // so a 5xx the provider already judged permanent for this
-                    // model (OpenAI maps 503 + `no_available_providers` /
-                    // `model_not_found` to ProviderError) keeps falling back
-                    // immediately rather than newly sitting through three
-                    // same-model retries that its own body says are pointless.
-                    val retry = requestRecovery.nextRetry(actual)
-                    if (retry != null) {
-                        // [T-android-stop-retry-countdown] A stopped turn must
-                        // not start a countdown: the failure it would show is
-                        // most likely the Stop itself (OkHttp reports a
-                        // cancelled call as an IOException, i.e. NetworkError).
-                        // Mirrors iOS streamWithAutoRetry's checkCancellation.
-                        if (!kotlin.coroutines.coroutineContext.isActive) throw CancellationException("stopped before retry countdown")
-                        val errDesc = actual.message ?: actual.javaClass.simpleName
-                        Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry ${retry.attempt}/${retry.limit} in ${retry.delaySeconds}s: $errDesc")
-                        withContext(Dispatchers.Main) {
-                            _autoRetryAttempt.value = retry.attempt
-                            setTransientInlineError("$errDesc — retrying (${retry.attempt}/${retry.limit})…")
-                        }
-                        requestRecovery.countdown(retry,
-                            remaining = { _autoRetryCountdown.value = it },
-                            cancelled = { _autoRetryAttempt.value = 0 })
-                        // Clear inline error so the retry attempt can start cleanly.
-                        withContext(Dispatchers.Main) {
-                            clearInlineError()
-                        }
-                        // Roll back partial blocks from the failed stream attempt so the retried
-                        // stream's deltas don't double-append on top of stale content. Previous
-                        // turns (everything before turnStartBlockIndex) are preserved.
-                        if (allToolBlocks.size > turnStartBlockIndex) {
-                            while (allToolBlocks.size > turnStartBlockIndex) {
-                                allToolBlocks.removeAt(allToolBlocks.size - 1)
-                            }
-                            // [T-android-fallback-text-rewind] Keep this turn's
-                            // already-streamed text on screen across the rollback.
-                            // `accumulatedText` only folds in `turnTextSb` after the
-                            // while loop completes successfully, so passing bare
-                            // `accumulatedText` here would visibly rewind everything
-                            // the user already read this turn. The next attempt
-                            // streams into a fresh `turnTextSb` and re-publishes
-                            // `accumulatedText + newTurnText`, so this transient
-                            // value is overwritten cleanly (no duplication).
-                            withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
-                            }
-                        }
-                        projection.resetAttempt()
-                        turnContent.resetAttempt()
-                        continue  // retry on same provider
-                    }
-                    // Retries exhausted or non-retryable — proceed to fallback / throw.
+            }, retrying = { actual, retry ->
+                val errDesc = actual.message ?: actual.javaClass.simpleName
+                Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry ${retry.attempt}/${retry.limit} in ${retry.delaySeconds}s: $errDesc")
+                withContext(Dispatchers.Main) {
+                    _autoRetryAttempt.value = retry.attempt
+                    setTransientInlineError("$errDesc — retrying (${retry.attempt}/${retry.limit})…")
+                }
+            }, countdown = { _autoRetryCountdown.value = it },
+                retryCancelled = { _autoRetryAttempt.value = 0 },
+                clearRetry = {
                     _autoRetryAttempt.value = 0
                     _autoRetryCountdown.value = 0
-                    // [T-android-timeout-while-running] Clear any transient
-                    // inline error from the prior retry attempts before we
-                    // either fall back (loop continues with a new provider)
-                    // or throw (terminal setInlineError below re-sets it
-                    // with the final non-retryable message). Without this,
-                    // a transient banner from the previous attempt could
-                    // linger as the new provider starts streaming — the
-                    // updateAssistantMessage(isStreaming=true) defense
-                    // catches it on the next delta, but clearing here
-                    // makes the intent explicit and avoids a one-frame
-                    // flash of the stale banner.
                     withContext(Dispatchers.Main) { clearInlineError() }
-                    // [T-android-fallback-providererror] `isFallbackable` was
-                    // defined on LLMError but had ZERO call sites — the whole
-                    // classifier was dead code, so a ProviderError (the shape a
-                    // 400 / 404 / permanent-4xx arrives in) could never move to
-                    // the next model in the group. Wiring it in is what makes
-                    // mid-stream 400/401/429 failures fall back at all.
-                    //
-                    // InvalidApiKey is deliberately INCLUDED rather than split
-                    // out. The intuition "auth is the user's problem, switching
-                    // cannot help" is wrong for the fallback chain specifically:
-                    // every candidate is a DIFFERENT ProviderInstance with its
-                    // own credential (buildFallbackProviders skips any instance
-                    // failing `hasAnyCredential`), so a 401 on instance A says
-                    // nothing about instance B. A revoked Anthropic key should
-                    // move the turn to the OpenAI member, not kill it. When the
-                    // chain is exhausted the error still surfaces verbatim
-                    // through the terminal path below, so the user is never
-                    // silently left without the auth message.
-                    // [T-android-context-overflow-selfheal] (GH#352) A
-                    // context-length 400 is the one error a session cannot
-                    // recover from by itself: the part that overflowed is
-                    // already persisted, so every retry and every fallback
-                    // model rebuilds the identical oversized request. The
-                    // reporter's sessions were permanently unusable — only a
-                    // new chat worked.
-                    //
-                    // Compaction does not help either: it summarises text, and
-                    // what overflowed here is one part that dwarfs the rest.
-                    // So offload the largest offending part to disk and retry —
-                    // the content is preserved and addressable by path, the
-                    // history keeps its shape, and the turn can proceed.
-                    //
-                    // Gated on the provider having ACTUALLY said "too long", so
-                    // no other 400 can trigger a history mutation.
-                    val overflowErr = actual as? com.openminis.app.data.model.LLMError.ProviderError
-                    if (!hasAttemptedOverflowSelfHeal &&
-                        ContextOverflowGuard.isContextOverflow(
-                            overflowErr?.httpStatus,
-                            overflowErr?.detail,
-                        )
-                    ) {
-                        hasAttemptedOverflowSelfHeal = true
-                        // [T-ctx-measure-outbound] Ground truth that we under-read
-                        // this request: raise the ratio whether or not the
-                        // offload below heals it, so the next judgement (this
-                        // retry's successor, Resume, or the next send) sees the
-                        // real size and compacts.
-                        contextPlanner.overflow(turnDispatch, overflowErr?.detail ?: "")
-                        val healed = offloadLargestPartForOverflow()
-                        if (healed) {
-                            AppLogger.warning(
-                                TAG,
-                                "[OverflowSelfHeal] GH#352 context-length 400 — offloaded the " +
-                                    "largest history part and retrying. detail=" +
-                                    (overflowErr?.detail?.take(200) ?: ""),
-                            )
-                            withContext(Dispatchers.Main) {
-                                appendSystemInfo(
-                                    context.getString(R.string.context_overflow_selfheal_notice),
-                                    "compact",
-                                )
-                            }
-                            projection.resetAttempt()
-                            turnContent.resetAttempt()
-                            continue
-                        }
-                        AppLogger.warning(
-                            TAG,
-                            "[OverflowSelfHeal] GH#352 context-length 400 but nothing was " +
-                                "offloadable — surfacing the original error.",
-                        )
-                        // Fall through: the user still gets the real reason.
+                }, rollback = { discardPartialBlocks ->
+                    if (discardPartialBlocks) withContext(Dispatchers.Main) {
+                        while (allToolBlocks.size > turnStartBlockIndex) allToolBlocks.removeAt(allToolBlocks.size - 1)
+                        updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                     }
-                    // [T-ctx-overflow-no-cross-fallback] A context-length rejection
-                    // on a session pinned to ONE model is not a reason to answer
-                    // from a different one. directEntryFallbackCandidates would
-                    // route it to the user's default group — another vendor with
-                    // another window and quota — silently (seen on device: a
-                    // model the user never picked served the turn). The request
-                    // is recoverable where it is: noteContextOverflow above
-                    // raised the ratio, so Resume / the next send measures the
-                    // real size and compacts. Matches iOS, which never leaves a
-                    // pinned model. Group sessions still fall back inside their
-                    // group, as on iOS; other errors are unaffected.
-                    val isDirectEntryOverflow =
-                        ContextOverflowGuard.isContextOverflow(overflowErr?.httpStatus, overflowErr?.detail)
-                    val shouldFallback = providerRecovery.allows(actual, isDirectEntryOverflow, isRateLimit, is5xx)
-                    val nextCandidate = if (shouldFallback) providerRecovery.next(currentProvider, _activeEntryId.value) else null
-                    val next = nextCandidate?.provider
-                    if (next != null) {
-                        val reason = when {
-                            isRateLimit -> "Rate limited"
-                            actual is com.openminis.app.data.model.LLMError.ProviderError -> actual.detail
-                            else -> actual.message ?: "Error"
+                    projection.resetAttempt()
+                    turnContent.resetAttempt()
+                }, healOverflow = { error ->
+                    modelTurn.noteOverflow(error.detail)
+                    val healed = offloadLargestPartForOverflow()
+                    if (healed) {
+                        AppLogger.warning(TAG, "[OverflowSelfHeal] context-length rejection — offloaded largest history part; retrying")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(context.getString(R.string.context_overflow_selfheal_notice), "compact")
                         }
+                    } else AppLogger.warning(TAG, "[OverflowSelfHeal] nothing offloadable — surfacing original error")
+                    healed
+                }, adopted = { nextCandidate, reason, isRealModelChange ->
+                        val next = nextCandidate.provider
                         // [T-android-model-indicator-flash-on-endpoint-retry]
                         // Same-model recovery is a TRANSPARENT retry, not a real
                         // model switch. A model group can hold several entries
@@ -9515,19 +9224,9 @@ class ChatViewModel(
                         // silently. Only flash the model capsule when the
                         // resolved modelId ACTUALLY changes; an endpoint/instance-
                         // only change must not surface to the UI.
-                        val isRealModelChange = next.model.id != currentProvider.model.id
-                        providerRecovery.recordFailure(currentProvider.model.displayName, reason)
                         Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
                         currentProvider = next
                         runAttribution = modelSnapshotFor(next.model, nextCandidate.entryId)
-                        // [T-fallback-5xx-status] Fresh same-model budget for the
-                        // member we just switched to. The counter is per-turn, so
-                        // without this reset every member after the first got
-                        // zero retries: A spends 3, falls back to B, B's first
-                        // 5xx is immediately another fallback. A transient blip
-                        // on B that one 1s retry would have survived burned B
-                        // instead. iOS gives each entry its own ladder.
-                        requestRecovery.reset()
                         // [T-fallback-respects-user-switch] The fallback is this
                         // turn's business; the session binding is the user's. If
                         // selectEntry swapped the class-level provider while this
@@ -9603,33 +9302,8 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) {
                             updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                         }
-                        projection.resetAttempt()
-                        turnContent.resetAttempt()
-                        // loop continues — will retry collect with currentProvider
-                    } else {
-                        // All fallbacks exhausted. Surface the trail of tried
-                        // models AND the group members that were silently
-                        // skipped (disabled / not logged in / hidden) so the
-                        // user can see why fallback never reached them —
-                        // mirrors iOS streamWithGroupFallback exhausted path.
-                        // [T-compact-last-resort-removed] A forced-compaction
-                        // lap used to run here before the trail was surfaced.
-                        // Removed by product decision: "every candidate failed"
-                        // is equally true when the link drops, and compacting
-                        // on it threw away the user's history for a failure it
-                        // could not fix. Exhaustion now surfaces the errors.
-                        if (shouldFallback) {
-                            val skipped = unavailableGroupMembers()
-                            if (providerRecovery.failureTrail.isNotEmpty() || skipped.isNotEmpty()) {
-                                val trail = (providerRecovery.failureTrail + skipped).joinToString("\n")
-                                val finalDesc = actual.message ?: actual.toString()
-                                throw com.openminis.app.data.model.LLMError.ProviderError("$trail\n$finalDesc")
-                            }
-                        }
-                        throw actual  // re-throw unwrapped, all fallbacks exhausted
-                    }
-                }
-            }  // end while (!collectDone)
+                }, skippedCandidates = ::unavailableGroupMembers,
+            )
 
             // T307: materialise the per-turn StringBuilder ONCE at the
             // turn boundary. After this point everything is plain String
@@ -9688,8 +9362,8 @@ class ChatViewModel(
                 }
                 val turnParts = turnContent.parts()
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                persistAssistantTurn(turnJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
-                    turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
+                persistAssistantTurn(turnJournal, modelTurn.attribution, modelTurn.calibration, turnParts, modelTurn.usage,
+                    turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = modelTurn.streamMs)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
                 // reply and no tool blocks — the user just sees a blank bubble.
@@ -9807,7 +9481,7 @@ class ChatViewModel(
                         }
                     }
                     val window = effectiveContextWindowTokens()
-                    val usedCtx = lastUsage?.latestContextTokens ?: 0
+                    val usedCtx = modelTurn.usage?.latestContextTokens ?: 0
                     val contextNearFull = window != null && window > 0 && usedCtx > 0 &&
                         usedCtx.toDouble() / window.toDouble() > 0.70
                     val hint = when {
@@ -10015,8 +9689,8 @@ class ChatViewModel(
             // assistant entry — compact-marker boundary resolution depends on it.
             val turnParts = turnContent.parts()
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-            val assistantDbId = persistAssistantTurn(turnJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
-                turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
+            val assistantDbId = persistAssistantTurn(turnJournal, modelTurn.attribution, modelTurn.calibration, turnParts, modelTurn.usage,
+                turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = modelTurn.streamMs)
             if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
             if (assistantDbId != null) {
                 val lastIdx = agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
