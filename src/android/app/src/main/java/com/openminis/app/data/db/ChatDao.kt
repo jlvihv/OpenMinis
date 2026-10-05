@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
@@ -296,6 +297,18 @@ interface ChatDao {
 
     @Query("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM messages WHERE session_id = :sessionId")
     suspend fun nextSortOrder(sessionId: String): Int
+
+    @Query("UPDATE messages SET role = 'usage', parts_json = :receiptParts, error_info = NULL " +
+        "WHERE session_id = :sessionId AND id = :id AND role = 'assistant' AND token_usage IS NOT NULL")
+    suspend fun hideRetryAssistantReceipt(sessionId: String, id: String, receiptParts: String): Int
+
+    @Transaction
+    suspend fun retireRetryAssistant(sessionId: String, id: String, receiptParts: String) {
+        if (hideRetryAssistantReceipt(sessionId, id, receiptParts) == 0) deleteRetryAssistant(sessionId, id)
+    }
+
+    @Query("DELETE FROM messages WHERE session_id = :sessionId AND id = :id AND role = 'assistant'")
+    suspend fun deleteRetryAssistant(sessionId: String, id: String): Int
 
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
     suspend fun deleteMessages(sessionId: String)
