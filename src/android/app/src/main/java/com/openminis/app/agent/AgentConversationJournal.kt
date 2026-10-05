@@ -15,6 +15,7 @@ import kotlin.coroutines.coroutineContext
 internal class AgentConversationJournal(
     private val writer: AgentJournalWriter,
     private val history: MutableList<LLMMessage>,
+    private val subagentResults: AgentSubagentJournal? = null,
     private val currentSession: () -> String,
 ) {
     val sessionId: String get() = writer.sessionId
@@ -38,9 +39,16 @@ internal class AgentConversationJournal(
     }
 
     suspend fun commitResults(journal: AgentTurnJournal, parts: List<AgentContentPart>) {
-        val entity = journal.toolResults(parts)
-        checkBranch()
-        history.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = parts, dbMessageId = entity?.id))
+        if (subagentResults != null) {
+            subagentResults.commit(sessionId, journal, parts) { resolved, row ->
+                checkBranch()
+                history.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = resolved, dbMessageId = row?.id))
+            }
+        } else {
+            val entity = journal.toolResults(parts)
+            checkBranch()
+            history.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = parts, dbMessageId = entity?.id))
+        }
     }
 
     /** Resume instructions must be durable on the captured branch before the next request. */

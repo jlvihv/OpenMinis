@@ -13,10 +13,9 @@ import org.json.JSONObject
 // kills a run, and a final payload that is written back into the original
 // tool block and its stored tool_result.
 //
-// The orchestration (child session, child ViewModel, mirrors, watchers)
-// lives in `ChatViewModel.executeDelegateTask` because it needs the vm's
-// private message/block state. Everything pure — argument parsing, limits,
-// the JSON envelopes, the prompts — lives here so it is unit-testable.
+// Fresh delegation orchestration lives in AgentSubagentRuntime; child UI and
+// live-block access are adapters. Parsing, limits, JSON envelopes and prompts
+// remain here, shared with resumed and scheduled child sessions.
 
 /** Set on a child (helper) ChatViewModel before its first turn. */
 data class HelperConfig(

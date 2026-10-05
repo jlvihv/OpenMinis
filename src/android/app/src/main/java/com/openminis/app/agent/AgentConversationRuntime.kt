@@ -28,6 +28,7 @@ internal class AgentConversationRuntime<T>(
     private val cancelledMarker: String,
     scripted: ScriptedToolTurn?,
     private val resumePrevious: Boolean = false,
+    subagentResults: AgentSubagentJournal? = null,
 ) {
     data class Selection<T>(val provider: LLMProvider, val candidates: List<T>, val strategy: FallbackStrategy,
         val entryId: String?, val attribution: ModelAttributionSnapshot)
@@ -83,7 +84,7 @@ internal class AgentConversationRuntime<T>(
         val insertedReply: () -> InsertedReply?,
     )
 
-    val conversation = AgentConversationJournal(writer, history, currentSession)
+    val conversation = AgentConversationJournal(writer, history, subagentResults, currentSession)
     private val continuation = AgentTurnContinuation(history, writer)
     private val reply = AgentReplyContent()
     private val trace = AgentToolInputTrace(traceLimit)

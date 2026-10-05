@@ -181,6 +181,7 @@ object AgentJobRegistry {
      *  state), BEFORE `then` is dispatched — the delegate_task runner uses it
      *  to write the final payload into the parent's tool block. */
     private val completionHooks = HashMap<String, (AgentJob) -> Unit>()
+    private val completionTasks = HashMap<String, suspend (AgentJob) -> Unit>()
 
     /**
      * [T-p2-agent-series] How `then = FollowUpParent` reaches the parent
@@ -476,6 +477,22 @@ object AgentJobRegistry {
     fun setProgressLevel(jobId: String, level: String) { update(jobId) { it.copy(progressLevel = level) } }
     fun setSummaryLine(jobId: String, line: String) { update(jobId) { it.copy(summaryLine = line) } }
     fun setCompletionHook(jobId: String, hook: (AgentJob) -> Unit) { completionHooks[jobId] = hook }
+    /** Durable runtime completion runs before the parent callback. Registered/closed on Main. */
+    fun setCompletionTask(jobId: String, task: suspend (AgentJob) -> Unit) {
+        val job = job(jobId) ?: return
+        if (job.isActive) completionTasks[jobId] = task else deliverCompletionTask(job, task) {}
+    }
+
+    private fun deliverCompletionTask(job: AgentJob, task: suspend (AgentJob) -> Unit, delivered: () -> Unit) {
+        registryScope.launch {
+            try { task(job) } catch (failure: Exception) {
+                AppLogger.warning(TAG, "completion task failed job=${job.id.take(8)}: ${failure.message}")
+            } finally {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { delivered() }
+            }
+        }
+    }
+
     /** A wait-mode helper converts to background when the user follows up. */
     fun setThen(jobId: String, then: AgentJobThen) { update(jobId) { it.copy(then = then) } }
 
@@ -565,7 +582,7 @@ object AgentJobRegistry {
         // Every terminal state reports back — a parent that delegated in the
         // background must learn about a cancel / timeout / failure just as it
         // learns about success (the envelope carries `status`).
-        runThen(_jobs.value[jobId] ?: job)
+        val completionTask = completionTasks.remove(jobId)
         val dependents = _jobs.value.values.filter { dep ->
             dep.state == AgentJobState.PENDING &&
                 (dep.trigger as? AgentJobTrigger.OnCompletion)?.ofJobId == jobId
@@ -573,7 +590,12 @@ object AgentJobRegistry {
         if (dependents.isNotEmpty()) {
             AppLogger.info(TAG, "onCompletion dependents ${dependents.map { it.take(8) }} armed by ${jobId.take(8)} — producer runs them")
         }
-        _completions.tryEmit(AgentJobCompletion(jobId, state, dependents))
+        val delivered = {
+            runThen(_jobs.value[jobId] ?: job)
+            _completions.tryEmit(AgentJobCompletion(jobId, state, dependents))
+            Unit
+        }
+        if (completionTask == null) delivered() else deliverCompletionTask(_jobs.value[jobId] ?: job, completionTask, delivered)
         // [T-sub-agents-queue] A slot just freed.
         drainQueuedDelegations()
     }
