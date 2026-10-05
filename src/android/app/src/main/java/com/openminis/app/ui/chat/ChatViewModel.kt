@@ -802,6 +802,8 @@ class ChatViewModel(
      *  this, opening a session that previously fell back mid-run flashes the
      *  default model name for one frame before the persisted binding settles. */
     private val sessionLoaded = MutableStateFlow(false)
+    private var historyLoadJob: Job? = null
+    private var historyRestoreFailure: Exception? = null
 
     private val _sessionTitle = MutableStateFlow(UNTITLED_SESSION_TITLE)
     val sessionTitle: StateFlow<String> = _sessionTitle.asStateFlow()
@@ -1500,7 +1502,11 @@ class ChatViewModel(
                 } else _error.value = error.message ?: "Unknown error"
             } },
             settled = { _isStreaming.value = false },
-            prepareSession = { (prepareSession?.invoke() ?: sessionId).also { sessionId = it } }, prepare = prepare, body = {
+            prepareSession = {
+                historyLoadJob?.join()
+                historyRestoreFailure?.let { throw IllegalStateException("History restore failed; reopen the conversation before sending", it) }
+                (prepareSession?.invoke() ?: sessionId).also { sessionId = it }
+            }, prepare = prepare, body = {
                 try {
                     if (activeSessionId != sessionId) throw CancellationException("run branch changed before dispatch")
                     dispatched = true
@@ -3568,6 +3574,7 @@ class ChatViewModel(
     }.getOrDefault(false)
 
     private fun loadSession(scope: kotlinx.coroutines.CoroutineScope = viewModelScope): Job? {
+        if (scope === viewModelScope && sessionLoaded.value && streamJob?.isActive == true) return null
         // T-android-crash-detected-halt: when CrashFrequencyDetector
         // tripped (#459, ≥3 crashes in last hour), skip the heavy
         // session-restore path entirely. Re-running the same persisted
@@ -3588,7 +3595,10 @@ class ChatViewModel(
             )
             return null
         }
-        return scope.launch {
+        val previous = historyLoadJob
+        val loading = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            withContext(NonCancellable) { previous?.join() }
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             // [T-HANG-DIAG] timing markers to localise where session entry
             // stalls. Sentinel-tagged so a single grep -v can strip them
             // when this diagnostic is removed. Declared OUTSIDE the try
@@ -3694,58 +3704,11 @@ class ChatViewModel(
             // row is large. Stays inside the existing safe-mode guard above
             // (#466/#470) — we only move work, not gating.
             val tHangDiagBeforeLoad = System.currentTimeMillis()
-            data class LoadedSessionData(
-                val messages: List<com.openminis.app.data.db.MessageEntity>,
-                val ordered: List<ChatMessage>,
-                val llmHistory: List<LLMMessage>,
-                val loadMs: Long,
-                val transformMs: Long,
-            )
-            com.openminis.app.diagnostics.PerfLongCtx.step(sessionId, "db.query.begin")
-            val loaded = withContext(Dispatchers.IO) {
-                val tIoBeforeLoad = System.currentTimeMillis()
-                val rows = chatRepository.loadMessages(sessionId)
-                val tIoAfterLoad = System.currentTimeMillis()
-                com.openminis.app.diagnostics.PerfLongCtx.step(
-                    sessionId,
-                    "db.query.end",
-                    "count=${rows.size}",
-                )
-                val chatUi = rows.toChatMessages()
-                val tIoAfterTransform = System.currentTimeMillis()
-                com.openminis.app.diagnostics.PerfLongCtx.step(
-                    sessionId,
-                    "toChatMessages.end",
-                    "count=${chatUi.size}",
-                )
-                // Pre-build the LLM history list off-Main too — toLLMMessage
-                // re-parses partsJson for every row, which is the second
-                // contributor to the GC storm. Build into a local list and
-                // bulk-append to `agentHistory` on Main below; loadSession
-                // runs once at init before any other writer touches
-                // agentHistory, so a bulk addAll is race-free.
-                val llm = ArrayList<LLMMessage>(rows.size)
-                var totalPartsChars = 0L
-                for (entity in rows) {
-                    totalPartsChars += entity.partsJson.length
-                    // [T-android-error-persist-current-turn] An error carrier is
-                    // UI-only; an empty assistant message must not reach the model.
-                    if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
-                    entity.toLLMMessage()?.let(llm::add)
-                }
-                com.openminis.app.diagnostics.PerfLongCtx.step(
-                    sessionId,
-                    "toLLMMessage.end",
-                    "count=${llm.size} totalPartsChars=$totalPartsChars",
-                )
-                LoadedSessionData(
-                    messages = rows,
-                    ordered = chatUi,
-                    llmHistory = llm,
-                    loadMs = tIoAfterLoad - tIoBeforeLoad,
-                    transformMs = tIoAfterTransform - tIoAfterLoad,
-                )
-            }
+            val loaded = com.openminis.app.agent.AgentHistoryRestore(chatRepository, agentHistory,
+                { activeSessionId }).restore(sessionId, { it.toLLMMessage() },
+                project = { rows -> rows.toChatMessages() },
+                links = { rows -> rows.map { com.openminis.app.agent.AgentHistoryRestore.Link(it.id, it.sourceDbIds.toSet()) } })
+            historyRestoreFailure = null
             val messages = loaded.messages
             val ordered = loaded.ordered
             val tHangDiagAfterLoad = tHangDiagBeforeLoad + loaded.loadMs
@@ -3850,8 +3813,6 @@ class ChatViewModel(
             // future re-entry into loadSession() is safe by construction
             // rather than by a comment nobody can enforce.
             compactionSummarizer.clear()
-            agentHistory.clear()
-            agentHistory.addAll(loaded.llmHistory)
             // [T-ctx-measure-outbound] Re-seed the size meter from this session's
             // usage rows — the calibration RATIO only, never a raw size, so a
             // compaction or revert done since the last response cannot leave the
@@ -3859,7 +3820,7 @@ class ChatViewModel(
             // reloads through here, which is what lets the restored history be
             // measured at its full size.
             runCatching {
-                seedContextCalibration(chatRepository.sessionTokenUsages(realSessionId.ifEmpty { sessionId }))
+                seedContextCalibration(loaded.usages)
             }
             // [T-android-context-usage-hint] Adopt this session's pressure
             // WITHOUT announcing it. Opening an already-long conversation must
@@ -3896,9 +3857,7 @@ class ChatViewModel(
             // the folded-away context via [effectiveAgentHistory]. Also gray
             // out every UI message that falls before the marker's boundary —
             // mirrors iOS Phase 2.5 restore (AIChatViewModel.swift:3360+).
-            val marker = runCatching { chatRepository.dao.latestCompactMarker(sessionId) }
-                .onFailure { Log.w(TAG, "latestCompactMarker failed: ${it.message}") }
-                .getOrNull()
+            val marker = loaded.marker
             _compactSummary.value = marker?.summary
             _cachedLatestMarker = marker
 
@@ -3916,124 +3875,20 @@ class ChatViewModel(
             _messages.value = if (marker == null) {
                 ordered
             } else {
-                // Phase 2.5: build the historyDbIds set used by the
-                // createdAt self-heal to filter to anchors that are
-                // actually represented in agentHistory. Mirrors iOS
-                // AIChatViewModel+Persistence.swift:406-408.
-                val historyDbIds: Set<String> = buildSet {
-                    for (m in loaded.llmHistory) {
-                        m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
-                    }
-                }
-                applyCompactMarkerGraying(ordered, marker, loaded.messages, historyDbIds)
+                applyCompactMarkerGraying(ordered, marker, loaded.dividerIndex ?: 0)
             }
 
-            // Cold-start interrupt detection: an agent loop that was killed by
-            // the OS (or app force-quit) leaves agentHistory in one of four
-            // tell-tale shapes. Detecting any of them lets the user tap
-            // Resume to pick up where the model left off — the in-memory
-            // [_canResume] flag set by [handleUserCancelledCleanup] is lost
-            // across cold starts so we have to re-derive it from the DB.
-            // Mirrors iOS AIChatViewModel.loadSession lines 3546-3581.
-            //   Case A: last entry is user with all-toolResult parts —
-            //           tools completed but the next model call never fired.
-            //   Case B: last entry is assistant with any tool_use parts —
-            //           the model requested tools that never executed.
-            //   Case C: last entry is user with the synthetic "Continue"
-            //           reminder text — text-cancel handler committed it
-            //           but [resume] never re-entered the agent loop.
-            //   Case D: last entry is a PLAIN-TEXT user turn that never got a
-            //           reply at all — see below (GH#262/#263).
-            val lastEntry = agentHistory.lastOrNull()
-            // [T-android-orphan-user-tail GH#262/#263] `isActive` covers the
-            // case this VM cannot see: another VM (or the foreground service)
-            // is driving this very session, so `_isStreaming` is false HERE
-            // while a request is genuinely in flight THERE. Without it, Case D
-            // would light Resume on a turn that is merely still waiting.
-            val trackerActive = SessionActivityTracker.isActive(activeSessionId)
-            if (lastEntry != null && !_isStreaming.value && !trackerActive) {
-                val isInterrupted = when (lastEntry.role) {
-                    LLMMessage.Role.USER -> {
-                        val parts = lastEntry.contentParts
-                        val allToolResults = parts.isNotEmpty() &&
-                            parts.all { it is AgentContentPart.ToolResult }
-                        val isContinueReminder = parts.size == 1 &&
-                            (parts.first() as? AgentContentPart.Text)?.text
-                                ?.contains("The user stopped the previous response") == true
-                        // Case D — a user turn with NO reply after it at all.
-                        //
-                        // How it is produced: send() persists the user row
-                        // (~5605) BEFORE the reply lands. If the process dies
-                        // in between — Android reclaiming a backgrounded app is
-                        // the reported case — the assistant side never reaches
-                        // the store, and it cannot be reconstructed later
-                        // because persistAssistantTurn() drops any row with no
-                        // parts (~9112, the guard that stops us POSTing a
-                        // content-less assistant message back to the API).
-                        // An in-app first-turn network failure lands here too:
-                        // setInlineError() attaches the error to the last
-                        // ASSISTANT row and is a no-op when none exists (~5789),
-                        // so that tail is equally reply-less and equally stuck.
-                        //
-                        // Before this case, such a tail reported canResume=false
-                        // — no PAUSED badge, no Resume banner, and retryLast()
-                        // bailing at its own `lastAssistantIdx < 0` guard
-                        // (~5906). The session had NO recovery affordance and
-                        // the user could only start a new chat.
-                        //
-                        // Deliberately LAST: A and C describe a turn that was
-                        // mid-flight; D describes one that never started. Order
-                        // keeps their more specific semantics (and logging)
-                        // intact for tails that match both.
-                        //
-                        // False-positive safety — this must never fire on a turn
-                        // that is simply still waiting. Three gates hold:
-                        //   1. `!_isStreaming` (above) — send() sets it true at
-                        //      ~5564, BEFORE persisting the user row at ~5605,
-                        //      and clears it only in the stream epilogue, so the
-                        //      whole in-flight window is excluded in-process.
-                        //   2. `!trackerActive` (above) — the cross-VM case.
-                        //   3. This block runs only from loadSession(), never
-                        //      mid-stream.
-                        // A cold start after a kill satisfies all three exactly
-                        // because the process that was streaming no longer
-                        // exists.
-                        val isUnansweredUserTurn = !allToolResults && !isContinueReminder
-                        allToolResults || isContinueReminder || isUnansweredUserTurn
-                    }
-                    LLMMessage.Role.ASSISTANT -> {
-                        lastEntry.contentParts.any { it is AgentContentPart.ToolUse }
-                    }
-                    else -> false
-                }
-                if (isInterrupted) {
-                    // [T-android-group-pause-badge-restamp] This is a
-                    // RE-DETECTION of an interruption that already happened
-                    // (possibly days ago) — the persisted tail still looks
-                    // unfinished. It is NOT a new entry into the paused state,
-                    // so the badge must keep its original entry timestamp;
-                    // otherwise merely opening or cold-start scanning an old
-                    // chat resets the group card's 24h freshness window and a
-                    // long-stale pause flags its group forever. Raised BEFORE
-                    // the assignment (the collector runs asynchronously — see
-                    // the field's doc) and consumed by the collector, not here.
-                    markRedetectingInterruptedTail()
-                    _canResume.value = true
-                    // Name the shape, not just the role: Case D (reply-less
-                    // user tail) is the one that used to be invisible, so a
-                    // field log has to be able to tell it from A/C.
-                    val shape = when {
-                        lastEntry.role == LLMMessage.Role.ASSISTANT -> "B/assistant-toolUse"
-                        lastEntry.contentParts.isNotEmpty() &&
-                            lastEntry.contentParts.all { it is AgentContentPart.ToolResult } -> "A/toolResult-tail"
-                        lastEntry.contentParts.size == 1 &&
-                            (lastEntry.contentParts.first() as? AgentContentPart.Text)?.text
-                                ?.contains("The user stopped the previous response") == true -> "C/continue-reminder"
-                        else -> "D/unanswered-user-turn"
-                    }
-                    Log.i(TAG, "loadSession: detected interrupted agent loop, canResume=true (lastRole=${lastEntry.role} shape=$shape)")
-                }
-            }
+            if (loaded.interrupted != null && !_isStreaming.value && !SessionActivityTracker.isActive(activeSessionId)) {
+                markRedetectingInterruptedTail()
+                _canResume.value = true
+                Log.i(TAG, "loadSession: interrupted shape=${loaded.interrupted}")
+            } else if (!_isStreaming.value) _canResume.value = false
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                historyRestoreFailure = failure
+                _error.value = "History restore failed: ${failure.message ?: failure.javaClass.simpleName}"
+                if (scope !== viewModelScope) throw failure
             } finally {
                 // T201: open the gate even on early `return@launch` (draft path,
                 // missing-session path) and on exception, so the init-time
@@ -4054,256 +3909,23 @@ class ChatViewModel(
                 )
             }
         }
+        historyLoadJob = loading
+        loading.start()
+        return loading
     }
 
-    /**
-     * Mark every non-system UI message that falls before [marker]'s boundary
-     * as [ChatMessage.isCompactedHistory]. Mirrors iOS Phase 2.5 boundary
-     * resolution (AIChatViewModel.swift:3380-3411) but with one improvement
-     * over iOS for the compactAll case:
-     *
-     *   1) `firstKeptMessageId` — first kept message (divider goes BEFORE it)
-     *   2) `boundaryMessageId`  — legacy alias of firstKeptMessageId
-     *   3) Both null → compactAll. iOS naively places the divider at the end
-     *      and grays every loaded UI message, which incorrectly gray-scales
-     *      messages persisted AFTER the marker (e.g. follow-up turns sent
-     *      between compact and reload). We instead use
-     *      `lastCompactedMessageId` to find the last message included in the
-     *      compacted range — anything after it stays active. The divider is
-     *      placed immediately after that boundary.
-     */
-    /**
-     * Phase 2.5 marker restore (Android port of iOS
-     * AIChatViewModel+Persistence.swift:236+).
-     *
-     * Resolution order (mirrors iOS exactly):
-     *   1. v2 marker (`version >= 2`) — use `lastCompactedMessageId`
-     *      via sourceDbIds range → divider AFTER that UI row
-     *   2. v1 compactAll-shape (firstKept/boundary both null,
-     *      lcmId set) — same as 1
-     *   3. v1 compactBefore (firstKeptMessageId / boundaryMessageId
-     *      set) — divider BEFORE that boundary row
-     *   4. **createdAt self-heal** — find the last raw with
-     *      `createdAt < marker.createdAt` whose id is still in
-     *      agentHistory, use it as the new anchor, REWRITE the
-     *      marker as v2 + write back to DB. Next load takes the
-     *      v2 fast path (no heal needed).
-     *   5. Final fallback — insert divider at idx=0, gray NOTHING.
-     *      This deliberately differs from the pre-T-compact-v2
-     *      behaviour of "divider at bottom, gray everything" which
-     *      grayed newly-sent messages on every reload (the
-     *      user-reported "divider at top, new messages keep
-     *      turning gray" symptom).
-     *
-     * Suspending because the self-heal path writes back through
-     * the DAO. Caller (loadSession) is already on a coroutine.
-     */
-    private suspend fun applyCompactMarkerGraying(
-        messages: List<ChatMessage>,
-        marker: com.openminis.app.data.db.CompactMarkerEntity,
-        rawMessages: List<com.openminis.app.data.db.MessageEntity>,
-        historyDbIds: Set<String>,
-    ): List<ChatMessage> {
-        // Some legacy rows have empty-string boundaries instead of NULL —
-        // treat both as "no boundary" so the compactAll path below kicks in.
-        val firstKeptId = (marker.firstKeptMessageId?.takeIf { it.isNotEmpty() })
-            ?: (marker.boundaryMessageId?.takeIf { it.isNotEmpty() })
-        val lcmId = marker.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
-
-        // ─── Resolve insertIdx ────────────────────────────────────────
-        //
-        // insertIdx semantics: messages[0 until insertIdx] become grayed
-        // (isCompactedHistory=true); the divider sits at insertIdx;
-        // messages[insertIdx..] stay active.
-        //
-        // Special value -1 → "unresolved": skip the rewrite below and
-        // return the messages untouched with no divider (the marker is
-        // effectively invisible until the user reverts or self-heals).
-        // Used when even createdAt fallback fails — better to show no
-        // divider than to incorrectly gray live messages.
-        var insertIdx = -1
-        var healedMarker: com.openminis.app.data.db.CompactMarkerEntity? = null
-
-        // Helper: locate the UI message whose sourceDbIds (or id) contains
-        // the given dbId. Matches iOS uiIndexForAnchorRaw, which scans by
-        // sourceSortOrder range; Android's equivalent is sourceDbIds.
-        fun uiIdxForDbId(dbId: String): Int =
-            messages.indexOfLast { msg -> dbId in msg.sourceDbIds || msg.id == dbId }
-
-        if (firstKeptId == null) {
-            // v2 OR v1 compactAll-shape — anchored by lcmId.
-            val lcmIdx = lcmId?.let { uiIdxForDbId(it) } ?: -1
-            if (lcmIdx >= 0) {
-                // Happy path: lcmId resolves directly. Divider AFTER anchor.
-                insertIdx = lcmIdx + 1
-            } else {
-                // lcmId missing or orphaned. Try createdAt self-heal.
-                val heal = anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
-                val healUiIdx = heal?.let { uiIdxForDbId(it.id) } ?: -1
-                if (heal != null && healUiIdx >= 0) {
-                    insertIdx = healUiIdx + 1
-                    healedMarker = rewriteMarkerForHeal(marker, heal, rawMessages.lastOrNull())
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] Phase2.5 self-heal: orphaned lcmId=${lcmId?.take(8) ?: "nil"} " +
-                            "→ newAnchor=${heal.id.take(8)} (createdAt=${heal.createdAt}) " +
-                            "→ uiIdx=$healUiIdx insertIdx=$insertIdx",
-                    )
-                } else {
-                    // Even createdAt heal failed. Place divider at top
-                    // with NO graying — this is iOS's "insertIdx=0, no
-                    // gray" branch (Persistence.swift:350-351). The
-                    // pre-T-compact-v2 behaviour of "cutoff = lastIndex,
-                    // gray everything" produced the user-reported bug:
-                    // every new message also fell within [0..cutoff]
-                    // and was repeatedly grayed on each reload.
-                    insertIdx = 0
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] Phase2.5 unresolved (heal failed): marker.id=${marker.id.take(8)} " +
-                            "lcmId=${lcmId?.take(8) ?: "nil"} — divider at top, no graying",
-                    )
-                }
-            }
-        } else {
-            // v1 compactBefore — anchored by firstKeptId. Divider BEFORE
-            // the boundary; boundary is the first active message.
-            val bIdx = messages.indexOfFirst { msg ->
-                firstKeptId in msg.sourceDbIds || msg.id == firstKeptId
-            }
-            if (bIdx >= 0) {
-                insertIdx = bIdx
-            } else {
-                // Boundary deleted / orphaned. Try createdAt self-heal —
-                // same path as compactAll, then divider AFTER the healed
-                // anchor (treating this as an upgrade to v2 compactAll
-                // semantics).
-                val heal = anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
-                val healUiIdx = heal?.let { uiIdxForDbId(it.id) } ?: -1
-                if (heal != null && healUiIdx >= 0) {
-                    insertIdx = healUiIdx + 1
-                    healedMarker = rewriteMarkerForHeal(marker, heal, rawMessages.lastOrNull())
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] Phase2.5 v1→v2 heal: firstKeptId=${firstKeptId.take(8)} orphaned " +
-                            "→ newAnchor=${heal.id.take(8)} → uiIdx=$healUiIdx",
-                    )
-                } else {
-                    insertIdx = 0
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] Phase2.5 v1 unresolved (heal failed): firstKeptId=${firstKeptId.take(8)} — " +
-                            "divider at top, no graying",
-                    )
-                }
-            }
+    /** Display-only application of the runtime's resolved compact boundary. */
+    private fun applyCompactMarkerGraying(messages: List<ChatMessage>,
+        marker: com.openminis.app.data.db.CompactMarkerEntity, boundary: Int): List<ChatMessage> {
+        val insertIdx = boundary.coerceIn(0, messages.size)
+        val grayed = messages.mapIndexed { index, message ->
+            message.copy(isCompactedHistory = message.role != "system" && index < insertIdx)
         }
-
-        // ─── Persist healed marker (if any) ───────────────────────────
-        //
-        // Run BEFORE building the UI list so a future loadSession() picks
-        // up the v2 fast path. Failure here is non-fatal — UI still
-        // renders against the in-memory healed pointer.
-        if (healedMarker != null) {
-            runCatching { chatRepository.dao.updateCompactMarker(healedMarker) }
-                .onFailure { Log.w(TAG, "updateCompactMarker (self-heal) failed: ${it.message}") }
-            // Refresh in-memory cache so effectiveAgentHistory and the
-            // next compact pass see the upgraded marker. The caller
-            // (loadSession) sets _cachedLatestMarker = marker BEFORE
-            // calling us, so overwrite with the healed one now.
-            _cachedLatestMarker = healedMarker
-            _compactSummary.value = healedMarker.summary
-        }
-
-        // ─── Apply graying ────────────────────────────────────────────
-        val grayed: List<ChatMessage> = if (insertIdx <= 0) {
-            // No graying — either explicit no-gray branch or boundary at
-            // index 0 (nothing to gray).
-            messages
-        } else {
-            messages.mapIndexed { idx, msg ->
-                if (idx >= insertIdx) msg
-                else if (msg.role == "system") msg
-                else if (msg.isCompactedHistory) msg
-                else msg.copy(isCompactedHistory = true)
-            }
-        }
-
-        // ─── Insert divider row ───────────────────────────────────────
-        // T126-marker: match iOS `"\(insertIdx) messages compacted"`
-        // (AIChatViewModel.swift:3432). Count = number of UI bubbles
-        // above the divider, not marker.compactedCount (which counts raw
-        // agentHistory entries — tool_use/tool_result pairs that never
-        // appear as their own UI bubble).
-        val compactedUICount = (0 until insertIdx.coerceIn(0, grayed.size))
-            .count { grayed[it].role != "system" }
-        val dividerLabel = "$compactedUICount messages compacted"
-        val markerForDivider = healedMarker ?: marker
-        val dividerBlock = AssistantBlock(
-            id = "compact-divider-${markerForDivider.id}",
-            kind = "info",
-            content = dividerLabel,
-            toolName = "compact",
-            toolArgs = markerForDivider.summary,
-        )
-        val dividerMsg = ChatMessage(
-            id = "compact-divider-msg-${markerForDivider.id}",
-            role = "system",
-            content = "",
-            toolBlocks = listOf(dividerBlock),
-        )
-        val withDivider = grayed.toMutableList()
-        withDivider.add(insertIdx.coerceIn(0, withDivider.size), dividerMsg)
-        return withDivider
-    }
-
-    /**
-     * createdAt self-heal: return the LAST raw message whose
-     * `createdAt < markerCreatedAt` AND whose id is still represented in
-     * agentHistory (filtered via [historyDbIds]). When [historyDbIds] is
-     * empty (no dbIds collected — unusual), the filter degrades to "just
-     * the createdAt predicate" so we still recover SOMETHING.
-     *
-     * Mirrors iOS AIChatViewModel+Compaction.swift:125.
-     */
-    private fun anchorByCreatedAt(
-        rawMessages: List<com.openminis.app.data.db.MessageEntity>,
-        markerCreatedAt: Long,
-        historyDbIds: Set<String>,
-    ): com.openminis.app.data.db.MessageEntity? {
-        return rawMessages.lastOrNull { raw ->
-            raw.createdAt < markerCreatedAt &&
-                (historyDbIds.isEmpty() || raw.id in historyDbIds)
-        }
-    }
-
-    /**
-     * Build a healed v2 marker that preserves identity (id, sessionId,
-     * summary, createdAt, compactedCount) but swaps `lastCompactedMessageId`
-     * to the recomputed anchor, zeroes legacy fields, and bumps `version`
-     * to 2. Future loads resolve through the corrected lcmId directly
-     * without re-running the createdAt fallback.
-     *
-     * Mirrors iOS AIChatViewModel+Compaction.swift:150.
-     */
-    private fun rewriteMarkerForHeal(
-        original: com.openminis.app.data.db.CompactMarkerEntity,
-        newAnchor: com.openminis.app.data.db.MessageEntity,
-        lastRaw: com.openminis.app.data.db.MessageEntity?,
-    ): com.openminis.app.data.db.CompactMarkerEntity {
-        // Legacy sort-order fallback writes a past-end sentinel so any
-        // hypothetical v1 reader sees "everything compacted, nothing
-        // kept" (graceful degradation, no overlap with live tail).
-        // Android's MessageEntity doesn't carry a sortOrder column —
-        // use Int.MAX_VALUE like the original compactAll write path.
-        return original.copy(
-            firstKeptSortOrder = Int.MAX_VALUE,
-            boundaryMessageId = null,
-            firstKeptMessageId = null,
-            lastCompactedMessageId = newAnchor.id,
-            uiBoundarySortOrder = null,
-            version = 2,
-        )
+        val count = grayed.take(insertIdx).count { it.role != "system" }
+        val divider = ChatMessage(id = "compact-divider-msg-${marker.id}", role = "system", content = "",
+            toolBlocks = listOf(AssistantBlock(id = "compact-divider-${marker.id}", kind = "info",
+                content = "$count messages compacted", toolName = "compact", toolArgs = marker.summary)))
+        return grayed.toMutableList().also { it.add(insertIdx, divider) }
     }
 
     /** Restore provider state from a JSON binding string. Returns true if successfully resolved. */

@@ -534,6 +534,22 @@ interface ChatDao {
     @androidx.room.Update
     suspend fun updateCompactMarker(marker: CompactMarkerEntity)
 
+    @Transaction
+    suspend fun runtimeHistorySnapshot(sessionId: String): RuntimeHistorySnapshot = RuntimeHistorySnapshot(
+        loadMessages(sessionId), latestCompactMarker(sessionId), tokenUsages(sessionId))
+
+    @Transaction
+    suspend fun validateRuntimeRestore(sessionId: String, expected: RuntimeHistorySnapshot,
+        healed: CompactMarkerEntity?) {
+        check(loadMessages(sessionId) == expected.messages && latestCompactMarker(sessionId) == expected.marker) {
+            "History changed while restoring"
+        }
+        if (healed != null) {
+            check(healed.sessionId == sessionId && healed.id == expected.marker?.id)
+            updateCompactMarker(healed)
+        }
+    }
+
     @Query("SELECT * FROM compact_markers WHERE session_id = :sessionId ORDER BY created_at DESC LIMIT 1")
     suspend fun latestCompactMarker(sessionId: String): CompactMarkerEntity?
 
