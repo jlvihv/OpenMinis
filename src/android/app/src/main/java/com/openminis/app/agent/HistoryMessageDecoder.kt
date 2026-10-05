@@ -13,7 +13,6 @@ internal class HistoryMessageDecoder(private val media: Media) {
     interface Media {
         fun pastedText(relativePath: String): String?
         fun userImage(relativePath: String, mimeType: String, linuxPath: String?): UserImage?
-        fun toolImage(linuxPath: String, mimeType: String): AgentContentPart.ImageData?
     }
 
     data class UserImage(val part: LLMMessage.ImagePart, val note: String? = null)
@@ -45,22 +44,11 @@ internal class HistoryMessageDecoder(private val media: Media) {
                     }
                     "toolResult" -> {
                         val value = obj.getJSONObject("value")
-                        val restored = mutableListOf<AgentContentPart.ImageData>()
-                        value.optJSONArray("images")?.let { saved ->
-                            for (j in 0 until saved.length()) {
-                                val image = saved.getJSONObject(j)
-                                runCatching { media.toolImage(image.optString("path"), image.getString("mimeType")) }
-                                    .getOrNull()?.let { restored.add(it) }
-                            }
-                        }
                         parts.add(AgentContentPart.ToolResult(
                             id = value.optString("toolUseId", ""), name = value.optString("name", ""),
                             content = value.optString("output", ""), isError = !value.optBoolean("success", true),
-                            imageData = restored.firstOrNull()?.data, imageMimeType = restored.firstOrNull()?.mimeType,
-                            imageLinuxPath = restored.firstOrNull()?.linuxPath,
                             detailsJson = value.optString("detailsJson").ifEmpty { null },
                         ))
-                        parts.addAll(restored.drop(1))
                     }
                     "mediaRef" -> {
                         val value = obj.optJSONObject("value") ?: continue

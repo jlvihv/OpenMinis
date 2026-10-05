@@ -1,10 +1,8 @@
 package com.openminis.app.agent
 
 import android.content.Context
-import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.provider.ImageBudget
-import com.openminis.app.sandbox.PRootKernel
 import java.io.File
 
 /** Filesystem/image preparation for replay. Session and vision facts are captured per decode. */
@@ -28,10 +26,5 @@ internal class AndroidHistoryMedia(
                 linuxPath = linuxPath, noVisionPlaceholder = noVisionPlaceholder),
             scaled?.let { ImageBudget.downscaleNote(it, linuxPath) },
         )
-    }
-
-    override fun toolImage(linuxPath: String, mimeType: String): AgentContentPart.ImageData? {
-        val file = PRootKernel.resolveSessionHostPath(fsSessionId, linuxPath, context)
-        return file?.takeIf { it.exists() }?.let { AgentContentPart.ImageData(it.readBytes(), mimeType, linuxPath) }
     }
 }

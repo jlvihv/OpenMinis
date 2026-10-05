@@ -13,8 +13,6 @@ class HistoryMessageDecoderTest {
         override fun pastedText(relativePath: String) = if (relativePath == "paste") "pasted" else null
         override fun userImage(relativePath: String, mimeType: String, linuxPath: String?) =
             HistoryMessageDecoder.UserImage(LLMMessage.ImagePart(bytes, "image/png", linuxPath, "no vision"), "resize note")
-        override fun toolImage(linuxPath: String, mimeType: String) =
-            if (linuxPath == "missing") null else AgentContentPart.ImageData(bytes, mimeType, linuxPath)
     })
     private fun row(json: String, role: String = "user") = MessageEntity("row", "session", role, json, 0, sortOrder = 0, reasoningContent = "reason")
 
@@ -41,11 +39,10 @@ class HistoryMessageDecoderTest {
         assertTrue(decoder.decode(row(RuntimeContextSnapshot.encode("facts")))!!.isRuntimeContext)
     }
 
-    @Test fun replayPreservesToolSignaturesMultipleImagesAndMalformedFallback() {
+    @Test fun replayPreservesToolSignaturesAndMalformedFallback() {
         val json = """[
             {"type":"toolUse","value":{"toolUseId":"call|fc","name":"read","input":"{\"path\":\"a\"}","thoughtSignature":"signature"}},
-            {"type":"toolResult","value":{"toolUseId":"call|fc","name":"read","output":"out","success":false,"detailsJson":"{}",
-                "images":[{"path":"first","mimeType":"image/png"},{"path":"missing","mimeType":"image/png"},{"path":"second","mimeType":"image/png"}]}}
+            {"type":"toolResult","value":{"toolUseId":"call|fc","name":"read","output":"out","success":false,"detailsJson":"{}"}}
         ]"""
         val message = decoder.decode(row(json, "assistant"))!!
         val use = message.contentParts[0] as AgentContentPart.ToolUse
@@ -53,9 +50,7 @@ class HistoryMessageDecoderTest {
         assertEquals("a", use.input.getString("path"))
         val result = message.contentParts[1] as AgentContentPart.ToolResult
         assertTrue(result.isError)
-        assertEquals("first", result.imageLinuxPath)
-        assertArrayEquals(bytes, result.imageData)
-        assertEquals("second", (message.contentParts[2] as AgentContentPart.ImageData).linuxPath)
+        assertEquals("out", result.content)
         assertEquals("{}", result.detailsJson)
         assertEquals(LLMMessage.Role.ASSISTANT, message.role)
         val malformed = """[{"type":"text","value":"prefix"},{"type":"toolUse","value":false}]"""

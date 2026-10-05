@@ -9,8 +9,7 @@ internal object JournalProjection {
         !isModelVisible(partsJson) || RuntimeContextSnapshot.decode(partsJson) != null
 
     fun isModelVisible(partsJson: String): Boolean =
-        !com.openminis.app.data.model.LegacyCodemodeEntry.isEntry(partsJson) &&
-            !com.openminis.app.data.model.RequestUsageRecord.isEntry(partsJson)
+        !com.openminis.app.data.model.RequestUsageRecord.isEntry(partsJson)
 
     fun runtimeMessage(partsJson: String, rowId: String): LLMMessage? =
         RuntimeContextSnapshot.decode(partsJson)?.let { RuntimeContextSnapshot.message(it, rowId) }

@@ -988,11 +988,9 @@ class ChatRepository(internal val dao: ChatDao) {
          * writer persists an empty assistant row: persistAssistantTurn drops
          * them). Such a row must never reach the model: an empty assistant
          * message is rejected by Anthropic and breaks role alternation.
-         * Also hides codemode store rows persisted before that feature was removed.
          */
         internal fun isEmptyAssistantCarrier(role: String, partsJson: String): Boolean =
-            (role == "assistant" && partsJson.trim() == ERROR_CARRIER_PARTS_JSON) ||
-                com.openminis.app.data.model.LegacyCodemodeEntry.isEntry(partsJson)
+            role == "assistant" && partsJson.trim() == ERROR_CARRIER_PARTS_JSON
 
         private fun cleanPreview(raw: String): String {
             return stripSystemReminders(raw)
