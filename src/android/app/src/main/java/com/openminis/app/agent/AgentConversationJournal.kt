@@ -8,6 +8,8 @@ import com.openminis.app.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 /** Captured-branch history publication and durable turn commits. */
 internal class AgentConversationJournal(
@@ -15,6 +17,7 @@ internal class AgentConversationJournal(
     private val history: MutableList<LLMMessage>,
     private val currentSession: () -> String,
 ) {
+    val sessionId: String get() = writer.sessionId
     private var pendingAssistant: LLMMessage? = null
 
     fun appendAssistant(content: AgentTurnContent) {
@@ -52,6 +55,24 @@ internal class AgentConversationJournal(
         }
         checkBranch()
         return LLMMessage(LLMMessage.Role.USER, note, dbMessageId = row?.id).also(history::add)
+    }
+
+    /** Once the row exists, history publication and queue acknowledgement cannot be cancelled apart. */
+    suspend fun commitQueued(input: AgentQueuedUserInput, bridge: String? = null,
+        accepted: (MessageEntity) -> Unit): MessageEntity {
+        coroutineContext.ensureActive()
+        return withContext(NonCancellable + Dispatchers.IO) {
+            checkBranch()
+            val row = writer.user(input.partsJson)
+            withContext(NonCancellable + Dispatchers.Main) {
+                checkBranch()
+                if (bridge != null) history.add(LLMMessage(LLMMessage.Role.ASSISTANT, bridge,
+                    contentParts = listOf(AgentContentPart.Text(bridge))))
+                history.add(input.message(row.id))
+                accepted(row)
+            }
+            row
+        }
     }
 
     fun checkBranch() {

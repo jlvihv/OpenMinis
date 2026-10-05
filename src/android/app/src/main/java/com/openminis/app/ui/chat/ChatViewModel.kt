@@ -6946,6 +6946,7 @@ class ChatViewModel(
     )
 
     private suspend fun injectQueuedPromptsAsNewTurn(
+        conversation: com.openminis.app.agent.AgentConversationJournal,
         finishedAssistantId: String,
         finishedAccumulatedText: String,
         finishedAllToolBlocks: List<AssistantBlock>,
@@ -6957,7 +6958,8 @@ class ChatViewModel(
     ): InjectedTurn? {
         // [T-android-mute-reset-on-drain] The injected prompt starts a new turn
         // inside this loop; a sub-agent stop's mute was for the turn before it.
-        com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
+        conversation.checkBranch()
+        com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(conversation.sessionId)
         if (batch.isEmpty()) return null
         val queued = batch
         // A scheduled fire travels alone (see nextInsertBatch), so the batch
@@ -7008,9 +7010,10 @@ class ChatViewModel(
         // (`_messages.value.map { … }`) and why that path never showed the bug.
 
         // Build the combined user message from all queued prompts.
-        val sid = ensureSession()
+        val sid = conversation.sessionId
         val combinedAttachments = queued.flatMap { it.attachments }
         val prepared = prepareUserAttachments(combinedAttachments, sid)
+        conversation.checkBranch()
 
         val combinedParts = mutableListOf<AgentContentPart>()
         val combinedText = StringBuilder()
@@ -7058,13 +7061,6 @@ class ChatViewModel(
         // Both texts live in ChatMessage, whose isInternalBridge keeps them
         // out of the chat UI.
         val bridgeText = if (scheduledInsert) ChatMessage.SCHEDULED_INSERT_BRIDGE_TEXT else ChatMessage.INTERNAL_BRIDGE_TEXT
-        agentHistory.add(
-            LLMMessage(
-                role = LLMMessage.Role.ASSISTANT,
-                content = bridgeText,
-                contentParts = listOf(AgentContentPart.Text(bridgeText)),
-            ),
-        )
 
         // Persist the queued user message as its own DB row + append to
         // agentHistory so the next API call carries it.
@@ -7076,50 +7072,19 @@ class ChatViewModel(
         // without this the queued row would persist a literal `[Pasted#3]` and
         // the model would receive the marker instead of the text.
         val queuedPaste = buildPastedParts(userText, sid)
-        if (queuedPaste != null) {
-            _pastedTexts.value = _pastedTexts.value.filterNot { it.id in queuedPaste.consumedIds }
-        }
         val userPartsJson = buildUserPartsJson(
             userText,
             prepared.mediaRefPartsJson,
             prepared.attachedFilesXml,
             bodyPartsJson = queuedPaste?.partsJson,
         )
-        val userEntity = chatRepository.appendMessage(sid, "user", userPartsJson)
-        // [T-queue-dequeue-after-persist] Dequeue only now that the row exists,
-        // with no suspension point in between. Filter by id rather than
-        // emptying: a prompt enqueued during the window above stays queued.
-        _promptQueue.value = _promptQueue.value.filterNot { it.id in queuedIds }
-        agentHistory.add(
-            LLMMessage(
-                role = LLMMessage.Role.USER,
-                // Expanded for the model; the persisted row above stays small.
-                content = queuedPaste?.modelText ?: userText,
-                imageParts = prepared.imageParts,
-                contentParts = queuedPaste?.let { p ->
-                    // Replace the whole LEADING RUN of text parts with the one
-                    // expanded body, then keep everything after it.
-                    //
-                    // Not "index 0": each queued prompt contributes its own text
-                    // part, and combinedText joined them with blank lines —
-                    // p.modelText is the expansion of that join, so it stands
-                    // for all of them. The image and <user-attached-files> parts
-                    // that follow must survive untouched.
-                    val bodyCount = combinedParts.takeWhile { it is AgentContentPart.Text }.size
-                    listOf(AgentContentPart.Text(p.modelText)) + combinedParts.drop(bodyCount)
-                } ?: combinedParts,
-                dbMessageId = userEntity.id,
-            ),
-        )
-
-        // Finalize the just-finished assistant bubble in the UI on Main:
-        // (a) un-queue the queued chat bubbles, (b) flush the side-channel
-        // delta into the canonical row and clear isStreaming /
-        // isAwaitingModelResponse, then (c) append the freshly-created
-        // queued user ChatMessage + a NEW empty assistant placeholder so
-        // the next iteration's streaming writes target the new bubble.
+        val input = com.openminis.app.agent.AgentQueuedUserInput(userPartsJson, userText,
+            combinedParts.toList(), prepared.imageParts, queuedPaste?.modelText)
         val newAssistantId = "assistant_${System.currentTimeMillis()}"
-        withContext(Dispatchers.Main) {
+        conversation.commitQueued(input, bridgeText) { userEntity ->
+            // The runtime invokes this on Main only after durable commit and branch validation.
+            _promptQueue.value = _promptQueue.value.filterNot { it.id in queuedIds }
+            queuedPaste?.let { paste -> _pastedTexts.value = _pastedTexts.value.filterNot { it.id in paste.consumedIds } }
             // (a) + (b) one emit: build the post-finalize list.
             // Filter the LIVE list, not a snapshot taken before the suspends —
             // see [T-android-midtask-msg-vanishes] above. Any bubble appended
@@ -7146,14 +7111,16 @@ class ChatViewModel(
                 attachmentNames = prepared.attachmentNames,
                 attachmentUris = prepared.nonImageUris,
             )
+            val stillRunning = streamJob?.isCancelled != true
             val nextAssistantMsg = ChatMessage(
                 id = newAssistantId,
                 role = "assistant",
                 content = "",
-                isStreaming = true,
-                isAwaitingModelResponse = true,
+                isStreaming = stillRunning,
+                isAwaitingModelResponse = stillRunning,
                 thinkingLevel = _thinkingLevel.value,
             )
+            if (!stillRunning) _canResume.value = true
             _messages.value = _messages.value + queuedUserMsg + nextAssistantMsg
             // Note: ChatScreen's `lastUserAppendMs` (the trailing-row
             // ScrollPin send-grace window) is updated reactively by
@@ -7183,7 +7150,12 @@ class ChatViewModel(
         fallbackProviders: List<FallbackCandidate>,
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy,
     ) {
+        if (_promptQueue.value.isEmpty()) return
+        val sid = ensureSession()
+        val conversation = com.openminis.app.agent.AgentConversationJournal(
+            com.openminis.app.agent.AgentJournalWriter(chatRepository, sid), agentHistory) { activeSessionId }
         while (_promptQueue.value.isNotEmpty()) {
+            conversation.checkBranch()
             // [T-android-mute-reset-on-drain] A drained batch is a new turn.
             // Stopping a sub agent mutes the parent's CURRENT turn (a sibling
             // that finishes afterwards must not re-wake it); the mute used to
@@ -7205,9 +7177,9 @@ class ChatViewModel(
 
             // Build a combined user message (text + images from all queued prompts).
             // Persist as a single row.
-            val sid = ensureSession()
             val combinedAttachments = queued.flatMap { it.attachments }
             val prepared = prepareUserAttachments(combinedAttachments, sid)
+            conversation.checkBranch()
 
             // T132: same shape as sendMessage — caption(s) first, then for each
             // image emit "[attached image: <path>]" + ImageData, finally the
@@ -7232,45 +7204,25 @@ class ChatViewModel(
             // inject path above — see the note there for why queued prompts
             // need it at all.
             val drainPaste = buildPastedParts(userText, sid)
-            if (drainPaste != null) {
-                _pastedTexts.value =
-                    _pastedTexts.value.filterNot { it.id in drainPaste.consumedIds }
-            }
             val userPartsJson = buildUserPartsJson(
                 userText,
                 prepared.mediaRefPartsJson,
                 prepared.attachedFilesXml,
                 bodyPartsJson = drainPaste?.partsJson,
             )
-            val drainedRow = chatRepository.appendMessage(sid, "user", userPartsJson)
-            _promptQueue.value = _promptQueue.value.filterNot { it.id in queuedIds }
-            // Flip isQueued=false on corresponding chat messages so they render as sent.
-            // T189: also clear queuedPromptId so a later retry of this bubble
-            // doesn't try to drop a phantom queue entry (and so the field state
-            // matches what retryFromMessage's truncate path now produces).
-            //
-            // [T-android-bubble-anchor-drain] Link every drained bubble to the
-            // ONE row the batch was persisted as. The bubbles keep their
-            // placeholder ids ("queued_msg_…"), so without the link they were
-            // unlinked and retry / delete / edit fell back to counting — and N
-            // bubbles over one row is exactly the skew counting gets wrong
-            // (editing the second of two merged prompts cut the NEXT turn and
-            // left the merged row, old text included, in the model's context).
-            _messages.value = _messages.value.map { m ->
-                if (m.queuedPromptId != null && queuedIds.contains(m.queuedPromptId)) {
-                    m.copy(isQueued = false, queuedPromptId = null, sourceDbIds = listOf(drainedRow.id))
-                } else m
+            val input = com.openminis.app.agent.AgentQueuedUserInput(userPartsJson, userText,
+                combinedParts.toList(), prepared.imageParts, drainPaste?.modelText)
+            conversation.commitQueued(input) { drainedRow ->
+                _promptQueue.value = _promptQueue.value.filterNot { it.id in queuedIds }
+                drainPaste?.let { paste -> _pastedTexts.value = _pastedTexts.value.filterNot { it.id in paste.consumedIds } }
+                if (streamJob?.isCancelled == true) _canResume.value = true
+                // Every merged placeholder points at the same committed row for retry/delete/edit.
+                _messages.value = _messages.value.map { m ->
+                    if (m.queuedPromptId != null && queuedIds.contains(m.queuedPromptId)) {
+                        m.copy(isQueued = false, queuedPromptId = null, sourceDbIds = listOf(drainedRow.id))
+                    } else m
+                }
             }
-
-            agentHistory.add(LLMMessage(
-                role = LLMMessage.Role.USER,
-                content = drainPaste?.modelText ?: userText,
-                imageParts = prepared.imageParts,
-                contentParts = drainPaste?.let { p ->
-                    val bodyCount = combinedParts.takeWhile { it is AgentContentPart.Text }.size
-                    listOf(AgentContentPart.Text(p.modelText)) + combinedParts.drop(bodyCount)
-                } ?: combinedParts,
-            ))
 
             try {
                 runAgentLoop(
@@ -9308,7 +9260,7 @@ class ChatViewModel(
                         val byId = boundaryQueue.associateBy { it.id }
                         val batch = ids.mapNotNull(byId::get)
                         val handled = try {
-                            injectQueuedPromptsAsNewTurn(assistantId, accumulatedText, allToolBlocks, batch)
+                            injectQueuedPromptsAsNewTurn(conversationJournal, assistantId, accumulatedText, allToolBlocks, batch)
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (failure: Exception) {
@@ -9320,7 +9272,7 @@ class ChatViewModel(
                             scriptedTurnFor(handled.prefill)?.let { pendingScriptedTurn = it }
                             accumulatedText = ""
                             allToolBlocks.clear()
-                            _canResume.value = false
+                            _canResume.value = streamJob?.isCancelled == true
                         }
                         handled != null
                     }),
