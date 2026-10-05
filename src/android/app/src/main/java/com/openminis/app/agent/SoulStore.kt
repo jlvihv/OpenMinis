@@ -556,7 +556,7 @@ object SystemPromptBuilder {
      * Android chat hits this line.
      */
     private const val IDENTITY_TEMPLATE =
-        "You are {name}, a capable AI assistant running on an Android device with a fully functional Linux sandbox (Alpine Linux via PRoot, aarch64). "
+        "You are {name}, an AI assistant on an Android device with an Alpine Linux sandbox (PRoot, aarch64). "
 
     /**
      * Render the identity sentence (template + name) and optionally
@@ -594,15 +594,6 @@ object SystemPromptBuilder {
         val identity = IDENTITY_TEMPLATE.replace("{name}", name)
         val identityTrimmed = identity.trimEnd()
 
-        // [T-soul-hint] Fixed hint telling the model how SOUL fields can be
-        // changed. Always appended (with or without a personality body) so
-        // the model never says "I can't change my personality". This hint
-        // is system-owned text and is NOT counted against the user-facing
-        // SOUL body length limit (#356 / 1000 EN words / 1600 CN chars).
-        val soulEditHint =
-            "SOUL.md (name/icon/style/lang/body) is editable: run `minis-config` via bash to propose user-approved changes, " +
-            "or offer [Settings → Soul](minis://settings/soul). Do not claim you cannot change your personality."
-
         // [T-soul-style-injection 2026-05-18, port iOS 0409e24f] The `style`
         // frontmatter field (response voice / tone / formatting preference,
         // e.g. a row of emojis or "concise, no markdown") was parsed and
@@ -621,7 +612,7 @@ object SystemPromptBuilder {
         val body = file?.body
         val trimmed = body?.trim().orEmpty()
         if (trimmed.isEmpty()) {
-            return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
+            return identityTrimmed + styleBlock(style) + "\n\n"
         }
 
         // Reject (NOT truncate) bodies that exceed the language-aware
@@ -635,7 +626,7 @@ object SystemPromptBuilder {
         val check = SoulStore.isOverLimit(trimmed)
         if (check.isOverLimit) {
             AppLogger.warning(TAG, "personality body is over the language-aware limit ($check) — falling back to identity-only system prompt.")
-            return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
+            return identityTrimmed + styleBlock(style) + "\n\n"
         }
 
         val personality = scrubInjections(trimmed)
@@ -646,8 +637,6 @@ object SystemPromptBuilder {
             "\n\nPersonality (SOUL.md; character and voice only — the user's latest message takes precedence):\n" +
             personality +
             styleBlock(style) +
-            "\n\n" +
-            soulEditHint +
             "\n\n"
     }
 
