@@ -13,11 +13,11 @@ object EditTool {
     fun definition() = AgentToolDefinition(NAME,
         "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
         mapOf("path" to AgentToolParam("string", "Path to the file to edit (relative or absolute)"),
-            "edits" to AgentToolParam("array", "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+            "edits" to AgentToolParam("array", "One or more replacements, each matched against the original file (not incrementally) and non-overlapping.",
                 items = AgentToolParam("object", "Targeted replacement", properties = mapOf(
-                    "oldText" to AgentToolParam("string", "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."),
+                    "oldText" to AgentToolParam("string", "Exact text to replace; must be unique in the original file and not overlap any other edits[].oldText."),
                     "newText" to AgentToolParam("string", "Replacement text for this targeted edit.")), required = listOf("oldText", "newText"))),
-            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language.")), listOf("path", "edits", "tool_title"), propertyOrdering = listOf("tool_title", "path", "edits"))
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language.")), listOf("path", "edits", "tool_title"), propertyOrdering = listOf("tool_title", "path", "edits"))
 
     internal fun arguments(args: JSONObject): List<PiFileEditor.Edit> {
         fun text(obj: JSONObject, key: String): String = obj.get(key).let { require(it is String) { "$key must be a string" }; it }

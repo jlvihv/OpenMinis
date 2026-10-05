@@ -12,12 +12,12 @@ object ReadTool {
 
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
-        description = "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+        description = "Read a file. Supports text and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files and continue with offset until complete.",
         parameters = mapOf(
             "path" to AgentToolParam("string", "Path to the file to read (relative or absolute)"),
             "offset" to AgentToolParam("integer", "Line number to start reading from (1-indexed)"),
             "limit" to AgentToolParam("integer", "Maximum number of lines to read"),
-            "tool_title" to AgentToolParam("string", "Required non-blank user-visible summary, in the user's language."),
+            "tool_title" to AgentToolParam("string", "User-visible summary of this call, in the user's language."),
         ),
         required = listOf("path", "tool_title"),
         propertyOrdering = listOf("tool_title", "path", "offset", "limit"),
