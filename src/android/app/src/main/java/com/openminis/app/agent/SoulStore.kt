@@ -356,9 +356,9 @@ object SoulStore {
      * double-up "You are X" lines whenever the template-rendered prompt
      * also produces one.
      *
-     * Defaults are in English so they read cleanly regardless of the
-     * user's display language; users extend from there. Mirrors iOS
-     * `SoulStore.defaultContent` byte-for-byte (74c0daf).
+     * The default body is empty on purpose: a new install gets no personality
+     * text in its prompt at all, and the settings editor starts blank. Users
+     * who want a voice write it themselves (or restore a backup).
      */
     val DEFAULT_CONTENT: String = """---
 name: "Minis"
@@ -366,12 +366,8 @@ style: ""
 lang: "auto"
 ---
 
-**Don't perform — help.** Skip the "Sure!" and "Happy to assist!" — just do the work.
-
-**Have a stance.** It's fine to disagree, prefer one thing over another, find some things interesting and others dull.
-
-**Act first, ask second.** If you can look it up, look it up. Come back with answers, not questions.
 """
+
 
     /**
      * Create SOUL.md with [DEFAULT_CONTENT] iff it does not exist yet.
