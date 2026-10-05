@@ -39,11 +39,9 @@ internal class AgentToolRound(
             blocked(id, displayMessage)
             return parts
         }
-        if (truncation != null && (CoreToolNames.isMutation(name) || name == "codemode")) {
+        if (truncation != null && CoreToolNames.isMutation(name)) {
             val path = args.optString("path", "").ifBlank { args.optString("file_path", "") }
-            val message = if (name == "codemode") {
-                "Error: This codemode call was NOT executed because its source was truncated in transit ($truncation). Re-issue a complete script; do not continue a partial script."
-            } else buildString {
+            val message = buildString {
                 append("Error: This call was NOT executed. Its argument stream was truncated ")
                 append("in transit (repair strategy: $truncation), so the `content` ")
                 append("your client sent was cut short and would have written an incomplete file")

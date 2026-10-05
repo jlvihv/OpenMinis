@@ -9,11 +9,9 @@ import java.nio.file.Files
 /** Minimal regressions for contracts that can damage files or deadlock calls. */
 class CoreToolsTest {
     @Test fun registryAndEditInputsHaveOnlyTheNewContract() {
-        val tools = AgentTools.makeAgentTools(codemodeMode = "off")
+        val tools = AgentTools.makeAgentTools()
         assertEquals(listOf("read", "bash", "edit", "write", "browser", "subagent"), tools.map { it.name })
-        val enabled = AgentTools.makeAgentTools(codemodeMode = "on")
-        assertEquals(listOf("read", "bash", "edit", "write", "browser", "subagent", "codemode"), enabled.map { it.name })
-        assertTrue(enabled.all { it.name.matches(Regex("[a-z]+")) })
+        assertTrue(tools.all { it.name.matches(Regex("[a-z]+")) })
         for (tool in tools) {
             assertTrue("${tool.name} title must be required", "tool_title" in tool.required)
             val args = JSONObject("""{"path":"a","command":"true","content":"x","edits":[{"oldText":"a","newText":""}],"action":"status","tool_title":"检查文件"}""")
@@ -54,19 +52,6 @@ class CoreToolsTest {
         assertEquals(97.3484, stats.latestCacheHitRate!!, 0.001)
         assertTrue(stats.cacheHitRate!! < 12)
         assertEquals(0.0, stats.copy(latestCacheRead = 0).latestCacheHitRate!!, 0.0)
-        val source = "// @options: {\"tool_title\":\"并行整理账单与生成报告\",\"timeout_ms\":60000}\nreturn 1;"
-        assertEquals("并行整理账单与生成报告", CodemodeTool.parseSource(source).toolTitle)
-        assertEquals("并行整理账单与生成报告", CodemodeTool.titleFromSource(source.substringBefore('\n')))
-        assertEquals("并行整理账单与生成报告", CodemodeTool.titleFromArguments(JSONObject().put("code", source)))
-        assertTrue(CodemodeTool.definition(tools).description.contains("tool_title"))
-        for (code in listOf("return 1;", "// @options: {}\nreturn 1;")) {
-            try { CodemodeTool.parseSource(code); fail("Missing title accepted") } catch (_: IllegalArgumentException) { }
-        }
-        assertFalse(CodemodeTool.SOURCE_GRAMMAR.contains("plain_source"))
-        for (bad in listOf("null", "7", "\" \"")) {
-            try { CodemodeTool.parseSource("// @options: {\"tool_title\":$bad}\nreturn 1;"); fail("Invalid title accepted") }
-            catch (_: IllegalArgumentException) { }
-        }
         val valid = JSONObject("""{"tool_title":"删除匹配文本","path":"a","edits":[{"oldText":"a","newText":""}]}""")
         val editDefinition = EditTool.definition()
         val originalArray = valid.getJSONArray("edits")

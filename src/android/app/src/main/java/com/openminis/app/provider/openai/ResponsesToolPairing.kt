@@ -61,8 +61,8 @@ internal object ResponsesToolPairing {
         for (i in 0 until items.length()) {
             val item = items.optJSONObject(i) ?: continue
             when (item.optString("type")) {
-                "function_call", "custom_tool_call" -> callIds.add(item.optString("call_id"))
-                "function_call_output", "custom_tool_call_output" -> {
+                "function_call" -> callIds.add(item.optString("call_id"))
+                "function_call_output" -> {
                     val id = item.optString("call_id")
                     outputCounts[id] = (outputCounts[id] ?: 0) + 1
                 }
@@ -74,7 +74,7 @@ internal object ResponsesToolPairing {
         for (i in items.length() - 1 downTo 0) {
             val item = items.optJSONObject(i) ?: break
             when (item.optString("type")) {
-                "function_call", "custom_tool_call" -> trailing.add(item.optString("call_id"))
+                "function_call" -> trailing.add(item.optString("call_id"))
                 "reasoning" -> {}
                 else -> break
             }
@@ -104,14 +104,14 @@ internal object ResponsesToolPairing {
                 continue
             }
             val type = item.optString("type")
-            if (type == "function_call_output" || type == "custom_tool_call_output") {
+            if (type == "function_call_output") {
                 val id = item.optString("call_id")
                 if (id in orphanOutputs) { droppedOrphans += id; continue }
                 if (!seenOutputs.add(id)) { droppedDuplicates += id; continue }
             }
             // A real output closes the call run just as a placeholder does, so
             // pending placeholders go BEFORE it: one contiguous output block.
-            val isCall = type == "function_call" || type == "custom_tool_call"
+            val isCall = type == "function_call"
             if (!isCall) flush()
             out.put(item)
             if (isCall) {
@@ -119,7 +119,7 @@ internal object ResponsesToolPairing {
                 if (id in unanswered) {
                     placeholders += id
                     pending += JSONObject().apply {
-                        put("type", if (type == "custom_tool_call") "custom_tool_call_output" else "function_call_output")
+                        put("type", "function_call_output")
                         put("call_id", id)
                         put("output", PLACEHOLDER_OUTPUT)
                     }

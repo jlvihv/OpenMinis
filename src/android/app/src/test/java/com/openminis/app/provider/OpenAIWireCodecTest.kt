@@ -10,24 +10,23 @@ import org.junit.Test
 
 class OpenAIWireCodecTest {
     @Test fun responsesProjectionPreservesTypedCallsAndLastUserMultimediaOrdering() {
-        val source = "// @options: {\"tool_title\":\"检查\"}\nreturn 1"
         val calls = LLMMessage(LLMMessage.Role.ASSISTANT, "", contentParts = listOf(
-            AgentContentPart.Text("before"), AgentContentPart.ToolUse("call_1|fc_1", "codemode", JSONObject().put("code", source)),
+            AgentContentPart.Text("before"), AgentContentPart.ToolUse("call_1|fc_1", "bash", JSONObject().put("command", "echo one")),
             AgentContentPart.ToolUse("call_2", "bash", JSONObject().put("command", "true"))))
         val results = LLMMessage(LLMMessage.Role.USER, "", contentParts = listOf(
-            AgentContentPart.ToolResult("call_1|fc_1", "codemode", "one"),
+            AgentContentPart.ToolResult("call_1|fc_1", "bash", "one"),
             AgentContentPart.ToolResult("call_2", "bash", "two")))
         val last = LLMMessage(LLMMessage.Role.USER, "caption", audioParts = listOf(LLMMessage.AudioPart("wav", "AA==")))
         val image = LLMMessage.ImagePart(byteArrayOf(1), "image/png", noVisionPlaceholder = "no vision")
-        val input = ResponsesInputEncoder.encode(listOf(LLMMessage(LLMMessage.Role.USER, "first"), calls, results, last), listOf(image), false, true)
+        val input = ResponsesInputEncoder.encode(listOf(LLMMessage(LLMMessage.Role.USER, "first"), calls, results, last), listOf(image), false)
         assertEquals(7, input.length())
         assertEquals("first", input.getJSONObject(0).getString("content"))
         assertEquals("before", input.getJSONObject(1).getString("content"))
-        assertEquals("custom_tool_call", input.getJSONObject(2).getString("type"))
-        assertEquals("ctc_1", input.getJSONObject(2).getString("id"))
-        assertEquals(source, input.getJSONObject(2).getString("input"))
+        assertEquals("function_call", input.getJSONObject(2).getString("type"))
+        assertEquals("fc_1", input.getJSONObject(2).getString("id"))
+        assertEquals("{\"command\":\"echo one\"}", input.getJSONObject(2).getString("arguments"))
         assertEquals("fc_syn_call_2", input.getJSONObject(3).getString("id"))
-        assertEquals("custom_tool_call_output", input.getJSONObject(4).getString("type"))
+        assertEquals("function_call_output", input.getJSONObject(4).getString("type"))
         assertEquals("function_call_output", input.getJSONObject(5).getString("type"))
         val content = input.getJSONObject(6).getJSONArray("content")
         assertEquals("input_audio", content.getJSONObject(0).getString("type"))
@@ -35,7 +34,7 @@ class OpenAIWireCodecTest {
         assertEquals("no vision", content.getJSONObject(2).getString("text"))
         val structured = last.copy(audioParts = emptyList(), contentParts = listOf(AgentContentPart.Text("A"),
             AgentContentPart.ImageData(byteArrayOf(1), "image/png", noVisionPlaceholder = "B"), AgentContentPart.Text("C")))
-        val blocks = ResponsesInputEncoder.encode(listOf(structured), emptyList(), false, false).getJSONObject(0).getJSONArray("content")
+        val blocks = ResponsesInputEncoder.encode(listOf(structured), emptyList(), false).getJSONObject(0).getJSONArray("content")
         assertEquals(listOf("A", "B", "C"), (0 until blocks.length()).map { blocks.getJSONObject(it).getString("text") })
     }
 

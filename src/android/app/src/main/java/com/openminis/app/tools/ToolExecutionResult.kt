@@ -30,7 +30,7 @@ data class ToolExecutionResult(
     val additionalImages: List<com.openminis.app.data.model.AgentContentPart.ImageData> = emptyList(),
     /** UI-only nested-call trace; never included in model-facing output. */
     val detailsJson: String? = null,
-    /** Pi outputSchema result for codemode, including ordinary non-zero command exits. */
+    /** Non-zero exits are ordinary results too: the structured form carries exit_code. */
     val structuredContentJson: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {

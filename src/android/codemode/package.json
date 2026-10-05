@@ -1,9 +1,0 @@
-{
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "node build.mjs",
-    "test": "bash native-test/run.sh"
-  },
-  "devDependencies": { "esbuild": "0.25.11" }
-}

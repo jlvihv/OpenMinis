@@ -1142,7 +1142,7 @@ class ChatViewModel(
      */
     private fun ensureContextFixedTokens() {
         if (contextFixedTokens > 0) return
-        contextPlanner.updateFixedTokens(buildSystemPrompt(), agentTools)
+        contextPlanner.updateFixedTokens(buildSystemPrompt(), callableAgentTools)
     }
 
     /**
@@ -1599,18 +1599,12 @@ class ChatViewModel(
             rosterNames = providerRepository.subAgents.map { it.name },
         )
 
-    private val agentTools: List<AgentToolDefinition>
-        get() = AgentTools.prepareCodemodeLoadout(callableAgentTools,
-            com.openminis.app.tools.CodemodeTool.mode(context),
-            context.getSharedPreferences(com.openminis.app.tools.CodemodeTool.PREFS, Context.MODE_PRIVATE)
-                .getInt(com.openminis.app.tools.CodemodeTool.INLINE_BUDGET_KEY, 3000))
-
-    private fun subagentParent(toolId: String = "", prior: Int = 0, expectsResultRow: Boolean = true): com.openminis.app.agent.AgentSubagentRuntime.Parent {
+    private fun subagentParent(toolId: String = "", prior: Int = 0): com.openminis.app.agent.AgentSubagentRuntime.Parent {
         val owner = activeSessionId
         return com.openminis.app.agent.AgentSubagentRuntime.Parent(owner, toolId, currentModel?.id,
             _activeEntryId.value, isHelper, prior, checkBranch = {
                 if (activeSessionId != owner) throw CancellationException("subagent parent branch changed")
-            }, expectsResultRow = expectsResultRow)
+            })
     }
 
     private fun subagentBlocks(): List<com.openminis.app.agent.AgentSubagentControls.Block> =
@@ -1647,8 +1641,8 @@ class ChatViewModel(
         }
     }
 
-    fun startQueuedDelegation(argsJson: String, toolUseId: String, expectsResultRow: Boolean = true): Boolean {
-        val parent = subagentParent(expectsResultRow = expectsResultRow)
+    fun startQueuedDelegation(argsJson: String, toolUseId: String): Boolean {
+        val parent = subagentParent()
         return subagentControls.queued(argsJson, toolUseId, parent, subagentBlocks()) { id -> subagentEffects(parent.copy(toolId = id)) }
     }
 
@@ -1669,10 +1663,10 @@ class ChatViewModel(
                 ChatSubagentChild(vm, childId, pool)
             } },
             queuedStarter = { item ->
-                activeSessionId == owner && item.parentSessionId == owner && startQueuedDelegation(item.argsJson, item.toolUseId, item.expectsResultRow)
+                activeSessionId == owner && item.parentSessionId == owner && startQueuedDelegation(item.argsJson, item.toolUseId)
             }, interruptedCount = { countInterruptedChildren(owner) },
             publish = { content, state -> withContext(Dispatchers.Main) {
-                if (activeSessionId == owner && parent.expectsResultRow) {
+                if (activeSessionId == owner) {
                     val status = when (state) {
                         com.openminis.app.agent.jobs.AgentJobState.DONE -> ToolBlockStatus.SUCCESS
                         com.openminis.app.agent.jobs.AgentJobState.CANCELLED -> ToolBlockStatus.CANCELLED
@@ -5640,7 +5634,7 @@ class ChatViewModel(
             context = AgentConversationRuntime.Context(
                 snapshotFacts = ::runtimeContextFacts,
                 effectiveHistory = ::effectiveAgentHistory,
-                tools = { agentTools }, window = ::effectiveContextWindowTokens,
+                tools = { callableAgentTools }, window = ::effectiveContextWindowTokens,
                 offload = { window, tokens -> contextOffloader.offload(runJournal.sessionId, window, tokens,
                     _compactSummary.value, _cachedLatestMarker,
                     currentContextPolicy()?.takeIf { it.second == window }?.first, contextCalibrationRatio(runtime.provider.model.id)) },
@@ -5982,7 +5976,7 @@ class ChatViewModel(
                         }
                 }, skippedCandidates = ::unavailableGroupMembers),
                 tools = com.openminis.app.agent.AgentTurnRuntime.Tools(
-                    definitions = { agentTools }, concurrency = MAX_CONCURRENT_TOOLS,
+                    definitions = { callableAgentTools }, concurrency = MAX_CONCURRENT_TOOLS,
                 starting = { name, args ->
                     SessionActivityTracker.updateToolStatus(status = "Running: $name", toolName = name,
                         isRunning = true, toolTitle = runCatching { providedToolTitle(name, args) }.getOrNull())
@@ -6013,11 +6007,7 @@ class ChatViewModel(
                         if (blockIdx >= 0) {
                             val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
                             // Completed tools own their truncation and continuation hints.
-                            val resultContent = result.output
-                            val finalContent = if (name == com.openminis.app.tools.CodemodeTool.NAME) {
-                                val trace = com.openminis.app.tools.CodemodeTool.renderDetails(result.detailsJson)
-                                if (trace.isEmpty()) resultContent else "$trace\n\n$resultContent"
-                            } else resultContent
+                            val finalContent = result.output
                             // [T-truncated-args-visibility #119] A call built from
                             // truncated args must not render as a clean success — that
                             // silence is the reported bug. Show it with the same weight
@@ -6189,53 +6179,35 @@ class ChatViewModel(
         val ownerSession = activeSessionId
         val ownerRun = streamJob
         fun active() = activeSessionId == ownerSession && streamJob === ownerRun && ownerRun?.isActive == true
-        fun effects(id: String, blocks: MutableList<AssistantBlock>, nested: Boolean = false): com.openminis.app.agent.AgentToolExecutor.Effects {
+        fun effects(id: String, blocks: MutableList<AssistantBlock>): com.openminis.app.agent.AgentToolExecutor.Effects {
             val bash = ChatBashProjection(viewModelScope, id, blocks, active = ::active,
                 publish = { updateAssistantMessage(assistantId, currentText, true, blocks) })
             return com.openminis.app.agent.AgentToolExecutor.Effects(
                 subagent = { args, action -> withContext(Dispatchers.Main) { when (action) {
                     "resume" -> executeResumeAgents(args)
                     "status", "steer", "cancel" -> executeAgentStatus(args)
-                    else -> executeDelegateTask(args, id, blocks, assistantId, currentText, expectsResultRow = !nested)
+                    else -> executeDelegateTask(args, id, blocks, assistantId, currentText)
                 } } }, disabled = ::toolDisabledResult, bashLine = bash::line,
-                openUrl = { url -> if (active()) MinisOpenUrlBroker.offer(url) },
-                codemodeUpdate = { calls ->
-                    val cm = com.openminis.app.tools.CodemodeTool
-                    val progress = cm.renderDetails(cm.details(calls))
-                    viewModelScope.launch(Dispatchers.Main) {
-                        if (active()) {
-                            val index = blocks.indexOfFirst { it.id == id }
-                            if (index >= 0 && blocks[index].toolStatus == ToolBlockStatus.RUNNING) {
-                                blocks[index] = blocks[index].copy(content = progress)
-                                updateAssistantMessage(assistantId, currentText, true, blocks)
-                            }
-                        }
-                    }
-                })
+                openUrl = { url -> if (active()) MinisOpenUrlBroker.offer(url) })
         }
         val input = com.openminis.app.agent.AgentToolExecutor.InputContext(fsSessionId, currentModelHasNativeVision,
             currentModel?.inputLimits?.images?.resize, ownerSession, checkBranch = {
                 if (activeSessionId != ownerSession) throw CancellationException("tool branch changed")
             })
-        val executor = com.openminis.app.agent.AgentToolExecutor(context, skillRepository, chatRepository,
-            browser = { browserTabPool }, definitions = { callableAgentTools })
-        return executor.execute(name, argsJson, toolId, input, effects(toolId, toolBlocks),
-            nestedEffects = { nestedName, id ->
-                effects(id, mutableListOf(AssistantBlock(id = id, kind = "tool_use", toolName = nestedName,
-                    content = "", toolStatus = ToolBlockStatus.RUNNING)), nested = true)
-            })
+        val executor = com.openminis.app.agent.AgentToolExecutor(context, skillRepository,
+            browser = { browserTabPool })
+        return executor.execute(name, argsJson, toolId, input, effects(toolId, toolBlocks))
     }
 
     private suspend fun executeDelegateTask(argsJson: String, toolId: String,
-        toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String,
-        expectsResultRow: Boolean = true): ToolExecutionResult {
+        toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String): ToolExecutionResult {
         val hr = com.openminis.app.agent.jobs.HelperRunner
         val index = toolBlocks.indexOfFirst { it.id == toolId }
         val prior = toolBlocks.take(index.coerceAtLeast(0)).count {
             it.kind == "tool_use" && hr.isSubAgentToolName(it.toolName) &&
                 !hr.isControlOnly(it.toolArgs.ifEmpty { null }, it.content.ifEmpty { null })
         }
-        val parent = subagentParent(toolId, prior, expectsResultRow)
+        val parent = subagentParent(toolId, prior)
         val inline = java.util.concurrent.atomic.AtomicBoolean(true)
         return try {
             subagentRuntime.execute(argsJson, parent, subagentEffects(parent, toolBlocks, assistantId, currentText, inline))
@@ -6374,7 +6346,6 @@ class ChatViewModel(
             browserEnabled = browserToolEnabled,
             delegationBullets = delegationBullets,
             delegationOffered = delegationOffered,
-            codemodeEnabled = com.openminis.app.tools.CodemodeTool.mode(context) != "off",
         )
 
         // Append optional capability fragments after the stable base.
@@ -7257,11 +7228,7 @@ class ChatViewModel(
                         val toolUseId = value.optString("toolUseId", "")
                         if (toolUseId.isNotEmpty()) {
                             toolResultMap[toolUseId] = ToolResultData(
-                                output = com.openminis.app.tools.CodemodeTool.renderDetails(
-                                    value.optString("detailsJson").ifEmpty { null }).let { trace ->
-                                    val output = value.optString("output", "")
-                                    if (trace.isEmpty()) output else "$trace\n\n$output"
-                                },
+                                output = value.optString("output", ""),
                                 success = value.optBoolean("success", true),
                             )
                         }

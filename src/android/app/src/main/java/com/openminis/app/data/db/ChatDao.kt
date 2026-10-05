@@ -268,19 +268,6 @@ interface ChatDao {
         return stored
     }
 
-    @androidx.room.Transaction
-    suspend fun appendJournalBatch(messages: List<MessageEntity>) {
-        if (messages.isEmpty()) return
-        val sessionId = messages.first().sessionId
-        require(messages.all { it.sessionId == sessionId })
-        val start = nextSortOrder(sessionId)
-        insertMessages(messages.mapIndexed { index, message -> message.copy(sortOrder = start + index) })
-    }
-
-    /** Room inserts the list in one transaction: a custom entry is never half-written. */
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertMessages(messages: List<MessageEntity>)
-
     /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.

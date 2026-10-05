@@ -181,7 +181,7 @@ internal class OpenAIStreamDecoder(
                         type == "response.output_item.added" -> {
                             val item = event.optJSONObject("item") ?: continue
                             val itemType = item.optString("type", "")
-                            if (itemType == "function_call" || itemType == "custom_tool_call") {
+                            if (itemType == "function_call") {
                                 val itemId = item.optString("id", "")
                                 val callId = item.optString("call_id", "")
                                 val name = item.optString("name", "")
@@ -194,18 +194,14 @@ internal class OpenAIStreamDecoder(
                                 }
                             }
                         }
-                        type == "response.function_call_arguments.delta" || type == "response.custom_tool_call_input.delta" -> {
+                        type == "response.function_call_arguments.delta" -> {
                             val itemId = event.optString("item_id", "")
                             val delta = event.optString("delta", "")
                             val acc = responsesToolCalls[itemId]
                             if (acc != null && delta.isNotEmpty()) {
                                 acc.args.append(delta)
                                 val combined = combineResponsesAPIIds(acc.callId, itemId)
-                                val input = if (type == "response.custom_tool_call_input.delta")
-                                    // Keep the string/object open until output_item.done. Otherwise a
-                                    // truncated raw script looks like complete, executable JSON to repair.
-                                    JSONObject().put("code", acc.args.toString()).toString().dropLast(2) else acc.args.toString()
-                                send(LLMStreamChunk.ToolInputDelta(combined, input))
+                                send(LLMStreamChunk.ToolInputDelta(combined, acc.args.toString()))
                             } else if (acc == null) {
                                 // Pre-T107 this branch silently dropped the entire tool call
                                 // because no accumulator was set up — leaving the model with
@@ -225,12 +221,11 @@ internal class OpenAIStreamDecoder(
                         type == "response.output_item.done" -> {
                             val item = event.optJSONObject("item") ?: continue
                             val itemType = item.optString("type", "")
-                            if (itemType == "function_call" || itemType == "custom_tool_call") {
+                            if (itemType == "function_call") {
                                 val itemId = item.optString("id", "")
                                 val acc = responsesToolCalls.remove(itemId) ?: continue
-                                val argsStr = item.optString(if (itemType == "custom_tool_call") "input" else "arguments", acc.args.toString())
-                                val args = if (itemType == "custom_tool_call") JSONObject().put("code", argsStr)
-                                    else try { JSONObject(argsStr) } catch (_: Exception) { JSONObject() }
+                                val argsStr = item.optString("arguments", acc.args.toString())
+                                val args = try { JSONObject(argsStr) } catch (_: Exception) { JSONObject() }
                                 val combined = combineResponsesAPIIds(acc.callId, itemId)
                                 android.util.Log.d("ToolChain[Provider]", "→ ToolCallComplete (Responses) id=$combined name=${acc.name} args=${args.toString().take(300)}")
                                 send(LLMStreamChunk.ToolCallComplete(combined, acc.name, args))
@@ -354,7 +349,7 @@ internal class OpenAIStreamDecoder(
                                 (resp?.optJSONArray("output")?.let { out ->
                                     var found = false
                                     for (i in 0 until out.length()) {
-                                        if (out.optJSONObject(i)?.optString("type") in listOf("function_call", "custom_tool_call")) { found = true; break }
+                                        if (out.optJSONObject(i)?.optString("type") == "function_call") { found = true; break }
                                     }
                                     found
                                 } ?: false)

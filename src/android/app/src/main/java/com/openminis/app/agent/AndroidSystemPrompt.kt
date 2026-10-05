@@ -7,7 +7,6 @@ internal object AndroidSystemPrompt {
         browserEnabled: Boolean,
         delegationBullets: String,
         delegationOffered: Boolean,
-        codemodeEnabled: Boolean = false,
     ): String {
         val browserRules = if (browserEnabled) """
 Browser:
@@ -17,7 +16,6 @@ Browser:
         val backgroundNote = if (delegationOffered)
             " Sub-agent results arrive automatically as new messages; do not poll them in a loop." else ""
         val modelDelegateNote = if (delegationOffered) " Delegate only substantial independent work with subagent." else ""
-        val codemodeNote = if (codemodeEnabled) "\n- ${com.openminis.app.tools.CodemodeTool.GUIDELINE}" else ""
         val scheduledDelegateNote = if (delegationOffered) " Do not use minis-scheduled to delegate." else ""
 
         return identitySection + """Act on requests with tools until complete or blocked. Use reasonable defaults; ask only when ambiguous. Be concise in the user's language, respecting their request/SOUL style. Explain sensitive work, not routine calls. Follow tool schemas; CLI --help owns syntax.
@@ -26,7 +24,7 @@ Task lifecycle:
 - For bounded waiting use sleep in bash; cap retries.
 - Never promise future monitoring or reporting without registering a follow-up. Run `minis-scheduled create …` via bash; report its task id.$backgroundNote
 - minis-scheduled uses system alarms for background turns; force-stop cancels pending tasks until reopened. Shell/crontab/at/nohup cannot reliably wake you. Helpers must not schedule tasks or delegate further.
-$delegationBullets$codemodeNote
+$delegationBullets
 Files and resources:
 /var/minis/: attachments/ uploads, workspace/ session files, offloads/ large outputs, browser/ captures, shared/ cross-session files, mounts/phone/ phone shared storage (when enabled; may be read-only).
 - minis://<directory>/<path> maps to /var/minis/<directory>/<path>.
@@ -35,7 +33,7 @@ Files and resources:
 - minis:// action URLs (open_terminal, views, settings) are app deep links: render Markdown links.
 $browserRules
 Tool use:
-- Every direct and nested tool call requires a non-blank string tool_title in the user's language. For codemode, put it in the required first-line // @options: {"tool_title":"…"} header, not a JSON wrapper.
+- Every tool call requires a non-blank string tool_title in the user's language.
 - Use bash for file operations like ls, rg, find.
 - Use read to examine files instead of cat or sed.
 - Use edit for precise changes (edits[].oldText must match exactly).

@@ -18,7 +18,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
     private val providers: ProviderRepository, private val scope: CoroutineScope,
     private val journal: AgentSubagentJournal) {
     data class Parent(val sessionId: String, val toolId: String, val modelId: String?, val entryId: String?,
-        val helper: Boolean, val priorDelegations: Int, val checkBranch: () -> Unit, val expectsResultRow: Boolean = true)
+        val helper: Boolean, val priorDelegations: Int, val checkBranch: () -> Unit)
     data class Snapshot(val tool: String = "", val activity: String = "", val text: String = "",
         val turns: Int = 0, val error: String? = null)
     data class ResumeAnchor(val childId: String, val toolId: String, val title: String, val agent: String?)
@@ -81,7 +81,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
                 deliveredAs = "new turn in this conversation", agentName = definition.name.takeIf { !definition.isBuiltIn },
                 wasResumed = true, errorText = failureText.get() ?: run?.snapshot()?.error,
                 thinkingLevel = if (verified.get()) repository.getSession(anchor.childId)?.thinkingOverride else null)
-            journal.record(owner.sessionId, anchor.toolId, json, finished.state == AgentJobState.DONE, owner.expectsResultRow)
+            journal.record(owner.sessionId, anchor.toolId, json, finished.state == AgentJobState.DONE)
             if (!journal.isRetired(job.id)) effects.publish(json, finished.state)
         }
         scope.launch(Dispatchers.Main, start = CoroutineStart.UNDISPATCHED) {
@@ -146,14 +146,14 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
             try {
                 val result = execute(args, parent, effects)
                 if (!result.success) {
-                    journal.record(parent.sessionId, parent.toolId, result.output, false, parent.expectsResultRow)
+                    journal.record(parent.sessionId, parent.toolId, result.output, false)
                     effects.publish(result.output, AgentJobState.FAILED)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 AppLogger.warning("AgentSubagentRuntime", "queued delegation failed: ${failure.message}")
                 val rejection = HelperRunner.rejectionJson("child_start_failed", failure.message ?: "The helper session did not start.")
-                journal.record(parent.sessionId, parent.toolId, rejection, false, parent.expectsResultRow)
+                journal.record(parent.sessionId, parent.toolId, rejection, false)
                 effects.publish(rejection, AgentJobState.FAILED)
             }
         }
@@ -187,7 +187,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
         if (reservation == null) {
             val queued = withContext(Dispatchers.Main) {
                 parent.checkBranch()
-                AgentJobRegistry.enqueueDelegation(AgentJobRegistry.QueuedDelegation(parent.sessionId, argsJson, parent.toolId, expectsResultRow = parent.expectsResultRow))
+                AgentJobRegistry.enqueueDelegation(AgentJobRegistry.QueuedDelegation(parent.sessionId, argsJson, parent.toolId))
             }
             if (!queued) return reject("helper_limit", "${AgentJobRegistry.MAX_CONCURRENT_CHILD_JOBS} sub agents are already running and the queue is full. Wait for some to finish, then delegate this task again — it was NOT queued.")
             val detail = if (overAllowance) "More than ${HelperRunner.MAX_PER_ASSISTANT_TURN} delegations in one turn. This task is QUEUED and will start automatically as slots free; its result arrives as a new message like any other. Do not re-delegate it."
@@ -332,7 +332,7 @@ internal class AgentSubagentRuntime(private val context: Context, private val re
                 val json = resultJson(status, finished.resultText.orEmpty(), resolution, args, facts.turns,
                     finished.elapsedMs ?: System.currentTimeMillis() - started, childId, jobId, summary, agent,
                     child.snapshot().error, repository.getSession(childId)?.thinkingOverride, true)
-                journal.record(parent.sessionId, parent.toolId, json, finished.state == AgentJobState.DONE, parent.expectsResultRow)
+                journal.record(parent.sessionId, parent.toolId, json, finished.state == AgentJobState.DONE)
                 if (!journal.isRetired(jobId)) effects.publish(json, finished.state)
             }
         }

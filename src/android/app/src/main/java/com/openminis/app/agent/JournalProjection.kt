@@ -2,7 +2,6 @@ package com.openminis.app.agent
 
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage
-import com.openminis.app.tools.CodemodeStore
 
 /** Semantic boundary between durable journal records, visible turns and model input. */
 internal object JournalProjection {
@@ -10,7 +9,8 @@ internal object JournalProjection {
         !isModelVisible(partsJson) || RuntimeContextSnapshot.decode(partsJson) != null
 
     fun isModelVisible(partsJson: String): Boolean =
-        !CodemodeStore.isEntry(partsJson) && !com.openminis.app.data.model.RequestUsageRecord.isEntry(partsJson)
+        !com.openminis.app.data.model.LegacyCodemodeEntry.isEntry(partsJson) &&
+            !com.openminis.app.data.model.RequestUsageRecord.isEntry(partsJson)
 
     fun runtimeMessage(partsJson: String, rowId: String): LLMMessage? =
         RuntimeContextSnapshot.decode(partsJson)?.let { RuntimeContextSnapshot.message(it, rowId) }

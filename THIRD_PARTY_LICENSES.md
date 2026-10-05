@@ -52,12 +52,11 @@ Test-only dependencies: JUnit 4.13.2 (**EPL-1.0**), MockWebServer 4.12.0 (**Apac
 
 | Asset | Location | License |
 |---|---|---|
-| Pi codemode prelude | `src/android/codemode/vendor/prelude-source.ts`, upstream `a276dabe5` | **MIT** — license included in Android codemode assets |
-| QuickJS-NG | `src/android/app/src/main/cpp/quickjs/`, v0.15.1 (`fd0a0210b7be00957751871e7e01b8291268fc29`) | **MIT** — license included with source and in Android codemode assets |
 | KaTeX | iOS `src/ios/Resources/KaTeX/`, Android `app/src/main/assets/katex/` | **MIT** |
 | jieba dictionaries | iOS bundle / Android `assets/jieba/` | **MIT** (cppjieba distribution) |
 | [tiktoken](https://github.com/openai/tiktoken) `cl100k_base` BPE ranks | iOS `src/ios/Shared/cl100k_base.tiktoken`; the tokenizer in `BPETokenizer.swift` is ported from tiktoken | **MIT** |
 
 ## Removed / historical
 
+- **Pi codemode prelude** and **QuickJS-NG** (both MIT) — the Android codemode feature (native QuickJS sandbox, `src/android/codemode`, `assets/codemode`, `cpp/quickjs`) was removed from the tree; no source or asset from either remains.
 - **swift-markdown-ui** (MIT) — formerly vendored under `deps/swift-markdown-ui`; no longer referenced by the Xcode project or imported by any source file, and is not part of the open-source tree.

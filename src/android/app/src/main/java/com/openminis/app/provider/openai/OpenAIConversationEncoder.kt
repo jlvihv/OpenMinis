@@ -499,7 +499,7 @@ internal class OpenAIConversationEncoder(
         // Mirrors iOS convertMessagesResponsesAPI (OpenAIAgentProvider.swift:895):
         // structured content parts become typed input items — function_call /
         // function_call_output — instead of free-text role/content pairs.
-        body.put("input", ResponsesInputEncoder.encode(messages, imageParts, supportsImages, usesCodemodeGrammar))
+        body.put("input", ResponsesInputEncoder.encode(messages, imageParts, supportsImages))
 
         // [T-android-model-custom-params] buildResponsesAPIBody takes no
         // temperature parameter (no caller supplies one on this path), so there
@@ -536,16 +536,7 @@ internal class OpenAIConversationEncoder(
      * NOT the Chat Completions wrapper {type, function:{...}}. Mirrors iOS
      * convertToolsResponsesAPI (OpenAIAgentProvider.swift:977).
      */
-    private val usesCodemodeGrammar: Boolean get() = !forceChatCompletions && !isAzure &&
-        (isOAuth || basePath.startsWith("https://api.openai.com/")) &&
-        (model.id.startsWith("gpt-5") || model.id.startsWith("gpt-6"))
-
     private fun AgentToolDefinition.toResponsesAPIJson(): JSONObject {
-        if (usesCodemodeGrammar && name == com.openminis.app.tools.CodemodeTool.NAME) {
-            return JSONObject().put("type", "custom").put("name", name).put("description", description)
-                .put("format", JSONObject().put("type", "grammar").put("syntax", "lark")
-                    .put("definition", com.openminis.app.tools.CodemodeTool.SOURCE_GRAMMAR))
-        }
         val props = JSONObject()
         for ((key, param) in parameters) {
             props.put(key, param.toJson())

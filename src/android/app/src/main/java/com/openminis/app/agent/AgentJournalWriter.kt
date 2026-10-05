@@ -6,7 +6,6 @@ import com.openminis.app.data.model.LLMUsage
 import com.openminis.app.data.model.ModelAttributionSnapshot
 import com.openminis.app.data.model.RequestUsageRecord
 import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.tools.CodemodeTool
 import com.openminis.app.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -51,7 +50,7 @@ internal class AgentJournalWriter(private val repository: ChatRepository, val se
         assistantParts(listOf(AgentContentPart.Text(text)), emptyMap()))
 
     suspend fun toolResults(parts: List<AgentContentPart>): MessageEntity? {
-        val json = toolResultParts(parts) ?: return null
+        val json = toolResultParts(parts.filterIsInstance<AgentContentPart.ToolResult>()) ?: return null
         return repository.appendMessage(sessionId, "user", json)
     }
 
@@ -82,23 +81,12 @@ internal class AgentJournalWriter(private val repository: ChatRepository, val se
                 else -> null
             } }.joinToString(",", "[", "]")
 
-        private fun toolResultParts(parts: List<AgentContentPart>): String? {
-            val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
+        private fun toolResultParts(results: List<AgentContentPart.ToolResult>): String? {
             if (results.isEmpty()) return null
             return results.map { result ->
                 val snapshot = quote(result.content.lines().takeLast(30).joinToString("\n"))
-                val imageMetadata = if (result.name == CodemodeTool.NAME) {
-                    val position = parts.indexOf(result)
-                    val images = mutableListOf<AgentContentPart.ImageData>()
-                    if (result.imageData != null && result.imageLinuxPath != null) images.add(
-                        AgentContentPart.ImageData(result.imageData, result.imageMimeType ?: "image/png", result.imageLinuxPath))
-                    images.addAll(parts.drop(position + 1).takeWhile { it !is AgentContentPart.ToolResult }
-                        .filterIsInstance<AgentContentPart.ImageData>())
-                    ",\"images\":" + JSONArray(images.map { image -> JSONObject()
-                        .put("path", image.linuxPath).put("mimeType", image.mimeType) })
-                } else ""
                 val details = result.detailsJson?.let { ",\"detailsJson\":${quote(it)}" }.orEmpty()
-                """{"type":"toolResult","value":{"toolUseId":${quote(result.id)},"name":${quote(result.name)},"output":${quote(result.content)},"success":${!result.isError}$imageMetadata$details,"snapshot":{"type":"text","text":$snapshot}}}"""
+                """{"type":"toolResult","value":{"toolUseId":${quote(result.id)},"name":${quote(result.name)},"output":${quote(result.content)},"success":${!result.isError}$details,"snapshot":{"type":"text","text":$snapshot}}}"""
             }.joinToString(",", "[", "]")
         }
 

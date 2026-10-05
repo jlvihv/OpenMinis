@@ -1,6 +1,0 @@
-<resources>
-    <string name="codemode_footer">用 JavaScript 调用工具、批量执行独立操作并筛选输出。采用原生 QuickJS 和 Pi 的脚本接口，不依赖 Android System WebView。</string>
-    <string name="codemode_off">关闭</string>
-    <string name="codemode_on">开启 — 同时允许直接调用工具</string>
-    <string name="codemode_only">仅 codemode — 通过脚本调用工具</string>
-</resources>

@@ -3,7 +3,6 @@ package com.openminis.app.ui.chat
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.service.SessionActivityTracker
-import com.openminis.app.tools.CodemodeTool
 import com.openminis.app.tools.CoreToolNames
 import kotlinx.coroutines.yield
 import org.json.JSONObject
@@ -129,12 +128,9 @@ internal class ChatStreamProjection(
                 val index = blocks.indexOfFirst { it.id == chunk.id }
                 if (index >= 0) {
                     val previous = blocks[index]
-                    val codemode = previous.toolName == CodemodeTool.NAME
-                    val codeTitle = if (codemode) CodemodeTool.titleFromSource(
-                        StreamToolPresentation.partial("code", chunk.accumulated) ?: chunk.accumulated) else null
-                    val completeTitle = if (codemode) codeTitle else com.openminis.app.service.completedToolTitle(chunk.accumulated)
+                    val completeTitle = com.openminis.app.service.completedToolTitle(chunk.accumulated)
                     SessionActivityTracker.publishToolTitle(sessionId, previous.toolName, completeTitle)
-                    val partial = if (codemode) codeTitle else StreamToolPresentation.partial("tool_title", chunk.accumulated)
+                    val partial = StreamToolPresentation.partial("tool_title", chunk.accumulated)
                     val title = when {
                         !partial.isNullOrEmpty() -> partial
                         previous.toolTitle.isNotEmpty() && previous.toolTitle != previous.toolName -> previous.toolTitle
@@ -219,8 +215,7 @@ internal object StreamToolPresentation {
     }
 
     fun provided(name: String, args: JSONObject): String? =
-        if (name == CodemodeTool.NAME) CodemodeTool.titleFromArguments(args)
-        else args.optString("tool_title", "").takeIf { it.isNotBlank() }
+        args.optString("tool_title", "").takeIf { it.isNotBlank() }
 
     fun friendly(name: String): String = when (name) {
         "bash" -> "Execute Bash"

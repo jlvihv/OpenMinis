@@ -37,9 +37,8 @@ internal class AgentSubagentJournal(private val repository: ChatRepository,
         }
     }
 
-    suspend fun record(session: String, tool: String, content: String, success: Boolean, expectsResultRow: Boolean = true) {
-        // Nested codemode calls have no protocol tool_result row; their callback/trace is the carrier.
-        if (expectsResultRow) persist(session, tool, content, success, null)
+    suspend fun record(session: String, tool: String, content: String, success: Boolean) {
+        persist(session, tool, content, success, null)
     }
 
     private suspend fun persist(session: String, tool: String, content: String, success: Boolean, expected: Final?) {

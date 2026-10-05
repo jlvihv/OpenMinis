@@ -63,7 +63,7 @@ object ToolJsonRepair {
 
         // New core contracts are strict. In particular, edits must stay a real
         // array; coercing it here would reject a valid model response downstream.
-        if (toolName in setOf("read", "write", "edit", "bash", "codemode")) return repairs
+        if (toolName in setOf("read", "write", "edit", "bash")) return repairs
 
         // Other Android tools may repair scalar strings, never structured values.
         for (field in toolDef.required) {

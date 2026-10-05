@@ -365,25 +365,6 @@ dependencies {
     androidTestImplementation("junit:junit:4.13.2")
 }
 
-// Checked-in assets keep ordinary Android builds independent of Node/npm.
-// Fail rather than shipping a stale prelude when its source/extraction changes.
-val verifyCodemodeAssets = tasks.register("verifyCodemodeAssets") {
-    val sourceDir = project.file("../codemode")
-    val assetDir = project.file("src/main/assets/codemode")
-    inputs.files(fileTree(sourceDir) { exclude("node_modules/**") }, fileTree(assetDir))
-    doLast {
-        @Suppress("UNCHECKED_CAST")
-        val manifest = JsonSlurper().parse(assetDir.resolve("manifest.json")) as Map<String, Map<String, String>>
-        for ((group, entries) in manifest) for ((path, expected) in entries) {
-            val file = (if (group == "sources") sourceDir else assetDir).resolve(path)
-            val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
-                .joinToString("") { "%02x".format(it) }
-            check(actual == expected) { "Stale codemode $path. Run: cd src/android/codemode && npm ci --ignore-scripts && npm run build" }
-        }
-    }
-}
-tasks.named("preBuild").configure { dependsOn(verifyCodemodeAssets) }
-
 // Check every packaged ELF, including executables shipped as .so in jniLibs.
 // A successful JNI build alone does not validate vendored rootfs binaries.
 listOf("debug", "release", "perf").forEach { variant ->

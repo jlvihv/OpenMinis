@@ -3,14 +3,13 @@ package com.openminis.app.provider.openai
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.provider.ImageBudget
-import com.openminis.app.tools.CodemodeTool
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Ordered Responses input projection; no model selection, authentication or request overrides. */
 internal object ResponsesInputEncoder {
     fun encode(messages: List<LLMMessage>, images: List<LLMMessage.ImagePart>,
-        supportsImages: Boolean, codemodeGrammar: Boolean): JSONArray {
+        supportsImages: Boolean): JSONArray {
         val input = JSONArray()
         val lastUser = messages.indexOfLast { it.role == LLMMessage.Role.USER }
         for ((index, message) in messages.withIndex()) {
@@ -23,18 +22,16 @@ internal object ResponsesInputEncoder {
                         val (callId, itemId) = splitId(call.id)
                         val safeCall = capId(callId)
                         val safeItem = itemId?.let { capId(it) } ?: "fc_syn_${safeCall.takeLast(24)}"
-                        val raw = codemodeGrammar && call.name == CodemodeTool.NAME
-                        input.put(JSONObject().put("type", if (raw) "custom_tool_call" else "function_call")
-                            .put("id", capId("${if (raw) "ctc" else "fc"}_${safeItem.removePrefix("fc_").removePrefix("ctc_")}"))
+                        input.put(JSONObject().put("type", "function_call")
+                            .put("id", capId("fc_${safeItem.removePrefix("fc_")}"))
                             .put("call_id", safeCall).put("name", call.name)
-                            .put(if (raw) "input" else "arguments", if (raw) call.input.optString("code") else call.input.toString()))
+                            .put("arguments", call.input.toString()))
                     }
                 } else {
                     // Parallel outputs must remain contiguous. Image carriers follow the whole run.
                     val carriers = mutableListOf<JSONObject>()
                     for (result in message.contentParts.filterIsInstance<AgentContentPart.ToolResult>()) {
-                        input.put(JSONObject().put("type", if (codemodeGrammar && result.name == CodemodeTool.NAME)
-                            "custom_tool_call_output" else "function_call_output")
+                        input.put(JSONObject().put("type", "function_call_output")
                             .put("call_id", capId(splitId(result.id).first)).put("output", result.content))
                         result.imageData?.takeIf { it.isNotEmpty() && supportsImages }?.let { bytes ->
                             carriers.add(turn("user", JSONArray().put(textBlock("[Image returned by ${result.name}]"))
