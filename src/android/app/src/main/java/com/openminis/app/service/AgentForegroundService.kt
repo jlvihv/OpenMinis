@@ -281,7 +281,12 @@ class AgentForegroundService : Service() {
         // pair completes within one main-thread message, well under the frame
         // the shade would need to draw it. This is the pattern Android's own
         // docs prescribe for "started, but no longer needed".
-        if (intent != null && intent.action != ACTION_STOP && !SessionActivityTracker.shouldRunServiceNow()) {
+        // A null intent is a START_STICKY revival after the process was killed,
+        // not a request to run anything: it must take the same guarded path as
+        // an explicit start when no session is active, or a background start
+        // restriction turns the revival into a process crash (observed on
+        // device: ForegroundServiceStartNotAllowedException out of this call).
+        if (intent?.action != ACTION_STOP && !SessionActivityTracker.shouldRunServiceNow()) {
             Log.d(TAG, "start with nothing to run — satisfying the FG contract, then stopping")
             try {
                 val stub = buildNotification(0, "Idle")
@@ -327,14 +332,28 @@ class AgentForegroundService : Service() {
 
         val notification = buildNotification(sessionCount, toolStatus)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // A start the OS refuses to promote must not take the process down with
+        // it: the tracker still holds the session, so the next allowed start
+        // re-registers. Swallowing here leaves the run's own cancellation and
+        // journal settlement to the agent loop, exactly as a denied start does.
+        val promoted = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "startForeground refused (${t.javaClass.simpleName}: ${t.message}) — stopping instead of crashing")
+            false
+        }
+        if (!promoted) {
+            stopSelf()
+            return START_NOT_STICKY
         }
         statusForegroundAttached = true
         if (SessionActivityTracker.activeSessions.value.isNotEmpty()) {
