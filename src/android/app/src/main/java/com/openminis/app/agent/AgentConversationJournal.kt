@@ -4,6 +4,10 @@ import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage
 import kotlinx.coroutines.CancellationException
+import com.openminis.app.logging.AppLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /** Captured-branch history publication and durable turn commits. */
 internal class AgentConversationJournal(
@@ -34,6 +38,20 @@ internal class AgentConversationJournal(
         val entity = journal.toolResults(parts)
         checkBranch()
         history.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = parts, dbMessageId = entity?.id))
+    }
+
+    suspend fun appendSteers(steers: List<String>): LLMMessage? {
+        if (steers.isEmpty()) return null
+        checkBranch()
+        val note = steers.joinToString("\n") { "[Course correction from the delegating agent] $it" }
+        val row = withContext(NonCancellable + Dispatchers.IO) {
+            try { writer.reminder(note) } catch (failure: Exception) {
+                AppLogger.warning("AgentConversationJournal", "[subagent] steer persist failed: ${failure.javaClass.simpleName}")
+                null
+            }
+        }
+        checkBranch()
+        return LLMMessage(LLMMessage.Role.USER, note, dbMessageId = row?.id).also(history::add)
     }
 
     private fun checkBranch() {

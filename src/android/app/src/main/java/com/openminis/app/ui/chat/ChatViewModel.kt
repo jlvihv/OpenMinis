@@ -8692,9 +8692,7 @@ class ChatViewModel(
         val turnCap = helperConfig?.maxTurns ?: MAX_AGENT_TURNS
         // [T-agent-wrapup-turn] Once true the tool list is withdrawn for the
         // rest of this run: a model with no tools can only answer in text.
-        var helperWrapUpInjected = false
-        // [T-subagent-turn-countdown] Fired once, a few rounds before the cliff.
-        var helperTurnWarningInjected = false
+        val helperTurnPolicy = com.openminis.app.agent.AgentHelperTurnPolicy(agentHistory, helperConfig != null)
         // [T-scheduled-tool-prefill] One-shot: the next turn that reaches the
         // request point streams these calls instead of asking the provider,
         // then clears it. Local to this run, so it cannot leak into a later
@@ -8748,55 +8746,7 @@ class ChatViewModel(
             }
             // Sanitize history before each API call (mirrors iOS pre-API validation)
             sanitizeAgentHistory()
-            // [T-agent-wrapup-turn] A helper that reaches its last permitted
-            // round (or whose budget the parent has called time on) must not
-            // end on a tool call: the parent only ever receives the child's
-            // final TEXT. Take the tools away for this one turn and ask for
-            // the deliverable, the way a person would say "time's up".
-            if (helperConfig != null && !helperWrapUpInjected && (helperWrapUpRequested || frame.isLast)) {
-                helperWrapUpInjected = true
-                val reason = if (helperWrapUpRequested) com.openminis.app.agent.jobs.HelperWrapUpReason.BUDGET else com.openminis.app.agent.jobs.HelperWrapUpReason.TURNS
-                val note = com.openminis.app.agent.jobs.HelperRunner.wrapUpPrompt(reason)
-                val lastIdx = agentHistory.lastIndex
-                if (lastIdx >= 0 && JournalProjection.isConversationUser(agentHistory[lastIdx])) {
-                    val last = agentHistory[lastIdx]
-                    agentHistory[lastIdx] = if (last.contentParts.isEmpty()) last.copy(content = (last.content + "\n\n" + note).trim())
-                    else last.copy(contentParts = last.contentParts + AgentContentPart.Text(note))
-                } else {
-                    agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = note))
-                }
-                AppLogger.info(TAG, "[delegate_task] wrap-up turn injected reason=$reason turn=${turn + 1}/$turnCap")
-            }
-            // [T-subagent-turn-countdown] Warn BEFORE the tools are gone.
-            //
-            // The wrap-up block above is a cliff: it fires on the last round,
-            // with the tools already withdrawn, so a child that spent its
-            // budget investigating learns it is out of rounds at the exact
-            // moment it can no longer write anything. That is the reported
-            // failure — "it could only reply with a message, it could not save
-            // the file". The cap is intentional; being ambushed by it is not.
-            //
-            // So give it the one fact it cannot work out for itself: how many
-            // rounds are actually left. Tools still work on this turn, which is
-            // what makes the warning actionable rather than an epitaph.
-            // Skipped once the wrap-up has been injected — at that point the
-            // count is zero and the wrap-up says so more forcefully.
-            if (helperConfig != null && !helperWrapUpInjected && !helperTurnWarningInjected) {
-                val remaining = turnCap - 1 - turn
-                if (remaining in 1..com.openminis.app.agent.jobs.HelperRunner.TURN_WARNING_LEAD) {
-                    helperTurnWarningInjected = true
-                    val note = com.openminis.app.agent.jobs.HelperRunner.turnBudgetWarning(remaining)
-                    val lastIdx = agentHistory.lastIndex
-                    if (lastIdx >= 0 && JournalProjection.isConversationUser(agentHistory[lastIdx])) {
-                        val last = agentHistory[lastIdx]
-                        agentHistory[lastIdx] = if (last.contentParts.isEmpty()) last.copy(content = (last.content + "\n\n" + note).trim())
-                        else last.copy(contentParts = last.contentParts + AgentContentPart.Text(note))
-                    } else {
-                        agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = note))
-                    }
-                    AppLogger.info(TAG, "[subagent] turn budget warning injected remaining=$remaining turn=${turn + 1}/$turnCap")
-                }
-            }
+            helperTurnPolicy.beforeTurn(frame, helperWrapUpRequested)
             // [T-sub-agents-steer] Deliver any course correction the parent
             // sent while this child was working. Placed AFTER the wrap-up
             // block on purpose: when both land in the same turn the "write the
@@ -8808,41 +8758,11 @@ class ChatViewModel(
                     out
                 }
                 if (steers.isNotEmpty()) {
-                    val note = steers.joinToString("\n") {
-                        "[Course correction from the delegating agent] $it"
-                    }
-                    // [T-android-subagent-steer-visible] Persist the correction
-                    // as a real user message in the CHILD's own transcript,
-                    // instead of only folding it into agentHistory.
-                    //
-                    // A steer is the parent doing what a person does when they
-                    // interject mid-task, so it belongs in the conversation the
-                    // same way. Appended to agentHistory alone it reached the
-                    // model and nothing else: opening the sub agent showed it
-                    // changing direction with nothing to explain why, and a
-                    // relaunch — which rebuilds agentHistory from the DB — lost
-                    // the instruction outright. Observed on device: three
-                    // "补充黄牛行情" steers were delivered (status=queued, all
-                    // consumed) and left no trace in any child transcript.
-                    //
-                    // Written as its own message rather than merged into the
-                    // preceding one, so it keeps its own row, timestamp and cell.
-                    // [T-android-bubble-anchor] Persisted BEFORE the bubble is
-                    // made, so the bubble can carry the row's id like every
-                    // other user bubble; retry / delete / edit find rows by it.
-                    val steerRow = runCatching {
-                        chatRepository.appendMessage(
-                            activeSessionId, "user",
-                            """[{"type":"text","value":${escapeJson(note)}}]""",
-                        )
-                    }.onFailure {
-                        AppLogger.warning(TAG, "[subagent] steer persist failed: ${it.message}")
-                    }.getOrNull()
-                    agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = note, dbMessageId = steerRow?.id))
+                    val steer = conversationJournal.appendSteers(steers) ?: throw IllegalStateException("nonempty steer batch produced no message")
                     val steerUi = ChatMessage(
-                        id = steerRow?.id ?: "steer_${System.currentTimeMillis()}",
+                        id = steer.dbMessageId ?: "steer_${System.currentTimeMillis()}",
                         role = "user",
-                        content = note,
+                        content = steer.content,
                     )
                     // Insert BEFORE the assistant bubble this turn streams into,
                     // not at the end. runAgentLoop appends that bubble before the
@@ -8883,7 +8803,7 @@ class ChatViewModel(
             appendRuntimeContextSnapshot()
             contextPlanner.updateFixedTokens(
                 loopSystemPrompt,
-                if (helperWrapUpInjected) emptyList() else agentTools,
+                if (helperTurnPolicy.toolsWithdrawn) emptyList() else agentTools,
             )
             effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
                 offloadContextIfNeeded(
@@ -9126,7 +9046,7 @@ class ChatViewModel(
                     // below the provider (DNS/TCP/TLS/read), which no existing
                     // log covers. `firstChunkSeen` is flipped in the collector.
                     projection.configure(currentProvider.streamTextIsMonolithic, currentProvider.model.id)
-                    val scriptedTurn = pendingScriptedTurn?.takeUnless { helperWrapUpInjected }
+                    val scriptedTurn = pendingScriptedTurn?.takeUnless { helperTurnPolicy.toolsWithdrawn }
                     pendingScriptedTurn = null
                     modelTurn.collect(currentProvider, scriptedTurn, agentHistory.size,
                         prepare = {
@@ -9134,7 +9054,7 @@ class ChatViewModel(
                             val model = currentProvider.model
                             com.openminis.app.agent.AgentModelTurn.Input(currentProvider, effectiveAgentHistory(),
                                 resolvedContextWindow(model)?.first ?: model.contextWindowTokens,
-                                loopSystemPrompt, if (helperWrapUpInjected) emptyList() else agentTools,
+                                loopSystemPrompt, if (helperTurnPolicy.toolsWithdrawn) emptyList() else agentTools,
                                 _thinkingLevel.value, runAttribution)
                         }, wireHistory = { auditOutgoingPayload(applyRequestImageBudget(it)) },
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
