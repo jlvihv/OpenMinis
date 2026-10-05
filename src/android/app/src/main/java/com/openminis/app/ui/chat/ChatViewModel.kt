@@ -8535,6 +8535,7 @@ class ChatViewModel(
         val runJournal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
         val conversationJournal = com.openminis.app.agent.AgentConversationJournal(runJournal, agentHistory) { activeSessionId }
         val continuation = com.openminis.app.agent.AgentTurnContinuation(agentHistory, runJournal)
+        val replyContent = com.openminis.app.agent.AgentReplyContent()
         var runAttribution = modelSnapshotFor(provider.model, _activeEntryId.value)
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
         // [T-android-mem-probe-trust] Send-path context shape. The existing
@@ -8997,58 +8998,20 @@ class ChatViewModel(
                         }
                     }
                 })
-            val turnContent = com.openminis.app.agent.AgentTurnContent()
-            val turnJournal = cancellationCoordinator.begin(runJournal, turnContent, assistantId, CANCELLED_MARKER)
-            val modelTurn = com.openminis.app.agent.AgentModelTurn(runJournal.sessionId, turn,
-                contextPlanner, compactionSummarizer, turnContent, toolInputChunkRings, turnJournal, runAttribution)
+            val turnRuntime = com.openminis.app.agent.AgentTurnRuntime(runJournal, conversationJournal,
+                continuation, replyContent, cancellationCoordinator, contextPlanner, compactionSummarizer,
+                toolInputChunkRings, toolLoopDetector, requestCycle, turn, assistantId, CANCELLED_MARKER, runAttribution)
 
-            // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
-            // Some upstream OpenAI-compatible gateways occasionally emit
-            // multiple parallel tool_calls with the SAME id but different
-            // name/args. Sending both back unchanged trips the receiver's
-            // uniqueness check (HTTP 400 "duplicate tool_call_id"). Mirror
-            // the iOS fix: the FIRST occurrence keeps the raw id, second
-            // becomes "<id>-2", third "<id>-3", etc.
-            //
-            // Three pieces of state because Android routes ToolInputDelta
-            // by chunk.id (iOS routes by name) and OpenAI emits ALL completes
-            // together after finish_reason — so we can't drop the
-            // "currently in-flight" map by the time completes arrive.
-            //
-            //   dedupeStartCounts    raw id → # ToolUseStart events seen
-            //   dedupeCompleteCounts raw id → # ToolCallComplete events seen
-            //   inFlightRenamedId    raw id → renamed id of the tool currently
-            //                        streaming deltas (overwritten on each start)
-            //
-            // Start/complete ordering match: OpenAI streams emit tools in
-            // `index` order at finish_reason, mirroring start order.
-            // Stream the response — with auto-retry on transient errors, then fallback.
-            // callbackFlow wraps throws into CancellationException(cause=LLMError),
-            // so we catch at collect level and unwrap.
-            requestCycle.run(attempt = {
-                    // [T-android-enhanced-cache] Stamp the per-turn Enhanced
-                    // Cache flag onto the active provider here — the single
-                    // choke point every turn passes through, regardless of how
-                    // currentProvider was (re)assigned by the fallback loop.
-                    // Non-Anthropic providers ignore it (cast fails silently).
-                    (currentProvider as? com.openminis.app.provider.anthropic.AnthropicProvider)
-                        ?.enhancedCache = _enhancedCacheEnabled.value
-                    // [T-STALL-DIAG] First-chunk watchdog. The reported symptom
-                    // is "new session shows thinking… forever, UI empty, stop
-                    // button still armed" — which is indistinguishable, in the
-                    // current logs, between (a) the request never left, (b) it
-                    // left and the provider never answered, and (c) it answered
-                    // and the chunks were routed to the wrong session's UI.
-                    //
-                    // Stamp the request as it goes out, then have a detached
-                    // watchdog report every 10s while NOT ONE chunk has arrived.
-                    // Silence here + no network error = the request is hung
-                    // below the provider (DNS/TCP/TLS/read), which no existing
-                    // log covers. `firstChunkSeen` is flipped in the collector.
-                    projection.configure(currentProvider.streamTextIsMonolithic, currentProvider.model.id)
-                    val scriptedTurn = pendingScriptedTurn?.takeUnless { helperTurnPolicy.toolsWithdrawn }
-                    pendingScriptedTurn = null
-                    modelTurn.collect(currentProvider, scriptedTurn, agentHistory.size,
+            // Runtime sequences requests, tool dispatch and journal commits; these callbacks project effects.
+            val turnResult = turnRuntime.execute(
+                request = com.openminis.app.agent.AgentTurnRuntime.Request(
+                    provider = { currentProvider }, historySize = { agentHistory.size },
+                    scripted = {
+                        val scripted = pendingScriptedTurn?.takeUnless { helperTurnPolicy.toolsWithdrawn }
+                        pendingScriptedTurn = null
+                        scripted
+                    }, enhancedCache = { _enhancedCacheEnabled.value },
+                    configure = { projection.configure(it.streamTextIsMonolithic, it.model.id) },
                         prepare = {
                             if (personaReminderIsDue(lastContextTokens)) appendPersonaReminderToHistory(lastContextTokens)
                             val model = currentProvider.model
@@ -9066,7 +9029,7 @@ class ChatViewModel(
                     is LLMStreamChunk.ToolInputDelta,
                     is LLMStreamChunk.ToolCallComplete -> projection.accept(chunk)
                     is LLMStreamChunk.Usage -> {
-                        val reportedContext = modelTurn.reportedContext
+                        val reportedContext = turnRuntime.reportedContext
                         if (reportedContext > 0) {
                             lastContextTokens = reportedContext
                             _lastTurnContextTokens.value = reportedContext
@@ -9102,8 +9065,8 @@ class ChatViewModel(
                     // accumulated text-deltas, so we must not leave the last
                     // 0-50ms worth on the floor.
                     projection.finish()
-                    })
-            }, retrying = { actual, retry ->
+                    }),
+                recovery = com.openminis.app.agent.AgentTurnRuntime.Recovery(retrying = { actual, retry ->
                 val errDesc = actual.message ?: actual.javaClass.simpleName
                 Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry ${retry.attempt}/${retry.limit} in ${retry.delaySeconds}s: $errDesc")
                 withContext(Dispatchers.Main) {
@@ -9116,15 +9079,13 @@ class ChatViewModel(
                     _autoRetryAttempt.value = 0
                     _autoRetryCountdown.value = 0
                     withContext(Dispatchers.Main) { clearInlineError() }
-                }, rollback = { discardPartialBlocks ->
+                }, rollbackPresentation = { discardPartialBlocks ->
                     if (discardPartialBlocks) withContext(Dispatchers.Main) {
                         while (allToolBlocks.size > turnStartBlockIndex) allToolBlocks.removeAt(allToolBlocks.size - 1)
                         updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                     }
                     projection.resetAttempt()
-                    turnContent.resetAttempt()
-                }, healOverflow = { error ->
-                    modelTurn.noteOverflow(error.detail)
+                }, healOverflow = {
                     val healed = offloadLargestPartForOverflow()
                     if (healed) {
                         AppLogger.warning(TAG, "[OverflowSelfHeal] context-length rejection — offloaded largest history part; retrying")
@@ -9224,104 +9185,9 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) {
                             updateAssistantMessage(assistantId, accumulatedText + projection.text(), true, allToolBlocks)
                         }
-                }, skippedCandidates = ::unavailableGroupMembers,
-            )
-
-            // T307: materialise the per-turn StringBuilder ONCE at the
-            // turn boundary. After this point everything is plain String
-            // semantics — `turnText` participates in cross-turn accumulation
-            // and gets persisted into agentHistory below.
-            val turnText = turnContent.visibleText()
-            val toolCalls = turnContent.calls
-            // Accumulate text across turns
-            accumulatedText += turnText
-
-            val turnFinishReason = turnContent.finishReason
-            conversationJournal.appendAssistant(turnContent)
-
-            // T321: empty-turn diagnostic — fires when GPT-5.5 (or any other
-            // provider) returns a turn with no visible text AND no tool calls.
-            // Log only; UI behavior unchanged. Pair with OpenAIProvider SSE
-            // logs to triage server-empty vs parser-drop vs swallowed-exception.
-            if (turnText.isEmpty() && toolCalls.isEmpty()) {
-                AppLogger.warning(
-                    TAG_STREAM,
-                    "empty turn detected: turn=$turn finishReason=$turnFinishReason " +
-                        "reasoningLen=${projection.thinkingLength} reasoningBlobLen=${turnContent.opaqueReasoningLength ?: -1} " +
-                        "model=${provider.model.id} provider=${provider.name}"
-                )
-            }
-
-            // If no tool calls, we're done
-            if (toolCalls.isEmpty()) {
-                AppLogger.info(TAG_STREAM, "runAgentLoop turn=$turn no tool calls → break (finishReason=$turnFinishReason)")
-                withContext(Dispatchers.Main) {
-                    updateAssistantMessage(assistantId, accumulatedText, false, allToolBlocks)
-                }
-                val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                val entity = conversationJournal.commitAssistant(modelTurn, journalMetadata(blockMeta))
-                if (entity != null) withContext(Dispatchers.Main) {
-                    messagePublication.stamp(runJournal.sessionId, assistantId, entity)
-                }
-                // [T-error-persist-android] Empty-response hint: the model ended a
-                // turn (finish=stop/end_turn) with no visible text anywhere in the
-                // reply and no tool blocks — the user just sees a blank bubble.
-                // Surface a hint instead. When the context is near full, point at
-                // compaction; otherwise suggest retry/switch. setInlineError
-                // attaches + persists onto the (empty) assistant row so the hint
-                // survives a reload too.
-                val hasVisibleContent = accumulatedText.isNotBlank() ||
-                    allToolBlocks.any { it.kind == "tool_use" || (it.kind == "text" && it.content.isNotBlank()) }
-
-                val decision = continuation.converged(hasVisibleContent, turnFinishReason,
-                    effectiveContextWindowTokens(), modelTurn.usage?.latestContextTokens ?: 0,
-                    _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER },
-                    ChatMessage.SCHEDULED_RESUME_NUDGE_TEXT, helperConfig != null, turn, turnCap, pendingSteerMessages.size)
-                decision.hint?.let { hint ->
-                    val resource = when (hint) {
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_AFTER_REMINDER -> R.string.error_empty_response_after_tool
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
-                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
-                    }
-                    withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
-                }
-                when (val action = decision.action) {
-                    AgentLoopEngine.Action.Next -> {
-                        withContext(Dispatchers.Main) { updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks) }
-                        _canResume.value = false
-                    }
-                    is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
-                        withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
-                        markLiveInterruption()
-                        _canResume.value = true
-                    } else if (turn == 0) generateSessionTitleIfNeeded()
-                }
-                return@agentTurn decision.action
-            }
-            AppLogger.info(TAG_STREAM, "runAgentLoop turn=$turn dispatching ${toolCalls.size} tool call(s), continuing")
-
-            // [T-android-session-last-message-live-tool-call] Push a live
-            // preview to the session list NOW, before the (possibly long-
-            // running) tools execute. The authoritative assistant row isn't
-            // written until turn end (persistAssistantTurn below), so without
-            // this the home list shows a stale preview — or "No messages yet"
-            // for a turn that opened with a tool call and no prior text —
-            // for the entire tool duration. extractTextPreview prefers the
-            // assistant's partial text and falls back to the tool summary, so
-            // the list reflects exactly what the model just emitted. Mirrors
-            // iOS overlaying the live VM's last message over the DB value.
-            run {
-                val livePreviewParts = turnContent.parts()
-                val liveMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                turnJournal.recordPresentation(journalMetadata(liveMeta))
-                if (livePreviewParts.isNotEmpty()) {
-                    runJournal.preview(livePreviewParts, journalMetadata(liveMeta))
-                }
-            }
-
-            // Execute all tool calls
-            val resultParts = com.openminis.app.agent.AgentToolRound(toolLoopDetector, toolInputChunkRings, agentTools).execute(
-                toolCalls, MAX_CONCURRENT_TOOLS, turnJournal,
+                }, skippedCandidates = ::unavailableGroupMembers),
+                tools = com.openminis.app.agent.AgentTurnRuntime.Tools(
+                    definitions = { agentTools }, concurrency = MAX_CONCURRENT_TOOLS,
                 starting = { name, args ->
                     SessionActivityTracker.updateToolStatus(status = "Running: $name", toolName = name,
                         isRunning = true, toolTitle = runCatching { providedToolTitle(name, args) }.getOrNull())
@@ -9402,26 +9268,53 @@ class ChatViewModel(
                 },
                 invoke = { name, args, id ->
                     executeTool(name, args, id, allToolBlocks, assistantId, accumulatedText)
+                }),
+                presentation = com.openminis.app.agent.AgentTurnRuntime.Presentation(
+                    modelFinished = { text, hasCalls ->
+                        accumulatedText += text
+                        if (!hasCalls) withContext(Dispatchers.Main) {
+                            updateAssistantMessage(assistantId, accumulatedText, false, allToolBlocks)
+                        }
+                    }, metadata = {
+                        journalMetadata(allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id })
+                    }, awaiting = {
+                        withContext(Dispatchers.Main) {
+                            updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks,
+                                isAwaitingModelResponse = true)
+                        }
+                    }, committed = { entity ->
+                        withContext(Dispatchers.Main) { messagePublication.stamp(runJournal.sessionId, assistantId, entity) }
+                    }),
+                completion = {
+                    com.openminis.app.agent.AgentTurnRuntime.Completion(
+                        effectiveContextWindowTokens(),
+                        _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER },
+                        ChatMessage.SCHEDULED_RESUME_NUDGE_TEXT, helperConfig != null, turnCap, pendingSteerMessages.size)
                 },
             )
-
-            // Update UI with tool statuses. Mark as awaiting the next model
-            // response so "Minis is thinking" shows during the network gap
-            // between tool results being sent and the next turn's first chunk.
-            // Mirrors iOS isAwaitingModelResponse.
-            withContext(Dispatchers.Main) {
-                updateAssistantMessage(
-                    assistantId, accumulatedText, true, allToolBlocks,
-                    isAwaitingModelResponse = true,
-                )
+            if (turnResult is com.openminis.app.agent.AgentTurnRuntime.Result.Converged) {
+                val decision = turnResult.decision
+                decision.hint?.let { hint ->
+                    val resource = when (hint) {
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_AFTER_REMINDER -> R.string.error_empty_response_after_tool
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_CONTEXT_LARGE -> R.string.error_empty_response_context_large
+                        com.openminis.app.agent.AgentTurnContinuation.Hint.EMPTY_GENERIC -> R.string.error_empty_response_generic
+                    }
+                    withContext(Dispatchers.Main) { setInlineError(context.getString(resource)) }
+                }
+                when (val action = decision.action) {
+                    AgentLoopEngine.Action.Next -> {
+                        withContext(Dispatchers.Main) { updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks) }
+                        _canResume.value = false
+                    }
+                    is AgentLoopEngine.Action.Stop -> if (action.reason == AgentLoopEngine.StopReason.INTERRUPTED) {
+                        withContext(Dispatchers.Main) { setInlineError(context.getString(R.string.chat_error_stream_dropped_partial)) }
+                        markLiveInterruption()
+                        _canResume.value = true
+                    } else if (turn == 0) generateSessionTitleIfNeeded()
+                }
+                return@agentTurn decision.action
             }
-
-            val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-            val entity = conversationJournal.commitAssistant(modelTurn, journalMetadata(blockMeta))
-            if (entity != null) withContext(Dispatchers.Main) {
-                messagePublication.stamp(runJournal.sessionId, assistantId, entity)
-            }
-            conversationJournal.commitResults(turnJournal, resultParts)
 
             // Auto-title after first exchange (mirrors iOS generateSessionTitleIfNeeded)
             if (turn == 0) {
