@@ -9,6 +9,31 @@ internal class AgentRunCoordinator {
     @Volatile var job: Job? = null
         private set
 
+    private var mutation: Job? = null
+    val mutating: Boolean get() = job === mutation && job?.isCompleted == false
+
+    fun mutate(scope: CoroutineScope, failed: (Exception) -> Unit, body: suspend () -> Unit): Job {
+        val previous = job
+        val launched = scope.launch(Dispatchers.Main, start = CoroutineStart.LAZY) {
+            try {
+                previous?.join()
+                currentCoroutineContext().ensureActive()
+                body()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failed(failure)
+            } finally {
+                // A cancelled waiter must not sever the settlement chain for its successors.
+                withContext(NonCancellable) { previous?.join() }
+            }
+        }
+        job = launched
+        mutation = launched
+        launched.start()
+        return launched
+    }
+
     fun launch(scope: CoroutineScope, sessionId: String, label: String, bypassSlot: Boolean,
         markFailure: Boolean, title: () -> String?, stop: () -> Unit, beforeInactive: () -> Unit,
         failed: (Exception) -> Unit, settled: () -> Unit,
@@ -33,12 +58,14 @@ internal class AgentRunCoordinator {
                 if (!prepared) withContext(NonCancellable + Dispatchers.Main) { failed(failure) }
                 else throw failure
             } finally {
+                withContext(NonCancellable) { previous?.join() }
                 withContext(NonCancellable + Dispatchers.Main) {
                     if (job === ownedJob) settled()
                 }
             }
         }
         job = launched
+        mutation = null
         launched.start()
         return launched
     }

@@ -16,6 +16,13 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
         data class User(val rowIds: Set<String>, val keepAnchor: Boolean = true) : Target
         data class Tool(val id: String) : Target
     }
+    fun delete(scope: CoroutineScope, coordinator: AgentRunCoordinator, target: Target.User,
+        failed: (Exception) -> Unit, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit): Job =
+        coordinator.mutate(scope, failed) {
+            checkBranch()
+            prepare(target, published = published)
+        }
+
     suspend fun prepare(target: Target, replacement: AgentQueuedUserInput? = null,
         accepted: (MessageEntity) -> Unit = {}, published: (List<MessageEntity>, CompactMarkerEntity?) -> Unit) {
         require(replacement == null || target is Target.User && !target.keepAnchor) { "Replacement requires a user edit target" }
@@ -63,7 +70,7 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
             else listOfNotNull(marker.firstKeptMessageId, marker.lastCompactedMessageId, marker.boundaryMessageId)
                 .let { ids -> ids.isEmpty() || ids.any { it !in stable } }
         }.map { it.id }
-        val receipts = rows.filter { it.id !in keep && it.tokenUsage != null }.associate { row ->
+        val receipts = rows.filter { (it.id !in keep || it.id in changedParts) && it.tokenUsage != null }.associate { row ->
             val json = JSONObject(row.tokenUsage!!).put("contextEligible", false)
             row.id to json.toString()
         }
@@ -74,17 +81,15 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
                 val prepared = replacement?.let { repository.rewindReplacement(session, it.partsJson) }
                 val inserted = repository.dao.applyRuntimeRewind(session, rows, keep, changedParts, receipts,
                     RequestUsageRecord.parts(RequestUsageRecord.Purpose.CONVERSATION), invalidMarkers,
-                    prepared?.first, prepared?.second)
+                    prepared?.first, prepared?.second, repository.rewindPreview(rows, keep, changedParts))
                 val remaining = repository.loadMessages(session)
-                val rebuilt = remaining.mapNotNull { row ->
-                    if (inserted != null && row.id == inserted.id) replacement!!.message(row.id) else decode(row)
-                }
-                val marker = repository.dao.latestCompactMarker(session)
+                val retainedCalls = remaining.filter { it.role == "assistant" }.flatMap { row ->
+                    val parts = runCatching { JSONArray(row.partsJson) }.getOrDefault(JSONArray())
+                    (0 until parts.length()).mapNotNull { i -> parts.optJSONObject(i)
+                        ?.takeIf { it.optString("type") == "toolUse" }?.optJSONObject("value")?.optString("toolUseId") }
+                }.toSet()
                 withContext(NonCancellable + Dispatchers.Main) {
-                    checkBranch()
                     val registry = com.openminis.app.agent.jobs.AgentJobRegistry
-                    val retainedCalls = rebuilt.flatMap { it.contentParts.filterIsInstance<com.openminis.app.data.model.AgentContentPart.ToolUse>() }
-                        .mapTo(mutableSetOf()) { it.id }
                     val jobs = registry.list().filter { job ->
                         val target = job.target as? com.openminis.app.agent.jobs.AgentJobTarget.ChildOfCurrent
                         target?.parentSessionId == session && target.parentToolUseId?.let { tool ->
@@ -99,6 +104,14 @@ internal class AgentRewindJournal(private val repository: ChatRepository, privat
                         registry.setThen(job.id, com.openminis.app.agent.jobs.AgentJobThen.None)
                         if (job.isActive) registry.cancel(job.id, "parent history rewound")
                     }
+                }
+                checkBranch()
+                val rebuilt = remaining.mapNotNull { row ->
+                    if (inserted != null && row.id == inserted.id) replacement!!.message(row.id) else decode(row)
+                }
+                val marker = repository.dao.latestCompactMarker(session)
+                withContext(NonCancellable + Dispatchers.Main) {
+                    checkBranch()
                     history.clear()
                     history.addAll(rebuilt)
                     published(remaining, marker)

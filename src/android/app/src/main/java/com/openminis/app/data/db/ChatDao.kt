@@ -317,19 +317,25 @@ interface ChatDao {
         "WHERE session_id = :sessionId AND id = :id")
     suspend fun retainRewindReceipt(sessionId: String, id: String, parts: String, usage: String)
 
+    @Query("UPDATE messages SET token_usage = :usage WHERE session_id = :sessionId AND id = :id")
+    suspend fun updateRewindUsage(sessionId: String, id: String, usage: String)
+
     @Transaction
     suspend fun applyRuntimeRewind(sessionId: String, expected: List<MessageEntity>, keep: Set<String>,
         changed: Map<String, String>, receipts: Map<String, String>, conversationReceipt: String, invalidMarkers: List<String>,
-        replacement: MessageEntity? = null, replacementPreview: String? = null): MessageEntity? {
+        replacement: MessageEntity? = null, replacementPreview: String? = null, rewindPreview: String = ""): MessageEntity? {
         val current = loadMessages(sessionId)
         check(current == expected) { "History changed while the rewind was being prepared" }
         current.forEach { row ->
-            if (row.id in keep) changed[row.id]?.let { updateMessageParts(row.id, it) }
-            else receipts[row.id]?.let { usage ->
+            if (row.id in keep) {
+                changed[row.id]?.let { updateMessageParts(row.id, it) }
+                receipts[row.id]?.let { updateRewindUsage(sessionId, row.id, it) }
+            } else receipts[row.id]?.let { usage ->
                 retainRewindReceipt(sessionId, row.id, if (row.role == "usage") row.partsJson else conversationReceipt, usage)
             } ?: deleteRewindRow(sessionId, row.id)
         }
         invalidMarkers.forEach { deleteCompactMarker(it) }
+        if (replacement == null) updateLastMessage(sessionId, rewindPreview, System.currentTimeMillis())
         return replacement?.let { row ->
             check(row.sessionId == sessionId && row.role == "user")
             val stored = insertJournalMessage(row)

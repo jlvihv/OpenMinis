@@ -1496,7 +1496,11 @@ class ChatViewModel(
 
     private fun afterCancelledRun(action: () -> Unit): Boolean {
         val previous = streamJob?.takeIf { it.isCancelled && !it.isCompleted } ?: return false
-        viewModelScope.launch { previous.join(); action() }
+        val owner = activeSessionId
+        viewModelScope.launch {
+            previous.join()
+            if (activeSessionId == owner && streamJob === previous && !_isStreaming.value) action()
+        }
         return true
     }
 
@@ -2514,6 +2518,7 @@ class ChatViewModel(
         noinline onFinished: ((Boolean) -> Unit)?,
         markStarted: () -> Unit,
     ) {
+        if (runCoordinator.mutating) return
         AppLogger.info(TAG, "[Compact] compactAll() invoked streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride inLoop=$allowDuringProcessing")
         if (_isStreaming.value && !allowDuringProcessing) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
@@ -5161,138 +5166,35 @@ class ChatViewModel(
         return true
     }
 
-    /**
-     * [T-android-delete-from-here] Delete [messageId] and every message after
-     * it, leaving the conversation as it stood immediately before that turn.
-     * Mirrors iOS `6717c0ab0`.
-     *
-     * Deliberately close to — but not the same as — [retryFromMessage]. Both
-     * rewind the conversation to a point and share its anchoring: the
-     * target's persisted row is found by id through [BubbleRowLocator]
-     * ([T-android-bubble-anchor]), so synthetic rows with no bubble and
-     * bubbles with no text part cannot shift the cut.
-     *
-     * The one deliberate difference is the cut point: retry keeps the target
-     * user message and re-sends it, so it cuts at `sortOrder + 1`. Delete From
-     * Here removes the target too, so it cuts at `sortOrder`. Off-by-one in
-     * either direction is silent and destructive — one strands the message the
-     * user asked to delete, the other eats the preceding turn.
-     *
-     * No stream is started and `_isStreaming` is never claimed: this is a pure
-     * truncation. It is still refused while a turn is in flight, because
-     * deleting rows out from under a live agent loop would leave
-     * [agentHistory] describing messages that no longer exist.
-     */
+    /** Display captures an exact user-turn boundary; runtime owns deletion and settlement. */
     fun deleteFromMessage(messageId: String) {
-        if (_isStreaming.value) return
-        _canResume.value = false
-        val messages = _messages.value
-        val index = messages.indexOfFirst { it.id == messageId }
+        if (_isStreaming.value || streamJob?.isActive == true || compactJob?.isCompleted == false) return
+        val snapshot = _messages.value
+        val index = snapshot.indexOfFirst { it.id == messageId }
         if (index < 0) return
-
-        // [T-android-bubble-anchor-drain] A user bubble from a merged queue
-        // batch takes its siblings with it: they share the row being deleted.
-        // An assistant target keeps the user row, so it cuts at itself.
-        val cutFrom = BubbleRowLocator.groupSpan(messages, index).first
-
-        // Snapshot the messages being deleted.
-        val deletedMessages = messages.subList(cutFrom, messages.size).toList()
-
-        // Truncate the UI to everything BEFORE the target message, and drop
-        // any queued prompts that belonged to the deleted range so a later
-        // auto-drain can't resurrect them.
-        val retainedHead = messages.subList(0, cutFrom)
-        for (m in deletedMessages) {
-            m.queuedPromptId?.let { pid ->
-                _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
-            }
-        }
-        _messages.value = retainedHead
-
-        // Scrub stream deltas pointing at truncated messages so they can't
-        // resurface into a row that no longer exists.
-        val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
-        retainStreamFlushStates(keptIds)
-
-        val sid = activeSessionId ?: return
-        viewModelScope.launch {
-            val target = messages[index]
-            val cutoffSortOrder = resolveDeleteCutoffSortOrder(sid, messages, index, target)
-            if (cutoffSortOrder >= 0) {
-                chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
-            }
-
-            // Rebuild agentHistory from what survived, so the next turn is
-            // built on the truncated conversation rather than a stale list.
-            agentHistory.clear()
+        val selected = snapshot[index]
+        val anchorIndex = if (selected.role == "user") index
+            else if (selected.role == "assistant") snapshot.take(index + 1).indexOfLast { it.role == "user" } else -1
+        if (anchorIndex < 0) { _error.value = "No persisted user-turn boundary for deletion"; return }
+        val anchor = snapshot[anchorIndex]
+        val keepAnchor = selected.role == "assistant"
+        val span = BubbleRowLocator.groupSpan(snapshot, anchorIndex)
+        val cutFrom = if (keepAnchor) span.last + 1 else span.first
+        val owner = activeSessionId
+        val target = com.openminis.app.agent.AgentRewindJournal.Target.User(
+            (anchor.sourceDbIds + anchor.id).toSet(), keepAnchor)
+        com.openminis.app.agent.AgentRewindJournal(chatRepository, owner, agentHistory,
+            { activeSessionId }, { it.toLLMMessage() }, subagentJournal).delete(viewModelScope, runCoordinator, target,
+            failed = { if (activeSessionId == owner) _error.value = it.message ?: "History deletion failed" }) { _, marker ->
+            val removedQueue = snapshot.drop(cutFrom).mapNotNull { it.queuedPromptId }.toSet()
+            _promptQueue.value = _promptQueue.value.filterNot { it.id in removedQueue }
+            _messages.value = snapshot.take(cutFrom).map { if (marker == null) it.copy(isCompactedHistory = false) else it }
+            _cachedLatestMarker = marker
+            _compactSummary.value = marker?.summary
+            _canResume.value = false
+            retainStreamFlushStates(_messages.value.mapTo(mutableSetOf()) { it.id })
             toolLoopDetector.reset()
-            val remaining = chatRepository.loadMessages(sid)
-            for (entity in remaining) {
-                // [T-android-error-persist-current-turn] Carriers never reach the model.
-                if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
-                entity.toLLMMessage()?.let(agentHistory::add)
-            }
-            // Refresh the session's last-message preview; otherwise the
-            // session list keeps quoting a message that no longer exists.
-            // An empty remainder clears it rather than leaving the stale text.
-            runCatching {
-                chatRepository.updateSessionPreview(sid, remaining.lastOrNull()?.partsJson ?: "[]")
-            }
-            AppLogger.info(
-                TAG,
-                "deleteFromMessage: cut at sortOrder=$cutoffSortOrder, " +
-                    "${deletedMessages.size} message(s) removed, ${remaining.size} remain",
-            )
         }
-    }
-
-    /**
-     * [T-android-bubble-anchor] One line per anchored cut, no message text.
-     * ORDINAL and NONE mean the bubble had no persisted row (a queued
-     * placeholder) and the old counting rule was used, which is the one path
-     * that can still cut in the wrong place.
-     */
-    private fun logBubbleAnchor(op: String, bubbleId: String, located: BubbleRowLocator.Located) {
-        val line = "[BubbleAnchor] op=$op bubble=${bubbleId.take(8)} via=${located.via} " +
-            "row=${located.row?.id?.take(8) ?: "-"} sortOrder=${located.row?.sortOrder ?: -1}"
-        if (located.via == BubbleRowLocator.Via.LINKED) AppLogger.info(TAG, line) else AppLogger.warning(TAG, line)
-    }
-
-    /**
-     * [T-android-delete-from-here] Resolve the DB `sort_order` to cut at so
-     * that [index] and everything after it is removed.
-     *
-     * [T-android-bubble-anchor] The row is found by the bubble's id
-     * ([BubbleRowLocator]), not by counting visible user rows: the chat and
-     * the persisted rows are not 1:1 (synthetic `<system-reminder>` rows have
-     * no bubble; an image-only turn has a bubble but no text part), and the
-     * count went wrong wherever they differed.
-     *
-     * When the target is an ASSISTANT message the cut is anchored to the user
-     * turn it belongs to: we find the last user bubble at or before [index],
-     * cut just after its row, and thereby drop the assistant reply and
-     * everything following. Returns -1 when no anchor can be resolved, which
-     * the caller treats as "leave the DB alone".
-     */
-    private suspend fun resolveDeleteCutoffSortOrder(
-        sid: String,
-        messages: List<ChatMessage>,
-        index: Int,
-        target: ChatMessage,
-    ): Int {
-        // [T-android-bubble-anchor] A user target is cut AT its own row. An
-        // assistant target anchors to the user turn it answers - the last
-        // user bubble at or before it - and is cut just AFTER that row,
-        // keeping the question and removing the reply onward. Rows are found
-        // by id; see BubbleRowLocator.
-        val anchorIdx = if (target.role == "user") index
-        else messages.subList(0, index + 1).indexOfLast { it.role == "user" }
-        // No user turn at or before the target (e.g. deleting from a leading
-        // assistant/system row): everything goes.
-        if (anchorIdx < 0) return 0
-        val located = BubbleRowLocator.locateUserRow(messages, anchorIdx, chatRepository.loadMessages(sid))
-        logBubbleAnchor("delete", messages[anchorIdx].id, located)
-        return BubbleRowLocator.cutoffFor(located, keepBubble = target.role != "user")
     }
 
     /**
@@ -8388,6 +8290,7 @@ class ChatViewModel(
     }
 
     fun cancelStream() {
+        if (runCoordinator.mutating) { streamJob?.cancel(); return }
         AppLogger.info(TAG_STREAM, "cancelStream invoked _isStreaming=false (sid=$activeSessionId)")
         // [T-android-context-usage-hint] Suppress this turn's usage line — see
         // [lastTurnWasCancelled]. Set before `_isStreaming = false` below, so
