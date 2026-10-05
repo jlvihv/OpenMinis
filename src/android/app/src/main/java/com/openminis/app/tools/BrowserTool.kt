@@ -13,7 +13,7 @@ object BrowserTool {
         // the ceiling became dynamic (3 alone, +2 per active agent, capped at
         // 6), and an agent sees only its own tabs anyway — so the honest thing
         // to tell it is which tabs it may use, not a number that is now wrong.
-        description = "Browse web/minis:// resources (never minis:// action links) — HTML sub-resources support relative URLs. screenshot = pixels; get_readable = article text; get_backbone = DOM outline; find_elements = controls; scroll_and_collect deduplicates items across infinite-scroll pages; fetch downloads through the page session and returns a minis:// URL. get_cookies (current site, including HttpOnly) returns a summary + env file, never raw values: reuse with `. /var/minis/offloads/env_cookies_xxx.sh && command`. Use list_tabs/new_tab ids only.",
+        description = "Browse web/minis:// resources (never minis:// action links) — HTML sub-resources support relative URLs. scroll_and_collect deduplicates items across infinite-scroll pages; fetch downloads through the page session and returns a minis:// URL. get_cookies (current site, including HttpOnly) returns a summary + env file, never raw values: reuse with `. /var/minis/offloads/env_cookies_xxx.sh && command`.",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "User-visible summary of this call."),
             "action" to AgentToolParam("string", "Browser operation", enumValues = BrowserAction.allValues),

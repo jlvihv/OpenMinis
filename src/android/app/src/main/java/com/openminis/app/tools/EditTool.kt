@@ -11,9 +11,9 @@ import org.json.JSONObject
 object EditTool {
     const val NAME = "edit"
     fun definition() = AgentToolDefinition(NAME,
-        "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+        "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the ORIGINAL file: merge changes that touch the same or nearby lines into one entry instead of emitting overlapping or nested edits, and do not pad an oldText with large unchanged regions just to reach distant changes.",
         mapOf("path" to AgentToolParam("string", "Path to the file to edit (relative or absolute)"),
-            "edits" to AgentToolParam("array", "One or more replacements, each matched against the original file (not incrementally) and non-overlapping.",
+            "edits" to AgentToolParam("array", "One or more replacements.",
                 items = AgentToolParam("object", "Targeted replacement", properties = mapOf(
                     "oldText" to AgentToolParam("string", "Exact text to replace; must be unique in the original file and not overlap any other edits[].oldText."),
                     "newText" to AgentToolParam("string", "Replacement text for this targeted edit.")), required = listOf("oldText", "newText"))),
