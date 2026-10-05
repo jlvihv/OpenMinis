@@ -54,7 +54,7 @@ internal class AgentConversationJournal(
         return LLMMessage(LLMMessage.Role.USER, note, dbMessageId = row?.id).also(history::add)
     }
 
-    private fun checkBranch() {
+    fun checkBranch() {
         if (currentSession() != writer.sessionId) throw CancellationException("agent branch changed during commit")
     }
 }

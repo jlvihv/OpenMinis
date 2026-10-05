@@ -9003,6 +9003,7 @@ class ChatViewModel(
                 toolInputChunkRings, toolLoopDetector, requestCycle, turn, assistantId, CANCELLED_MARKER, runAttribution)
 
             // Runtime sequences requests, tool dispatch and journal commits; these callbacks project effects.
+            var boundaryQueue: List<QueuedPrompt> = emptyList()
             val turnResult = turnRuntime.execute(
                 request = com.openminis.app.agent.AgentTurnRuntime.Request(
                     provider = { currentProvider }, historySize = { agentHistory.size },
@@ -9290,7 +9291,39 @@ class ChatViewModel(
                         effectiveContextWindowTokens(),
                         _promptQueue.value.any { it.origin == QueuedPromptOrigin.USER },
                         ChatMessage.SCHEDULED_RESUME_NUDGE_TEXT, helperConfig != null, turnCap, pendingSteerMessages.size)
-                },
+                }, boundary = com.openminis.app.agent.AgentTurnRuntime.Boundary(
+                    queue = {
+                        boundaryQueue = _promptQueue.value.toList()
+                        boundaryQueue.map { prompt -> com.openminis.app.agent.AgentToolBoundary.Prompt(
+                            prompt.id, prompt.isScheduledFire, prompt.origin == QueuedPromptOrigin.USER,
+                            prompt.text.contains("<agent_callback")) }
+                    }, exchangeCompleted = { if (turn == 0) generateSessionTitleIfNeeded() },
+                    stopped = { dropIds ->
+                        withContext(Dispatchers.Main) {
+                            dropIds.forEach(::removeQueuedPrompt)
+                            updateAssistantMessage(assistantId, accumulatedText, false, allToolBlocks,
+                                isAwaitingModelResponse = false)
+                        }
+                    }, insert = { ids ->
+                        val byId = boundaryQueue.associateBy { it.id }
+                        val batch = ids.mapNotNull(byId::get)
+                        val handled = try {
+                            injectQueuedPromptsAsNewTurn(assistantId, accumulatedText, allToolBlocks, batch)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            Log.e(TAG, "injectQueuedPromptsAsNewTurn failed", failure)
+                            null
+                        }
+                        if (handled != null) {
+                            assistantId = handled.newAssistantId
+                            scriptedTurnFor(handled.prefill)?.let { pendingScriptedTurn = it }
+                            accumulatedText = ""
+                            allToolBlocks.clear()
+                            _canResume.value = false
+                        }
+                        handled != null
+                    }),
             )
             if (turnResult is com.openminis.app.agent.AgentTurnRuntime.Result.Converged) {
                 val decision = turnResult.decision
@@ -9316,140 +9349,9 @@ class ChatViewModel(
                 return@agentTurn decision.action
             }
 
-            // Auto-title after first exchange (mirrors iOS generateSessionTitleIfNeeded)
-            if (turn == 0) {
-                generateSessionTitleIfNeeded()
-            }
-
-            // [T-android-stop-sibling-subagent-loop] The user stopped this
-            // conversation's sub agents from a card (AgentJobRegistry
-            // .cancelSiblings mutes the parent). The mute already kept a
-            // finished sibling's CALLBACK from waking the parent, but a turn
-            // that was itself waiting on the batch came straight back here with
-            // the stopped results and sent them to the model, which narrated
-            // them and delegated again - the Stop appeared not to work (iOS
-            // 59c1d7208). End the turn here instead: the results just appended
-            // stay in the transcript and history (every call stays paired),
-            // nothing more is sent, and delegation notices still queued would
-            // only restart the turn, so they go too. A user's own queued
-            // message and scheduled fires are kept.
-            if (com.openminis.app.agent.jobs.AgentJobRegistry.isDelegationMuted(activeSessionId)) {
-                val stale = _promptQueue.value.filter {
-                    it.origin == QueuedPromptOrigin.PROGRAMMATIC && !it.isScheduledFire &&
-                        it.text.contains("<agent_callback")
-                }
-                AppLogger.info(
-                    TAG_STREAM,
-                    "[delegate_task] turn=$turn parent stops here — its sub agents were stopped by the user; " +
-                        "results kept, not sent (dropped ${stale.size} queued delegation notice(s))",
-                )
-                withContext(Dispatchers.Main) {
-                    stale.forEach { removeQueuedPrompt(it.id) }
-                    updateAssistantMessage(
-                        assistantId, accumulatedText, false, allToolBlocks,
-                        isAwaitingModelResponse = false,
-                    )
-                }
-                return@agentTurn AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.DELEGATION_STOPPED)
-            }
-
-            // [T-android-queued-message-interrupt-on-toolclose] iOS d14174d3
-            // parity. User report: "怎么样了" queued bubble (dashed border,
-            // red X) stayed pending behind a long sync→export→read→gh-issue
-            // tool chain — drainQueuedPrompts() only fires when the WHOLE
-            // tool loop converges, so the queued prompt waited for the
-            // entire plan to finish even though the user wanted to
-            // interrupt the moment a tool closed.
-            //
-            // Fix: at the post-tool-result boundary (we just appended the
-            // tool_result to agentHistory above), if there's anything in
-            // the queue, abandon the rest of the running plan and inject
-            // the queued prompt as a fresh user turn — the next iteration
-            // makes a brand-new API call whose response targets the
-            // queued prompt directly.
-            //
-            // Why not just append-and-continue: the agentHistory tail is
-            // user(tool_result). Anthropic's mergeConsecutiveSameRole would
-            // fold a directly-appended user(queued_text) into that
-            // tool_result, so the model would read the queued prompt as
-            // in-loop context for the previous turn (#579 / iOS regression).
-            // Inject a minimal assistant bridge first so the sequence is
-            //   …user(tool_result) → assistant(bridge) → user(queued) →
-            //   …assistant(responds-to-queued).
-            // The bridge lives in agentHistory only (NOT persisted) —
-            // it's purely a wire-format spacer for the API call.
-            // [T-p2-gentle-injection] Only a USER follow-up may cut the plan
-            // short here. PROGRAMMATIC prompts (scheduled jobs, helper results,
-            // RPC/CLI sends) stay queued until the loop converges and are
-            // drained by drainQueuedPrompts() as a fresh turn — the same path a
-            // follow-up typed after the agent went idle takes. Before this
-            // check any queued prompt tripped the interrupt, so a job landing
-            // mid-plan abandoned whatever the agent was in the middle of.
-            //
-            // [T-scheduled-preemptive-insert] ...with one addition: a SCHEDULED
-            // fire may go in here too. It no longer waits for the whole run to
-            // end (and no longer gets merged with whatever else queued up
-            // meanwhile). This boundary is the gap the product asked for:
-            // every tool call of the turn has finished and its result is in
-            // history, and the model has not yet been asked what to do next.
-            // Nothing running is cut short. The fire goes in alone, as an
-            // inserted envelope, and its prefilled command (if any) runs as the
-            // next turn via pendingScriptedTurn — then the model answers it and
-            // resumes. Other programmatic prompts still wait for the drain.
-            // QueuedPromptBatching.nextInsertBatch holds the rules.
-            val insertBatch = QueuedPromptBatching.nextInsertBatch(_promptQueue.value)
-            if (insertBatch.isEmpty() && _promptQueue.value.isNotEmpty()) {
-                AppLogger.info(
-                    TAG_STREAM,
-                    "📨[QueueHold] turn=$turn ${_promptQueue.value.size} programmatic prompt(s) queued — holding until the loop converges",
-                )
-            }
-            if (insertBatch.isNotEmpty()) {
-                val scheduledFire = insertBatch.singleOrNull()?.takeIf { it.isScheduledFire }
-                AppLogger.info(
-                    TAG_STREAM,
-                    if (scheduledFire != null) {
-                        "📨[ScheduledInsert] turn=$turn inserting scheduled task ${scheduledFire.scheduledTaskId} " +
-                            "between tool calls (prefill=${scheduledFire.prefill.size}, queue=${_promptQueue.value.size})"
-                    } else {
-                        "📨[QueueInterrupt] turn=$turn ${insertBatch.size} queued prompt(s) (user follow-up) — interrupting after current tool call to start a standalone turn"
-                    },
-                )
-                val handled = try {
-                    injectQueuedPromptsAsNewTurn(
-                        finishedAssistantId = assistantId,
-                        finishedAccumulatedText = accumulatedText,
-                        finishedAllToolBlocks = allToolBlocks,
-                        batch = insertBatch,
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "injectQueuedPromptsAsNewTurn failed", e)
-                    null
-                }
-                if (handled != null) {
-                    // [T-android-scheduled-resume-nudge] Owed only after a
-                    // scheduled insert; a user follow-up decides for itself
-                    // what happens to the interrupted task.
-                    continuation.promptInserted(scheduledFire != null)
-                    // Switch loop-scope state to the new bubble. Subsequent
-                    // iterations populate `handled.newAssistantId` and slice
-                    // `allToolBlocks` from the freshly-zeroed start index
-                    // (turnStartBlockIndex captures allToolBlocks.size at
-                    // iteration top, so clearing means new turn's blocks
-                    // span [0..size).
-                    assistantId = handled.newAssistantId
-                    scriptedTurnFor(handled.prefill)?.let { pendingScriptedTurn = it }
-                    accumulatedText = ""
-                    allToolBlocks.clear()
-                    toolInputChunkRings.clear()
-                    _canResume.value = false
-                    return@agentTurn AgentLoopEngine.Action.Next
-                }
-                // null return = empty-after-build / drain rejected; fall
-                // through to normal next-turn dispatch so the queue doesn't
-                // pin the loop indefinitely.
-            }
-            AgentLoopEngine.Action.Next
+            if (turnResult == com.openminis.app.agent.AgentTurnRuntime.Result.DelegationStopped) {
+                AgentLoopEngine.Action.Stop(AgentLoopEngine.StopReason.DELEGATION_STOPPED)
+            } else AgentLoopEngine.Action.Next
         }
         if (outcome is AgentLoopEngine.Outcome.LimitReached) {
             AppLogger.warning(

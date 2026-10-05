@@ -26,17 +26,12 @@ package com.openminis.app.ui.chat
 internal object QueuedPromptBatching {
 
     /** What to slip in at a tool boundary; empty = nothing may go in now. */
-    fun nextInsertBatch(queue: List<QueuedPrompt>): List<QueuedPrompt> {
-        val first = queue.firstOrNull { it.isScheduledFire || it.origin == QueuedPromptOrigin.USER }
-            ?: return emptyList()
-        return if (first.isScheduledFire) listOf(first) else queue.filterNot { it.isScheduledFire }
-    }
+    fun nextInsertBatch(queue: List<QueuedPrompt>): List<QueuedPrompt> =
+        com.openminis.app.agent.AgentPromptBatching.nextInsert(queue, { it.isScheduledFire }, { it.origin == QueuedPromptOrigin.USER })
 
     /** What the drain sends as its next turn; empty = the queue is empty. */
-    fun nextDrainBatch(queue: List<QueuedPrompt>): List<QueuedPrompt> {
-        val first = queue.firstOrNull() ?: return emptyList()
-        return if (first.isScheduledFire) listOf(first) else queue.filterNot { it.isScheduledFire }
-    }
+    fun nextDrainBatch(queue: List<QueuedPrompt>): List<QueuedPrompt> =
+        com.openminis.app.agent.AgentPromptBatching.nextDrain(queue) { it.isScheduledFire }
 
     /**
      * Ids of queued fires a new fire of [taskId] replaces. Two undelivered

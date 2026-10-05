@@ -75,13 +75,20 @@ internal class AgentTurnRuntime<T>(
         val window: Int?, val userWaiting: Boolean,
         val scheduledNudge: String, val helper: Boolean, val turnCap: Int, val pendingSteers: Int,
     )
+    data class Boundary(
+        val queue: () -> List<AgentToolBoundary.Prompt>,
+        val exchangeCompleted: suspend () -> Unit,
+        val stopped: suspend (List<String>) -> Unit,
+        val insert: suspend (List<String>) -> Boolean,
+    )
     sealed interface Result {
         data class Converged(val decision: AgentTurnContinuation.Decision) : Result
         data object ToolsCommitted : Result
+        data object DelegationStopped : Result
     }
 
     suspend fun execute(request: Request, recovery: Recovery<T>, tools: Tools,
-        presentation: Presentation, completion: () -> Completion): Result {
+        presentation: Presentation, completion: () -> Completion, boundary: Boundary): Result {
         cycle.run(attempt = {
             val provider = request.provider()
             (provider as? AnthropicProvider)?.enhancedCache = request.enhancedCache()
@@ -122,6 +129,24 @@ internal class AgentTurnRuntime<T>(
         presentation.awaiting()
         commitAssistant(presentation)
         conversation.commitResults(journal, results)
+        boundary.exchangeCompleted()
+        conversation.checkBranch()
+        val muted = com.openminis.app.agent.jobs.AgentJobRegistry.isDelegationMuted(writer.sessionId)
+        when (val plan = AgentToolBoundary.decide(muted, boundary.queue())) {
+            is AgentToolBoundary.Plan.Stop -> {
+                AppLogger.info("AgentTurnRuntime", "[delegate_task] turn=$turn delegation stopped; results retained, dropping ${plan.dropIds.size} callback(s)")
+                boundary.stopped(plan.dropIds)
+                return Result.DelegationStopped
+            }
+            is AgentToolBoundary.Plan.Insert -> {
+                AppLogger.info("AgentTurnRuntime", "[QueueInsert] turn=$turn count=${plan.ids.size} scheduled=${plan.scheduled}")
+                if (boundary.insert(plan.ids)) {
+                    continuation.promptInserted(plan.scheduled)
+                    trace.clear()
+                }
+            }
+            AgentToolBoundary.Plan.Continue -> Unit
+        }
         return Result.ToolsCommitted
     }
 
