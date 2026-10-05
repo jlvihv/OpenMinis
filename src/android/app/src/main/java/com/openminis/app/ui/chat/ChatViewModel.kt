@@ -54,10 +54,8 @@ import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.agent.CompactionSummarizer
 import com.openminis.app.agent.AgentLoopEngine
 import com.openminis.app.provider.effectiveMaxThinkingLevel
-import com.openminis.app.agent.shell.OnDemandBash
 import com.openminis.app.sandbox.ExecutionCoordinator
 import com.openminis.app.terminal.MinisOpenUrlBroker
-import com.openminis.app.terminal.MinisUrlMarker
 import com.openminis.app.tools.AgentTools
 import com.openminis.app.tools.ImageReader
 import com.openminis.app.tools.ToolExecutionResult
@@ -8790,14 +8788,18 @@ class ChatViewModel(
         assistantId: String,
         currentText: String,
     ): ToolExecutionResult {
+        val ownerSession = activeSessionId
+        val ownerRun = streamJob
+        val bashProjection = ChatBashProjection(viewModelScope, toolId, toolBlocks,
+            active = { activeSessionId == ownerSession && streamJob === ownerRun && ownerRun?.isActive == true },
+            publish = { updateAssistantMessage(assistantId, currentText, true, toolBlocks) })
         val executor = com.openminis.app.agent.AgentToolExecutor(context, skillRepository)
         return executor.execute(name, argsJson,
             com.openminis.app.agent.AgentToolExecutor.InputContext(fsSessionId, currentModelHasNativeVision,
-                currentModel?.inputLimits?.images?.resize),
+                currentModel?.inputLimits?.images?.resize, ownerSession),
             delegated = { delegatedName, args, action ->
                 when (delegatedName) {
                     com.openminis.app.tools.CodemodeTool.NAME -> executeCodemodeTool(args, toolId, toolBlocks, assistantId, currentText)
-                    "bash" -> executeBash(args, toolId, toolBlocks, assistantId, currentText)
                     "browser" -> executeBrowserTool(args)
                     else -> when (action) {
                         "resume" -> executeResumeAgents(args)
@@ -8805,7 +8807,7 @@ class ChatViewModel(
                         else -> executeDelegateTask(args, toolId, toolBlocks, assistantId, currentText)
                     }
                 }
-            }, disabled = ::toolDisabledResult)
+            }, disabled = ::toolDisabledResult, bashLine = bashProjection::line, openUrl = MinisOpenUrlBroker::offer)
     }
 
     private suspend fun executeCodemodeTool(argsJson: String, toolId: String, toolBlocks: MutableList<AssistantBlock>, assistantId: String, currentText: String): ToolExecutionResult {
@@ -9724,132 +9726,6 @@ class ChatViewModel(
         return ImageReader.NON_VISION_NOTE
     }
 
-
-    /** Run the script once under guest Bash; preserve its exit status without retries. */
-    private fun wrapForBash(script: String): String {
-        // [T-heredoc-trailing-newline] A heredoc that ends the decoded file with
-        // no trailing newline fails with "unexpected end of file". Guarantee one.
-        val normalized = if (script.endsWith("\n")) script else script + "\n"
-        val b64 = android.util.Base64.encodeToString(
-            normalized.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-        return "( " +
-            "printf %s '$b64' | base64 -d > /tmp/.minis-exec-\$\$.sh && " +
-            "bash /tmp/.minis-exec-\$\$.sh; rc=\$?; rm -f /tmp/.minis-exec-\$\$.sh; exit \$rc )"
-    }
-
-    private suspend fun executeBash(
-        argsJson: String,
-        toolId: String,
-        toolBlocks: MutableList<AssistantBlock>,
-        assistantId: String,
-        currentText: String,
-    ): ToolExecutionResult {
-        return try {
-            val args = JSONObject(argsJson)
-            var command = args.optString("command", "")
-            val timeoutMs = if (!args.has("timeout") || args.isNull("timeout")) Long.MAX_VALUE else {
-                val seconds = args.getDouble("timeout")
-                require(seconds.isFinite() && seconds > 0 && seconds * 1000 <= Int.MAX_VALUE) { "timeout must be positive and at most 2147483.647 seconds" }
-                (seconds * 1000).toLong().coerceAtLeast(1)
-            }
-            val toolTitle = args.optString("tool_title", "bash")
-
-            if (command.isBlank()) {
-                return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
-            }
-            command = "cd /var/minis/workspace || exit;\n$command"
-
-            // [T-android-overlay-finalize item 1] Removed the
-            // shell-specific status hack ("shell: $toolTitle"). Since the
-            // dispatch loop (~5003) now surfaces `tool_title` in the overlay
-            // label uniformly via SessionActivityTracker.updateToolStatus(
-            // status, toolName, isRunning, toolTitle), the per-tool override
-            // produced redundant "shell / shell: <title>" rows. Lifecycle
-            // status ("Running: bash") set by the dispatch loop is
-            // sufficient.
-
-            // [diag] sessionId vs realSessionId mismatch was the root cause
-            // of the Chinese-emoji filename "disappears" bug. `activeSessionId`
-            // resolves to the persisted id once `ensureSession()` has run, so
-            // every shell runs in a directory that survives VM recreation.
-            val dispatchSessionId = activeSessionId
-            android.util.Log.w("ShellExecDiag",
-                "executeShell dispatch=$dispatchSessionId rawSessionId=$sessionId realSessionId=$realSessionId isDraft=$isDraft cmd=${command.take(120).replace('\n', ' ')}")
-
-            // Check/install Bash before executing user code. Installation has its own
-            // budget; script exit codes never trigger re-execution or sh fallback.
-            val executor = OnDemandBash.Executor { c, t ->
-                ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId).exitCode
-            }
-            when (val outcome = OnDemandBash.ensureBash(context, executor)) {
-                is OnDemandBash.Outcome.Available -> command = wrapForBash(command)
-                is OnDemandBash.Outcome.Unavailable -> return ToolExecutionResult(
-                    "Error: Bash is unavailable: ${outcome.reason}", false, toolTitle = toolTitle)
-            }
-
-            var lastShellUiUpdate = 0L
-            val result = ExecutionCoordinator.execute(
-                sessionId = dispatchSessionId,
-                fsSessionId = fsSessionId,
-                captureBashOutput = true,
-                command = command,
-                timeout = timeoutMs,
-                lineCallback = lc@{ rawLine ->
-                    // Strip any OSC MinisOpenURL markers emitted by
-                    // /usr/local/bin/minis-open and forward the captured
-                    // URLs to the broker so the chat screen can present the
-                    // in-app preview. Lines that were *entirely* a marker
-                    // (nothing visible afterwards) are dropped so the tool
-                    // output doesn't grow blank rows.
-                    val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
-                    for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
-                    if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
-
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        val current = toolBlocks[idx].content
-                        val updated = if (current.isEmpty()) cleanedLine else "$current\n$cleanedLine"
-                        // Keep last 50 lines for display
-                        val trimmed = updated.lines().takeLast(50).joinToString("\n")
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = trimmed)
-                        val now = android.os.SystemClock.elapsedRealtime()
-                        if (!toolId.contains('/') && now - lastShellUiUpdate >= 100) {
-                            lastShellUiUpdate = now
-                            viewModelScope.launch(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, currentText, true, toolBlocks)
-                            }
-                        }
-                    }
-                },
-            )
-
-            // Also scrub markers from the aggregated one-shot output and
-            // broker any URLs that only appeared there (defensive — handles
-            // executors that don't fire lineCallback for every line).
-            val (cleanedOutput, oneShotUrls) = MinisUrlMarker.extract(result.output)
-            for (raw in oneShotUrls) MinisOpenUrlBroker.offer(raw)
-            val output = if (cleanedOutput.isBlank()) "(no output)" else cleanedOutput
-            // Scrub any remaining metadata before the model sees it. The coordinator
-            // already redacts captured output and its archive; live UI text is unmasked.
-            val (redactedOut, redactHits) = com.openminis.app.data.EnvVarRedactor.redactIfEnabled(output)
-            if (redactHits > 0) {
-                android.util.Log.i("EnvVarRedact", "bash: masked $redactHits env-var value(s) in tool result")
-            }
-
-            val withReminder = result.queueNote?.let { "$redactedOut\n\n$it" } ?: redactedOut
-
-            ToolExecutionResult(
-                output = withReminder,
-                success = result.exitCode == 0,
-                toolTitle = toolTitle,
-                timedOut = result.timedOut,
-                structuredContentJson = result.structuredContentJson,
-            )
-        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: Exception) {
-            ToolExecutionResult("Error: ${e.message}", false)
-        }
-    }
 
     /**
      * [T-tools-granular-switches] Result for a tool the user has switched off.

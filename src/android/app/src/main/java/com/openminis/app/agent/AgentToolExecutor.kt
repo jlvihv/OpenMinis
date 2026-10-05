@@ -13,11 +13,13 @@ import com.openminis.app.agent.jobs.HelperRunner
 import org.json.JSONObject
 
 internal class AgentToolExecutor(private val context: Context, private val skills: SkillRepository?) {
-    data class InputContext(val fsSessionId: String, val supportsImages: Boolean, val resize: ModelImageResizeOptions?)
+    data class InputContext(val fsSessionId: String, val supportsImages: Boolean, val resize: ModelImageResizeOptions?,
+        val sessionId: String = fsSessionId)
 
     suspend fun execute(name: String, args: String, input: InputContext,
         delegated: suspend (name: String, args: String, action: String?) -> ToolExecutionResult,
-        disabled: (String) -> ToolExecutionResult): ToolExecutionResult = when (name) {
+        disabled: (String) -> ToolExecutionResult,
+        bashLine: (String) -> Unit = {}, openUrl: (String) -> Unit = {}): ToolExecutionResult = when (name) {
         ReadTool.NAME -> ReadTool.execute(args, input.fsSessionId, context,
             resizeOptions = input.resize, supportsImages = input.supportsImages).also { result ->
             if (result.success) runCatching {
@@ -27,7 +29,8 @@ internal class AgentToolExecutor(private val context: Context, private val skill
         }
         WriteTool.NAME -> WriteTool.execute(args, input.fsSessionId, context).also { if (it.success) reloadForPath(args) }
         EditTool.NAME -> EditTool.execute(args, input.fsSessionId, context).also { if (it.success) reloadForPath(args) }
-        "bash" -> delegated(name, args, null).also { skills?.requestReload("bash") }
+        "bash" -> AgentBashExecutor(context).execute(args, input.sessionId, input.fsSessionId, bashLine, openUrl)
+            .also { skills?.requestReload("bash") }
         "browser" -> if (AgentToolSwitch.BROWSER.isEnabled(context)) delegated(name, args, null) else disabled(name)
         HelperRunner.TOOL_NAME -> if (AgentToolSwitch.AGENTS.isEnabled(context)) {
             val action = runCatching { JSONObject(args).optString("action", "").trim().lowercase() }.getOrDefault("")
