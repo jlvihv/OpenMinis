@@ -13,9 +13,9 @@ internal class AgentTurnContent {
     }
     private val segments = mutableListOf<Segment>()
     private val completed = mutableListOf<Triple<String, String, JSONObject>>()
-    val calls: List<Triple<String, String, JSONObject>> get() = completed
+    val calls: List<Triple<String, String, JSONObject>> get() = synchronized(this) { completed.toList() }
     private val signatures = mutableMapOf<String, String>()
-    val thoughtSignatures: Map<String, String> get() = signatures
+    val thoughtSignatures: Map<String, String> get() = synchronized(this) { signatures.toMap() }
     private val starts = mutableMapOf<String, Int>()
     private val completions = mutableMapOf<String, Int>()
     private val inFlight = mutableMapOf<String, String>()
@@ -23,10 +23,10 @@ internal class AgentTurnContent {
     private var monolithicText: Segment.Text? = null
     private val reasoning = StringBuilder()
     private var opaqueReasoning: String? = null
-    var finishReason: String? = null
+    @Volatile var finishReason: String? = null
         private set
 
-    fun accept(chunk: LLMStreamChunk, monolithic: Boolean): LLMStreamChunk = when (chunk) {
+    @Synchronized fun accept(chunk: LLMStreamChunk, monolithic: Boolean): LLMStreamChunk = when (chunk) {
         is LLMStreamChunk.ThinkingDelta -> chunk.also { thinking(); reasoning.append(it.text) }
         is LLMStreamChunk.ReasoningContent -> chunk.also { opaqueReasoning = it.content }
         is LLMStreamChunk.Finished -> chunk.also { finishReason = it.stopReason }
@@ -37,12 +37,12 @@ internal class AgentTurnContent {
         else -> chunk
     }
 
-    fun visibleText(): String = buildString {
+    @Synchronized fun visibleText(): String = buildString {
         segments.forEach { if (it is Segment.Text) append(it.text) }
     }
 
-    val opaqueReasoningLength: Int? get() = opaqueReasoning?.length
-    fun reasoningContent(): String? = opaqueReasoning ?: reasoning.toString().takeIf { it.isNotEmpty() }
+    val opaqueReasoningLength: Int? get() = synchronized(this) { opaqueReasoning?.length }
+    @Synchronized fun reasoningContent(): String? = opaqueReasoning ?: reasoning.toString().takeIf { it.isNotEmpty() }
 
     private fun thinking() {
         if (!thinkingSeen) {
@@ -94,13 +94,13 @@ internal class AgentTurnContent {
         return id
     }
 
-    fun parts(): List<AgentContentPart> = segments.mapNotNull { segment -> when (segment) {
+    @Synchronized fun parts(): List<AgentContentPart> = segments.mapNotNull { segment -> when (segment) {
         is Segment.Text -> segment.text.toString().takeIf { it.isNotEmpty() }?.let(AgentContentPart::Text)
         is Segment.Tool -> segment.part.takeIf { it.name.isNotBlank() }
         Segment.Thinking -> null
     } }
 
-    fun resetAttempt() {
+    @Synchronized fun resetAttempt() {
         segments.clear()
         completed.clear()
         signatures.clear()

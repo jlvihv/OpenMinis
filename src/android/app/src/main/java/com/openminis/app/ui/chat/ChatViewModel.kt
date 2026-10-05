@@ -1685,7 +1685,15 @@ class ChatViewModel(
     val autoRetryCountdown: StateFlow<Int> = _autoRetryCountdown.asStateFlow()
 
     private val runCoordinator = com.openminis.app.agent.AgentRunCoordinator()
+    private val cancellationCoordinator = com.openminis.app.agent.AgentCancellationCoordinator()
     private val streamJob: Job? get() = runCoordinator.job
+    private val cancellationPending get() = streamJob?.let { it.isCancelled && !it.isCompleted } == true
+
+    private fun afterCancelledRun(action: () -> Unit): Boolean {
+        val previous = streamJob?.takeIf { it.isCancelled && !it.isCompleted } ?: return false
+        viewModelScope.launch { previous.join(); action() }
+        return true
+    }
 
     private fun launchAgentRun(
         scope: kotlinx.coroutines.CoroutineScope,
@@ -1699,7 +1707,23 @@ class ChatViewModel(
         return runCoordinator.launch(scope, sessionId, label, bypassSlot, markFailure,
             title = ::overlaySessionTitle, stop = ::cancelStream,
             beforeInactive = { if (activeSessionId == sessionId) publishOverlayReplyExcerpt(sessionId) },
-            failed = failure, settled = { _isStreaming.value = false }, body = body)
+            failed = failure, settled = { _isStreaming.value = false }, body = {
+                try { body() } finally {
+                    val committed = cancellationCoordinator.finish()
+                    if (committed != null) withContext(NonCancellable + Dispatchers.Main) {
+                        if (activeSessionId == committed.sessionId) {
+                            committed.messages.forEach { message ->
+                                if (agentHistory.none { it.dbMessageId != null && it.dbMessageId == message.dbMessageId }) {
+                                    val pending = if (message.role == LLMMessage.Role.ASSISTANT)
+                                        agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
+                                    else -1
+                                    if (pending >= 0) agentHistory[pending] = message else agentHistory.add(message)
+                                }
+                            }
+                        }
+                    }
+                }
+            })
     }
     private var currentProvider: LLMProvider? = null
     private var currentModel: LLMModel? = null
@@ -6228,6 +6252,7 @@ class ChatViewModel(
      * of truth.
      */
     fun rerunFromToolBlock(assistantMessageId: String, blockId: String): Boolean {
+        if (afterCancelledRun { rerunFromToolBlock(assistantMessageId, blockId) }) return true
         if (_isStreaming.value) return false
         val messages = _messages.value
         val asstIdx = messages.indexOfFirst { it.id == assistantMessageId }
@@ -6425,6 +6450,7 @@ class ChatViewModel(
      * Mirrors iOS's edit/retry behavior — no duplicate user messages.
      */
     fun retryFromMessage(messageId: String) {
+        if (afterCancelledRun { retryFromMessage(messageId) }) return
         if (_isStreaming.value) return
         // [T-android-mute-reset-on-drain] Retry is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
@@ -7463,14 +7489,15 @@ class ChatViewModel(
         // here — clearing at this point would strip the content out from under
         // a send that then bails on the context-check paths below.
         val trimmed = text.trim()
-        // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
-        if (_isStreaming.value) {
+        // Queue until the stopped run's journal is settled as well as while streaming.
+        if (_isStreaming.value || cancellationPending) {
             // enqueuePrompt has its own blank/attachment guard and returns Unit;
             // the queue length is the acceptance signal (iOS does the same).
             val before = _promptQueue.value.size
             // [T-p2-gentle-injection] A headless send is PROGRAMMATIC: it waits
             // for the running loop to finish instead of interrupting it.
             enqueuePrompt(text, if (headless) QueuedPromptOrigin.PROGRAMMATIC else QueuedPromptOrigin.USER, prefill)
+            if (cancellationPending) resumeQueueAfterCancel()
             return if (_promptQueue.value.size == before + 1) SubmitOutcome.Queued
             else SubmitOutcome.Rejected("enqueue_declined")
         }
@@ -7887,6 +7914,7 @@ class ChatViewModel(
      *     persisted row so a re-load doesn't resurrect the failed turn.
      */
     fun retryLast() {
+        if (afterCancelledRun { retryLast() }) return
         if (_isStreaming.value) return
         // [T-android-mute-reset-on-drain] Retry is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
@@ -9268,10 +9296,8 @@ class ChatViewModel(
             var turnStreamMs = 0L
             val maxTokens = dynamicMaxTokens(provider, lastContextTokens)
             val turnContent = com.openminis.app.agent.AgentTurnContent()
-            val toolCalls = turnContent.calls
-            // [T-android-gemini3-thoughtsig / #179] toolCallId -> Gemini 3.x
-            // thoughtSignature for this turn's calls (null for other providers).
-            val toolCallSignatures = turnContent.thoughtSignatures
+            val turnJournal = cancellationCoordinator.begin(runJournal, turnContent, assistantId, CANCELLED_MARKER)
+            turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(null, 0, turnAttribution, null))
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
             // Some upstream OpenAI-compatible gateways occasionally emit
@@ -9323,7 +9349,7 @@ class ChatViewModel(
                         currentProvider.javaClass.simpleName, agentHistory.size, turnContent,
                         currentProvider.streamTextIsMonolithic,
                         firstChunk = { _autoRetryAttempt.value = 0; _autoRetryCountdown.value = 0 },
-                        duration = { turnStreamMs += it })
+                        duration = { turnStreamMs += it; turnJournal.recordDuration(turnStreamMs) })
                     attempt.collect(create = {
                     turnDispatch = null
                     turnCalibration = null
@@ -9724,6 +9750,8 @@ class ChatViewModel(
                     }
                     is LLMStreamChunk.Usage -> {
                         lastUsage = chunk.usage
+                        turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(
+                            chunk.usage, turnStreamMs, turnAttribution, null))
                         // Update context token count for next turn's dynamicMaxTokens()
                         // and publish to _lastTurnContextTokens so the ContextPolicy
                         // gate in [checkContextBeforeSend] can see the latest pressure
@@ -9736,6 +9764,8 @@ class ChatViewModel(
                             // estimate of the same request; the pair (persisted
                             // with the turn) is what capacity decisions use.
                             turnCalibration = contextPlanner.calibrate(turnDispatch, lastContextTokens)
+                            turnJournal.recordReceipt(com.openminis.app.agent.AgentJournalWriter.Receipt(
+                                chunk.usage, turnStreamMs, turnAttribution, turnCalibration))
                             // [T-android-context-usage-hint] Mid-loop path: a
                             // turn that runs tools for minutes should not stay
                             // silent until it finishes, so a genuine upward
@@ -10149,6 +10179,8 @@ class ChatViewModel(
             // semantics — `turnText` participates in cross-turn accumulation
             // and gets persisted into agentHistory below.
             val turnText = turnContent.visibleText()
+            val toolCalls = turnContent.calls
+            val toolCallSignatures = turnContent.thoughtSignatures
             // Accumulate text across turns
             accumulatedText += turnText
 
@@ -10199,7 +10231,7 @@ class ChatViewModel(
                 }
                 val turnParts = turnContent.parts()
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                persistAssistantTurn(runJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
+                persistAssistantTurn(turnJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
                     turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
@@ -10418,6 +10450,7 @@ class ChatViewModel(
             run {
                 val livePreviewParts = turnContent.parts()
                 val liveMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+                turnJournal.recordPresentation(journalMetadata(liveMeta))
                 if (livePreviewParts.isNotEmpty()) {
                     runJournal.preview(livePreviewParts, journalMetadata(liveMeta))
                 }
@@ -10425,7 +10458,7 @@ class ChatViewModel(
 
             // Execute all tool calls
             val resultParts = mutableListOf<AgentContentPart>()
-            val batchParts = com.openminis.app.agent.AgentToolBatchCoordinator.execute(toolCalls, MAX_CONCURRENT_TOOLS) { (id, name, args) ->
+            val batchParts = com.openminis.app.agent.AgentToolBatchCoordinator.execute(toolCalls, MAX_CONCURRENT_TOOLS, completed = turnJournal::completed) { (id, name, args) ->
                         val resultParts = mutableListOf<AgentContentPart>()
                         run slot@ {
                         // [T-android-overlay-tool-title] Pull tool_title uniformly
@@ -10621,6 +10654,8 @@ class ChatViewModel(
 
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool START name=$name args=${argsStr.take(200)}")
                         val result = executeTool(name, argsStr, id, allToolBlocks, assistantId, accumulatedText)
+                        turnJournal.recordToolPresentation(id, com.openminis.app.agent.AgentJournalWriter.ToolPresentation(
+                            result.toolTitle, result.pageURL.orEmpty(), result.imageFilePath.orEmpty()))
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool END name=$name success=${result.success} title=${result.toolTitle} outputLen=${result.output.length} output=${result.output.take(200)}")
 
                         // Record post-execution. WARNING text is appended to the tool
@@ -10739,7 +10774,7 @@ class ChatViewModel(
             // assistant entry — compact-marker boundary resolution depends on it.
             val turnParts = turnContent.parts()
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-            val assistantDbId = persistAssistantTurn(runJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
+            val assistantDbId = persistAssistantTurn(turnJournal, turnAttribution, turnCalibration, turnParts, lastUsage,
                 turnReasoningContent, blockMeta, uiAssistantId = assistantId, streamMs = turnStreamMs)
             if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
             if (assistantDbId != null) {
@@ -10750,7 +10785,7 @@ class ChatViewModel(
             }
 
             // Persist tool results as user-role message (mirrors iOS)
-            val toolResultDbId = runJournal.toolResults(resultParts)?.id
+            val toolResultDbId = turnJournal.toolResults(resultParts)?.id
             if (activeSessionId != runJournal.sessionId) throw CancellationException("agent branch changed during commit")
 
             // Add tool results to history
@@ -12472,7 +12507,7 @@ class ChatViewModel(
     }
 
     private suspend fun persistAssistantTurn(
-        journal: com.openminis.app.agent.AgentJournalWriter,
+        journal: com.openminis.app.agent.AgentTurnJournal,
         attribution: com.openminis.app.data.model.ModelAttributionSnapshot,
         calibration: Triple<Int, Int, String?>?,
         parts: List<AgentContentPart>,
@@ -13640,6 +13675,7 @@ class ChatViewModel(
         com.openminis.app.agent.jobs.AgentJobRegistry.muteDelegationResults(activeSessionId)
         com.openminis.app.agent.jobs.AgentJobRegistry.dropQueuedDelegations(activeSessionId, "user-stopped")
         com.openminis.app.agent.jobs.AgentJobRegistry.cancelAll(activeSessionId, "user-stopped")
+        val stopView = cancellationCoordinator.requestStop()
         streamJob?.cancel()
         _isStreaming.value = false
         // T-streaming-side-channel: flush any in-flight delta back into the
@@ -13681,7 +13717,7 @@ class ChatViewModel(
             _autoRetryCountdown.value = 0
             clearInlineError()
         }
-        handleUserCancelledCleanup()
+        handleUserCancelledCleanup(stopView)
 
         // T189: iOS parity (AIChatViewModel.swift L2592-2610). If the user
         // enqueued prompts during the cancelled stream, auto-resume the drain
@@ -13707,8 +13743,10 @@ class ChatViewModel(
      * prompt drain after cancel uses the same plumbing as a fresh send.
      */
     private fun resumeQueueAfterCancel() {
+        val cancelledRun = streamJob?.takeIf { it.isCancelled }
         viewModelScope.launch {
             kotlinx.coroutines.delay(200)
+            cancelledRun?.join()
             if (_promptQueue.value.isEmpty()) return@launch
             if (_isStreaming.value) return@launch
             // [T-android-compact-queued-drain] Defer while a compact is in
@@ -13784,24 +13822,13 @@ class ChatViewModel(
     }
 
     /**
-     * After the user stops a streaming turn, reconcile UI + agentHistory so
-     * the conversation is valid on the next API call and resumable via
-     * [resume]. Mirrors iOS AIChatViewModel.handleUserCancelledCleanup
-     * (Case 1: tool cancel, Case 2: text cancel).
-     *
-     *  - Case 1: any in-flight tool block is flipped to [ToolBlockStatus.CANCELLED]
-     *    and a synthetic tool_result with [CANCELLED_MARKER] is persisted so
-     *    tool_use/tool_result stays paired.
-     *  - Case 2: if there was partial assistant text streamed (and no tool
-     *    cancel), commit the partial text + a truncation `<system-reminder>`
-     *    to agentHistory so the model knows the prior turn was cut short.
-     *
-     * Always sets [_canResume] = true when there is something to resume from.
+     * Project the runtime's interruption snapshot onto the live bubble.
+     * Persistence completes in the cancelled run before a successor can start.
      */
-    private fun handleUserCancelledCleanup() {
-        val journal = com.openminis.app.agent.AgentJournalWriter(chatRepository, activeSessionId)
+    private fun handleUserCancelledCleanup(stop: com.openminis.app.agent.AgentTurnJournal.StopView?) {
         val msgs = _messages.value.toMutableList()
-        val lastIdx = msgs.indexOfLast { it.role == "assistant" }
+        val lastIdx = if (stop != null) msgs.indexOfLast { it.id == stop.bubbleId }
+            else msgs.indexOfLast { it.role == "assistant" && (it.isStreaming || it.isAwaitingModelResponse) }
         if (lastIdx < 0) return
         var last = msgs[lastIdx]
 
@@ -13818,109 +13845,20 @@ class ChatViewModel(
             _messages.value = msgs
         }
 
-        // Case 1: cancel during tool execution. Flip in-flight tool blocks to
-        // CANCELLED and persist matching tool_result rows.
-        val cancelledIds = mutableListOf<Pair<String, String>>() // (toolUseId, toolName)
-        val updatedBlocks = last.toolBlocks.map { b ->
-            val s = b.toolStatus
-            if (s == ToolBlockStatus.STREAMING || s == ToolBlockStatus.PENDING || s == ToolBlockStatus.RUNNING) {
-                if (b.kind == "tool_use") cancelledIds.add(b.id to b.toolName)
-                b.copy(toolStatus = ToolBlockStatus.CANCELLED)
-            } else b
+        // Projection only: the runtime commits interrupted model content and tool results.
+        val updatedBlocks = last.toolBlocks.map { block ->
+            if (block.id in stop?.pendingIds.orEmpty()) block.copy(toolStatus = ToolBlockStatus.CANCELLED) else block
         }
-        val hadInflightTools = cancelledIds.isNotEmpty()
-        if (hadInflightTools) {
-            msgs[lastIdx] = last.copy(toolBlocks = updatedBlocks)
-            _messages.value = msgs
-            val parts = cancelledIds.map { (id, name) ->
-                AgentContentPart.ToolResult(
-                    id = id,
-                    name = name,
-                    content = CANCELLED_MARKER,
-                    isError = true,
-                )
-            }
-            viewModelScope.launch(Dispatchers.IO) {
-                journal.toolResults(parts)
-            }
-            // [T-android-group-pause-badge-restamp] A LIVE interruption just
-            // happened: this is a real entry into the paused state, so the
-            // badge's 24h freshness stamp must be refreshed. Cancel any
-            // unconsumed re-detection mark left by a prior load so it cannot
-            // suppress the re-stamp here.
-            markLiveInterruption()
-            _canResume.value = true
-            return
-        }
-
-        // Case 2: cancel during text streaming. If partial assistant text
-        // exists and agentHistory does not already end with the assistant
-        // turn we're on, commit the partial text + truncation marker so the
-        // model sees an interrupted prior turn on the next call.
-        val partialText = buildString {
-            if (last.content.isNotEmpty()) append(last.content)
-            for (b in last.toolBlocks) {
-                if (b.kind == "text" && b.content.isNotEmpty()) {
-                    if (isNotEmpty()) append('\n')
-                    append(b.content)
-                }
-            }
-        }
-        val historyEndsWithAssistant =
-            agentHistory.lastOrNull()?.role == LLMMessage.Role.ASSISTANT
-
-        // Case 0 (T-ios-stop-clear-thinking-and-partial — Android port):
-        // Stop fired while still in the pre-first-chunk thinking gap (no
-        // partial text, no tool_use emitted, no committed history for this
-        // turn). The placeholder ChatMessage runAgentLoop pushed at L5248 is
-        // not in the DB and would otherwise render as an empty "Minis" header
-        // bubble with no body. Drop it so the UI snaps back to idle the
-        // instant the user taps Stop. Mirrors the iOS #566/#569 boundary:
-        // a candidate WITH real text or any emitted tool_use is kept (handled
-        // by Case 1 / Case 2 below); a thinking-only placeholder is not.
-        val hasAnyToolUse = last.toolBlocks.any { it.kind == "tool_use" }
-        if (partialText.isEmpty() && !hasAnyToolUse && !historyEndsWithAssistant) {
+        val hasVisibleContent = stop?.resumable == true || last.content.isNotEmpty() ||
+            updatedBlocks.any { it.kind == "tool_use" || (it.kind == "text" && it.content.isNotEmpty()) }
+        if (!hasVisibleContent) {
             msgs.removeAt(lastIdx)
-            _messages.value = msgs
-            return
-        }
-
-        if (partialText.isNotEmpty() && !historyEndsWithAssistant) {
-            val parts = listOf<AgentContentPart>(
-                AgentContentPart.Text(partialText),
-                AgentContentPart.Text(
-                    "<system-reminder>The user stopped this response. Content may be incomplete.</system-reminder>"
-                ),
-            )
-            agentHistory.add(
-                LLMMessage(
-                    role = LLMMessage.Role.ASSISTANT,
-                    content = partialText,
-                    contentParts = parts,
-                )
-            )
-            viewModelScope.launch(Dispatchers.IO) {
-                journal.assistant(parts, com.openminis.app.agent.AgentJournalWriter.Receipt(null, 0, null, null),
-                    null, emptyMap())
-            }
-            // [T-android-group-pause-badge-restamp] A LIVE interruption just
-            // happened: this is a real entry into the paused state, so the
-            // badge's 24h freshness stamp must be refreshed. Cancel any
-            // unconsumed re-detection mark left by a prior load so it cannot
-            // suppress the re-stamp here.
-            markLiveInterruption()
-            _canResume.value = true
-        } else if (historyEndsWithAssistant) {
-            // Already committed (tool cancel path above handled or prior turn
-            // wrote an assistant row). Still allow resume.
-            // [T-android-group-pause-badge-restamp] A LIVE interruption just
-            // happened: this is a real entry into the paused state, so the
-            // badge's 24h freshness stamp must be refreshed. Cancel any
-            // unconsumed re-detection mark left by a prior load so it cannot
-            // suppress the re-stamp here.
+        } else {
+            msgs[lastIdx] = last.copy(toolBlocks = updatedBlocks, isStreaming = false, isAwaitingModelResponse = false)
             markLiveInterruption()
             _canResume.value = true
         }
+        _messages.value = msgs
     }
 
     /**
@@ -13933,6 +13871,7 @@ class ChatViewModel(
      * Clears [_canResume] on entry so repeated taps don't stack.
      */
     fun resume() {
+        if (afterCancelledRun { resume() }) return
         if (_isStreaming.value || !_canResume.value) return
         // [T-android-mute-reset-on-drain] Resume is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)

@@ -10,13 +10,14 @@ import kotlinx.coroutines.sync.withPermit
 
 internal object AgentToolBatchCoordinator {
     suspend fun <T> execute(calls: List<T>, concurrency: Int,
+        completed: (List<AgentContentPart>) -> Unit = {},
         operation: suspend (T) -> List<AgentContentPart>): List<AgentContentPart> = coroutineScope {
         val slots = Semaphore(concurrency)
         calls.map { call ->
             async {
                 slots.withPermit {
                     SessionActivityTracker.toolStarted()
-                    try { operation(call) } finally { SessionActivityTracker.toolFinished() }
+                    try { operation(call).also(completed) } finally { SessionActivityTracker.toolFinished() }
                 }
             }
         }.awaitAll().flatten()
